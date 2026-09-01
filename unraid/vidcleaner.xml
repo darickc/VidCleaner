@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>VidCleaner</Name>
+  <Repository>vidcleaner:latest</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project/>
+  <Overview>
+    Mutes profanity in the audio of movies and TV episodes managed by Sonarr/Radarr and
+    played through Jellyfin. Adds a "Clean" audio track as the new default and keeps the
+    original track and an untouched backup of the source file, so every change is reversible.
+  </Overview>
+  <Category>MediaApp:Video Tools:Utilities</Category>
+  <WebUI>http://[IP]:[PORT:8585]/</WebUI>
+  <Icon/>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>
+    Mutes profanity in the audio of movies and TV episodes managed by Sonarr/Radarr and
+    played through Jellyfin. Local CPU speech-to-text locates the words; ffmpeg mutes them.
+  </Description>
+  <Networking>
+    <Mode>bridge</Mode>
+    <Publish>
+      <Port>
+        <HostPort>8585</HostPort>
+        <ContainerPort>8585</ContainerPort>
+        <Protocol>tcp</Protocol>
+      </Port>
+    </Publish>
+  </Networking>
+  <Data>
+    <Volume>
+      <HostDir>/mnt/user/appdata/vidcleaner</HostDir>
+      <ContainerDir>/config</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/user/media</HostDir>
+      <ContainerDir>/media</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/user/media/.vidcleaner-backups</HostDir>
+      <ContainerDir>/backups</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/user/cache/vidcleaner-work</HostDir>
+      <ContainerDir>/work</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+  </Data>
+  <Config Name="WebUI Port" Target="8585" Default="8585" Mode="tcp" Description="Web interface port" Type="Port" Display="always" Required="true" Mask="false">8585</Config>
+  <Config Name="Config" Target="/config" Default="/mnt/user/appdata/vidcleaner" Mode="rw" Description="Database, settings, logs and downloaded STT models" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/vidcleaner</Config>
+  <Config Name="Media" Target="/media" Default="/mnt/user/media" Mode="rw" Description="Your library. MUST be the same path Sonarr/Radarr/Jellyfin use." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media</Config>
+  <Config Name="Backups" Target="/backups" Default="/mnt/user/media/.vidcleaner-backups" Mode="rw" Description="Original files kept until purged. Keep it on the media share so swaps are same-filesystem renames." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/media/.vidcleaner-backups</Config>
+  <Config Name="Work" Target="/work" Default="/mnt/user/cache/vidcleaner-work" Mode="rw" Description="Scratch space for in-progress jobs. Put this on an SSD/cache pool." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/cache/vidcleaner-work</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User id that owns the media share" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group id that owns the media share" Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
+  <Config Name="TZ" Target="TZ" Default="America/Denver" Mode="" Description="Timezone" Type="Variable" Display="advanced" Required="false" Mask="false">America/Denver</Config>
+  <Config Name="OMP_NUM_THREADS" Target="OMP_NUM_THREADS" Default="6" Mode="" Description="Threads for speech-to-text. Roughly CPU cores minus 2." Type="Variable" Display="advanced" Required="false" Mask="false">6</Config>
+  <Config Name="Role" Target="VIDCLEANER_ROLE" Default="all" Mode="" Description="all | api | worker — split only for multi-host setups" Type="Variable" Display="advanced" Required="false" Mask="false">all</Config>
+</Container>

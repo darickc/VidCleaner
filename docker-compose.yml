@@ -1,0 +1,27 @@
+services:
+  vidcleaner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: vidcleaner:latest
+    container_name: vidcleaner
+    restart: unless-stopped
+    ports:
+      - "8585:8585"
+    environment:
+      # unraid's nobody:users. Match whatever owns your media share.
+      PUID: "99"
+      PGID: "100"
+      TZ: "America/Denver"
+      VIDCLEANER_ROLE: "all"
+      VIDCLEANER_LOG_LEVEL: "INFO"
+      # CTranslate2/OMP threads; PLAN.md §4 suggests cores - 2.
+      OMP_NUM_THREADS: "6"
+    volumes:
+      - ${CONFIG_DIR:-./.docker/config}:/config
+      # Must be the SAME path Sonarr/Radarr/Jellyfin use (PLAN.md §2).
+      - ${MEDIA_DIR:-/mnt/user/media}:/media
+      # Inside the media share so the swap is a same-filesystem rename (§10).
+      - ${BACKUPS_DIR:-/mnt/user/media/.vidcleaner-backups}:/backups
+      # Scratch; put this on an SSD/cache pool.
+      - ${WORK_DIR:-./.docker/work}:/work
