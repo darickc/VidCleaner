@@ -1,8 +1,8 @@
 """``vidcleaner`` command line entry point.
 
-``health`` and ``words`` are introspection. The pipeline commands from PLAN.md §11 --
-``vidcleaner clean <file> [--dry-run|--out]`` and ``vidcleaner detect <file>`` -- arrive
-with the render stages they drive.
+``health``, ``words`` and ``backups`` are introspection; ``clean``, ``detect`` and
+``restore`` do the work. PLAN.md §9 puts all of this behind a UI, which is M4 -- these
+exist so each milestone's behaviour is demonstrable before the screens exist.
 """
 
 from __future__ import annotations
@@ -102,6 +102,75 @@ def _words(action: str, categories: str | None) -> int:
     return 0
 
 
+def _restore(item: int | None, path: str | None) -> int:
+    from vidcleaner.db.models import MediaItem  # noqa: PLC0415
+    from vidcleaner.db.session import session_scope  # noqa: PLC0415
+    from vidcleaner.logging import configure_logging  # noqa: PLC0415
+    from vidcleaner.pipeline.persist import restore_item  # noqa: PLC0415
+
+    configure_logging("WARNING", role="cli")
+    with session_scope() as session:
+        if item is None:
+            from sqlalchemy import select  # noqa: PLC0415
+
+            row = session.scalars(select(MediaItem).where(MediaItem.path == path)).first()
+            if row is None:
+                print(f"error: no tracked item at {path}", file=sys.stderr)
+                return 66
+            item = row.id
+        try:
+            report = restore_item(session, item)
+        except (ValueError, RuntimeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    print(f"Restored   {report.restored_path}")
+    if report.displaced_path:
+        print(f"Cleaned    moved aside to {report.displaced_path}")
+    if report.sidecars:
+        print(f"Subtitles  {report.sidecars} sidecar(s) restored")
+    for warning in report.warnings:
+        print(f"           warning: {warning}")
+    return 0
+
+
+def _backups(action: str) -> int:
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from vidcleaner.config import get_settings  # noqa: PLC0415
+    from vidcleaner.db.models import Backup  # noqa: PLC0415
+    from vidcleaner.db.session import session_scope  # noqa: PLC0415
+    from vidcleaner.logging import configure_logging  # noqa: PLC0415
+    from vidcleaner.pipeline.persist import reconcile_backups  # noqa: PLC0415
+    from vidcleaner.settings_store import load_settings  # noqa: PLC0415
+
+    configure_logging("WARNING", role="cli")
+    settings = get_settings()
+
+    if action == "reconcile":
+        with session_scope() as session:
+            report = reconcile_backups(
+                session,
+                settings.backups_dir,
+                retention_days=load_settings(session).backup_retention_days,
+            )
+        print(f"adopted {report.adopted} untracked file(s), marked {report.purged} purged")
+        return 0
+
+    with session_scope() as session:
+        rows = session.scalars(select(Backup).order_by(Backup.created_at.desc())).all()
+        if not rows:
+            print("no backups recorded")
+            return 0
+        print(f"{'ID':>5}  {'ITEM':>5}  {'STATE':10} {'SIZE':>10}  PATH")
+        for row in rows:
+            size = f"{(row.size or 0) / 2**30:.2f} GiB" if row.size else ""
+            print(
+                f"{row.id:>5}  {row.media_item_id:>5}  {row.state:10} {size:>10}  {row.backup_path}"
+            )
+    return 0
+
+
 def _add_pipeline_args(parser: argparse.ArgumentParser, *, with_output: bool) -> None:
     from vidcleaner.cli_clean import add_arguments  # noqa: PLC0415
 
@@ -121,6 +190,25 @@ def build_parser() -> argparse.ArgumentParser:
         "detect", help="find profanity and print the counts, without rendering"
     )
     _add_pipeline_args(detect, with_output=False)
+
+    restore = subparsers.add_parser(
+        "restore", help="put a cleaned file's original back and move the clean copy aside"
+    )
+    target = restore.add_mutually_exclusive_group(required=True)
+    target.add_argument("--item", type=int, help="media item id (see `vidcleaner backups list`)")
+    target.add_argument("--path", help="the library path of the cleaned file")
+
+    backups = subparsers.add_parser("backups", help="inspect and reconcile kept originals")
+    backups.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=("list", "reconcile"),
+        help=(
+            "list: every recorded backup; reconcile: adopt files in /backups with no row "
+            "and mark rows whose file is gone"
+        ),
+    )
 
     words = subparsers.add_parser("words", help="inspect the built-in word lists")
     words.add_argument(
@@ -145,6 +233,10 @@ def main(argv: list[str] | None = None) -> int:
         return _health()
     if args.command == "words":
         return _words(args.action, args.categories)
+    if args.command == "restore":
+        return _restore(args.item, args.path)
+    if args.command == "backups":
+        return _backups(args.action)
     if args.command in {"clean", "detect"}:
         from vidcleaner.cli_clean import run_clean  # noqa: PLC0415
 

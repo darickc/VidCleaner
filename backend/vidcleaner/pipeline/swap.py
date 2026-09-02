@@ -633,7 +633,12 @@ class RestorePlan:
     """``media_items.path`` -- the file's *current* name, not the one it had when it
     was backed up. A ``Rename`` webhook may have moved it since."""
     displace_path: Path | None
-    """Where the cleaned file goes. Never unlinked."""
+    """The cleaned file to move out of the way. Never unlinked."""
+    displace_to: Path | None = None
+    """Where to move it. Defaults to beside itself as ``<name>.cleaned``, which is
+    safe (an arr's disk scan enumerates by video extension) but leaves a
+    source-sized file in the media share. Callers that know where ``/backups`` is
+    should point this there instead."""
     expect_size: int = 0
     expect_sha1_prefix: str = ""
     mode: int | None = None
@@ -670,9 +675,15 @@ def restore_backup(plan: RestorePlan, *, fs: FsOps | None = None) -> RestoreResu
 
     displaced: str | None = None
     if plan.displace_path is not None and fs.exists(plan.displace_path):
-        target = _free_name(plan.displace_path, fs)
+        target = _free_name(plan.displace_to or plan.displace_path, fs)
         fs.mkdirs(target.parent)
-        fs.rename(plan.displace_path, target)
+        try:
+            fs.rename(plan.displace_path, target)
+        except OSError as exc:
+            if not _is_exdev(exc):
+                raise StageError(NAME, f"could not move {plan.displace_path} aside: {exc}") from exc
+            fs.copy_file(plan.displace_path, target)
+            fs.unlink(plan.displace_path)  # our own cleaned output, not an original
         displaced = str(target)
 
     try:
@@ -698,7 +709,11 @@ def restore_backup(plan: RestorePlan, *, fs: FsOps | None = None) -> RestoreResu
 
 
 def _free_name(path: Path, fs: FsOps) -> Path:
-    """``Foo.mkv`` -> ``Foo.mkv.cleaned``, then ``.cleaned.1`` and so on."""
+    """``Foo.mkv`` -> ``Foo.mkv.cleaned``, then ``.cleaned.1`` and so on.
+
+    The ``.cleaned`` suffix matters even in `/backups`: it is not a video
+    extension, so nothing scanning for media will pick it up.
+    """
     candidate = path.with_name(f"{path.name}.cleaned")
     n = 1
     while fs.exists(candidate):

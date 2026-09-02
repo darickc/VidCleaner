@@ -155,3 +155,21 @@ def test_a_second_displacement_does_not_overwrite_the_first(world) -> None:
     assert result.displaced_path is not None
     assert result.displaced_path.endswith(".cleaned.1")
     assert (world.folder / "S01E01.mkv.cleaned").read_bytes() == b"an earlier one"
+
+
+def test_the_cleaned_file_can_be_displaced_to_another_directory(world, tmp_path: Path) -> None:
+    """Leaving a source-sized `.cleaned` file in the media share works (nothing
+    scans for that extension) but nothing would ever tidy it up either."""
+    cleaned = world.cleaned()
+    result = restore_backup(
+        RestorePlan(
+            backup_path=world.backup,
+            target_path=cleaned,
+            displace_path=cleaned,
+            displace_to=world.backups / "S01E01.mkv",
+        ),
+        fs=RealFs(),
+    )
+    assert result.displaced_path == str(world.backups / "S01E01.mkv.cleaned")
+    assert (world.backups / "S01E01.mkv.cleaned").read_bytes() == CLEANED
+    assert sorted(p.name for p in world.folder.iterdir()) == ["S01E01.mkv"]

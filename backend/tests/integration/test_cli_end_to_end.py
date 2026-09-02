@@ -19,6 +19,8 @@ from vidcleaner.db.models import Job, MediaItem
 from vidcleaner.db.session import session_scope
 from vidcleaner.pipeline.artifacts import Transcript, TranscriptSegment, TranscriptWord
 
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+
 
 @pytest.fixture
 def transcript_file(tmp_path) -> Path:
@@ -421,3 +423,153 @@ def test_a_dry_run_records_the_item_as_pending(migrated, sample_mkv, transcript_
         job = session.scalars(select(Job)).one()
         assert job.dry_run is True
         assert session.get(MediaItem, job.media_item_id).status == "pending"
+
+
+# ------------------------------------------------- in-place swap (M3 step 6)
+
+
+@pytest.fixture
+def in_library(sample_mkv, tmp_path, monkeypatch):
+    """Move the fixture into a `/media`-shaped tree with its own `/backups`."""
+    from vidcleaner.config import get_settings
+    from vidcleaner.db.session import reset_engine_cache
+
+    media = tmp_path / "media"
+    folder = media / "tv" / "Show"
+    folder.mkdir(parents=True)
+    target = folder / "S01E01.mkv"
+    sample_mkv.rename(target)
+
+    backups = tmp_path / "backups"
+    backups.mkdir(exist_ok=True)
+    monkeypatch.setenv("VIDCLEANER_MEDIA_DIR", str(media))
+    monkeypatch.setenv("VIDCLEANER_BACKUPS_DIR", str(backups))
+    get_settings.cache_clear()
+    reset_engine_cache()
+    yield target
+    get_settings.cache_clear()
+    reset_engine_cache()
+
+
+def clean_in_place(source: Path, transcript_file: Path, work: Path) -> int:
+    return run(
+        "clean",
+        str(source),
+        "--transcript",
+        str(transcript_file),
+        "--in-place",
+        "--work-dir",
+        str(work),
+        "--quiet",
+    )
+
+
+def test_in_place_replaces_the_library_file_and_keeps_the_original(
+    migrated, in_library, transcript_file, tmp_path
+):
+    original = in_library.read_bytes()
+    assert clean_in_place(in_library, transcript_file, tmp_path / "work") == 0
+
+    assert in_library.is_file()
+    assert in_library.read_bytes() != original, "the library file is the cleaned one"
+
+    backup = tmp_path / "backups" / "tv" / "Show" / "S01E01.mkv"
+    assert backup.read_bytes() == original, "the backup is byte-identical to the original"
+    # §3: exactly one video file, or an arr may adopt the wrong one.
+    assert sorted(p.name for p in in_library.parent.iterdir()) == ["S01E01.mkv"]
+
+
+def test_the_swap_is_recorded_and_reversible(migrated, in_library, transcript_file, tmp_path):
+    original = in_library.read_bytes()
+    assert clean_in_place(in_library, transcript_file, tmp_path / "work") == 0
+
+    with session_scope() as session:
+        from vidcleaner.db.models import Backup
+
+        row = session.scalars(select(Backup)).one()
+        assert row.state == "kept"
+        item = session.get(MediaItem, row.media_item_id)
+        assert item.status == "clean" and item.path == str(in_library)
+
+    assert run("restore", "--path", str(in_library)) == 0
+    assert in_library.read_bytes() == original, "restore is byte-identical"
+    assert sorted(p.name for p in in_library.parent.iterdir()) == ["S01E01.mkv"]
+    # The cleaned copy went to /backups rather than staying in the media share.
+    assert (tmp_path / "backups" / "tv" / "Show" / "S01E01.mkv.cleaned").is_file()
+
+    with session_scope() as session:
+        from vidcleaner.db.models import Backup
+
+        assert session.scalars(select(Backup)).one().state == "restored"
+        assert session.get(MediaItem, row.media_item_id).status == "restored"
+
+
+def test_a_second_in_place_run_reports_already_clean(
+    migrated, in_library, transcript_file, tmp_path, capsys
+):
+    """§4's idempotency loop, now across a real swap: the tag is in the library file."""
+    assert clean_in_place(in_library, transcript_file, tmp_path / "work") == 0
+    capsys.readouterr()
+
+    assert (
+        run(
+            "clean",
+            str(in_library),
+            "--transcript",
+            str(transcript_file),
+            "--in-place",
+            "--work-dir",
+            str(tmp_path / "work2"),
+        )
+        == 0
+    )
+    assert "Already clean" in capsys.readouterr().out
+
+
+def test_a_sidecar_is_swapped_alongside_the_video(
+    migrated, in_library, transcript_file, tmp_path
+):
+    sidecar = in_library.with_suffix(".srt")
+    sidecar.write_text((FIXTURES / "marked.srt").read_text())
+    original_subs = sidecar.read_text()
+
+    assert clean_in_place(in_library, transcript_file, tmp_path / "work") == 0
+
+    assert "****" in sidecar.read_text(), "the library subtitle is redacted"
+    backup = tmp_path / "backups" / "tv" / "Show" / "S01E01.srt"
+    assert backup.read_text() == original_subs
+
+    assert run("restore", "--path", str(in_library)) == 0
+    assert sidecar.read_text() == original_subs, "restore brings the subtitle back too"
+
+
+def test_in_place_refuses_to_combine_with_dry_run(migrated, in_library, transcript_file, tmp_path):
+    assert (
+        run(
+            "clean",
+            str(in_library),
+            "--transcript",
+            str(transcript_file),
+            "--in-place",
+            "--dry-run",
+            "--quiet",
+        )
+        == 64
+    )
+
+
+def test_without_in_place_the_library_is_untouched(migrated, in_library, transcript_file, tmp_path):
+    original = in_library.read_bytes()
+    run(
+        "clean",
+        str(in_library),
+        "--transcript",
+        str(transcript_file),
+        "--out",
+        str(tmp_path / "clean.mkv"),
+        "--work-dir",
+        str(tmp_path / "work"),
+        "--quiet",
+    )
+    assert in_library.read_bytes() == original
+    assert not (tmp_path / "backups" / "tv").exists()

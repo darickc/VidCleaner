@@ -1258,6 +1258,46 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   failed *rollback* deterministically — and those are precisely the paths that must be correct
   the first time they happen for real. Waiting for a genuine full disk is not a test strategy.
 
+- 2026-09-02 — **M3 step 6 (backup persistence and restore) complete.** `persist_swap`,
+  `restore_item`, `reconcile_backups`; `vidcleaner clean --in-place`, `vidcleaner restore`,
+  `vidcleaner backups list|reconcile`. Verified: 1371 passed, and a real `clean --in-place`
+  on the generated fixture followed by a **byte-identical** restore, subtitle sidecar included.
+- 2026-09-02 — **§6 step 8's "record `backups` row" contradicted CLAUDE.md**, which puts
+  persistence in `persist.py` after the pipeline. Resolved by making `swap.json` the durable
+  record and `persist_swap` the writer, with **one row per file moved** — the video and each
+  sidecar. §5's scalar `original_path`/`backup_path` read as one row per job; several rows
+  sharing a `job_id` is the natural fit and is what lets a restore put the subtitles back too.
+- 2026-09-02 — **`reconcile_backups` closes the one window the swap cannot.** A rename and a
+  SQLite commit cannot be made atomic, so a crash between them leaves a file in `/backups` that
+  nothing knows about (and a human deleting a backup leaves the reverse). A `pending` backup
+  state was considered and rejected: DB-first ordering just moves the window rather than
+  closing it. The intent journal is the truth *during* a swap and the reconciler is the backstop
+  *afterwards*. An adopted file hangs from the same sentinel title the CLI's own runs use,
+  because `backups.media_item_id` is NOT NULL and a lost original belongs to nothing we can
+  identify.
+- 2026-09-02 — **Restore targets the current name with the *original's* extension.** Two
+  separate corrections in one expression: not `backups.original_path` (a `Rename` webhook makes
+  it stale, and restoring there recreates the old filename while leaving the cleaned file
+  behind — §3's two-video-files hazard), and not the current suffix either (an MP4 that became
+  an MKV has to go back as an MP4). So `Path(item.path).with_suffix(original_suffix)`.
+- 2026-09-02 — **The displaced cleaned file goes to `/backups`, not beside itself.** The first
+  implementation renamed it in place as `<name>.cleaned`, which is *safe* — an arr's disk scan
+  enumerates by video extension and `.cleaned` is not one — but leaves a source-sized file in
+  the media share that nothing will ever tidy up. `RestorePlan.displace_to` now names the
+  destination and `restore_item` points it at `/backups` beside the original it replaced, where
+  the retention clock can reach it. Caught by an integration test asserting the library folder
+  holds exactly one file afterwards.
+- 2026-09-02 — A restore that cannot put a *sidecar* back only warns; the video is already
+  restored and failing the whole operation over a subtitle would be the wrong trade. Symmetric
+  with the swap, where sidecars are installed last for the same reason.
+- 2026-09-02 — `vidcleaner clean --in-place` refuses to combine with `--dry-run` or `--out`,
+  and appends `swap` to the stage list. It exists so the swap transaction is demonstrable
+  before the worker (and long before §9's UI): the M3 integration tier now runs a real swap on
+  generated media, asserts the backup is **byte-identical** to the original, restores it, and
+  asserts the restored file is byte-identical again — plus that a second run reports
+  `already_clean`, which closes §4's idempotency loop across a real library swap for the first
+  time.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

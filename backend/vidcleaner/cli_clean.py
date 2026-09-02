@@ -31,6 +31,16 @@ def add_arguments(parser: argparse.ArgumentParser, *, with_output: bool) -> None
             action="store_true",
             help="stop after detection and print the word counts",
         )
+        parser.add_argument(
+            "--in-place",
+            action="store_true",
+            dest="in_place",
+            help=(
+                "replace the library file: the original is moved to the backups "
+                "directory and the cleaned file takes its name. Reversible with "
+                "`vidcleaner restore`"
+            ),
+        )
     parser.add_argument(
         "--force", action="store_true", help="ignore stage markers and redo everything"
     )
@@ -228,6 +238,12 @@ def _report(result: Any, probe, subs, transcript, detections, render, verify) ->
     return "\n".join(lines)
 
 
+def _load_swap(ws):
+    from vidcleaner.pipeline import swap as swap_stage  # noqa: PLC0415
+
+    return swap_stage.load(ws)
+
+
 def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
     # Imported here so `vidcleaner --help` and `vidcleaner health` stay cheap.
     from vidcleaner.config import get_settings  # noqa: PLC0415
@@ -281,6 +297,10 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
         return 66
 
     dry_run = detect_only or bool(getattr(args, "dry_run", False))
+    in_place = bool(getattr(args, "in_place", False))
+    if in_place and (dry_run or getattr(args, "out", None)):
+        print("error: --in-place cannot be combined with --dry-run or --out", file=sys.stderr)
+        return 64
     deploy = get_settings()
     if args.work_dir:
         deploy = deploy.model_copy(update={"work_dir": args.work_dir.expanduser()})
@@ -321,6 +341,7 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
         force=args.force,
         stt_mode=getattr(args, "stt_mode", "windowed"),
         job_id=args.job_id,
+        in_place=in_place,
     )
 
     progress = _Progress(enabled=not args.quiet and not args.as_json)
@@ -333,6 +354,8 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
     )
 
     stages = list(DRY_RUN_STAGES if dry_run else M1_STAGES)
+    if in_place:
+        stages.append("swap")
     if args.detections:
         # Enter at the render stage with a supplied detections file. Also the
         # mechanism behind "reprocess after a whitelist edit" in M4.
@@ -358,6 +381,7 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
     detections = detect_stage.load(ctx.ws) if ctx.ws.detections_json.is_file() else None
     render = render_stage.load(ctx.ws)
     verify = verify_stage.load(ctx.ws)
+    swap = _load_swap(ctx.ws) if in_place else None
 
     if probe is not None and probe.already_clean and state == "done":
         state = "already_clean"
@@ -367,7 +391,7 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
             from vidcleaner.pipeline.persist import persist_run  # noqa: PLC0415
 
             with session_scope() as session:
-                persist_run(
+                record = persist_run(
                     session,
                     spec,
                     probe=probe,
@@ -380,6 +404,16 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
                     timings=None,
                     work_dir=ctx.ws.root,
                 )
+                if swap is not None:
+                    from vidcleaner.pipeline.persist import persist_swap  # noqa: PLC0415
+
+                    persist_swap(
+                        session,
+                        swap,
+                        media_item_id=record.media_item_id,
+                        job_id=record.job_id,
+                        retention_days=settings.backup_retention_days,
+                    )
         except Exception as exc:  # noqa: BLE001 - never fail a good render on bookkeeping
             print(f"warning: could not record the run: {exc}", file=sys.stderr)
 
@@ -404,6 +438,11 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
             print(f"Already clean for this profile ({spec.profile_hash}); nothing to do.")
         elif dry_run:
             print(f"Dry run -- nothing rendered.  Artifacts in {ctx.ws.root}")
+        elif swap is not None:
+            print(f"Installed  {swap.final_path}")
+            print(f"Backup     {swap.backup_path}")
+            for warning in swap.warnings:
+                print(f"           warning: {warning}")
         elif render is not None:
             print(f"Wrote      {render.out_path}")
 
