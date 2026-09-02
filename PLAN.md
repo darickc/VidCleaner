@@ -462,6 +462,43 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
 - 2026-09-01 — A masked token is only named when the revealed letters pin it down: `f***` stays
   `<censored>` (it fits fuck, fag and faggot) while `f**k` and `b*tch` resolve uniquely. §7 mutes
   either way at 0.6 confidence — the mask itself is unambiguous evidence that something was censored.
+- 2026-09-01 — **M1 step 7 (render + verify) complete.** Adds `pipeline/render.py` and
+  `pipeline/verify.py`. `build_render_command` and `structural_checks` are pure and golden-tested,
+  because output stream-index arithmetic is the likeliest bug in the milestone. Verified: 1006
+  passed, 88 of them against real media, including a full render of the generated fixture with the
+  requested ranges measured silent and the rest measured unchanged.
+- 2026-09-01 — **§3's `-disposition:a:1 0` is destructive and is replaced by the subtractive
+  `-disposition:a:1 -default`.** A literal `0` zeroes the whole disposition bitmask, wiping
+  `comment`, `original`, `hearing_impaired` and `dub` from the user's original track. Also, `0` is
+  the wrong ordinal in general: `-map 0:a` preserves source order, so the cleaned track lands at
+  output `a:(1+K)` for source ordinal `K`, and every source track that carried `default` must have
+  it cleared — not just `a:1`.
+- 2026-09-01 — **§3's `-c:s copy` fails outright for MP4 sources**: `mov_text` cannot be muxed into
+  Matroska ("Could not write header"), so it is transcoded to `srt` per stream position. Verified by
+  rendering the MP4 fixture through to a passing verify.
+- 2026-09-01 — A `-map [label]` stream inherits **no** metadata or dispositions, and `-map_metadata 0`
+  copies global tags only, so the clean track's `title` and `language` are set explicitly. The clean
+  track mirrors the source language including its **absence** — asserting a language we do not know
+  is worse for Jellyfin and Infuse than leaving it unset. Redacted subtitles arrive as file inputs
+  and therefore also need language, title and dispositions restored.
+- 2026-09-01 — **Sidecar subtitles are written to `/work` only, never the library.** §6 step 6 says
+  rendering rewrites them, but step 7 promises "Fail → `failed`, library untouched", and CLAUDE.md
+  reserves library writes for `swap.py`. M3's `swap.py` installs them in the same rename-only
+  transaction as the video. Redaction itself happens in Python *before* ffmpeg runs, so a subtitle
+  failure downgrades to "copy the original stream and warn" and can never fail a render.
+- 2026-09-01 — Verification asserts `max_volume ≤ −80 dB` inside mute windows rather than
+  `mean ≈ −91 dB`: −91 is the s16 quantization floor and shifts under FLAC (s32) and lossy ringing.
+  Windows are inset **40 ms**, because a nominal `[3.000, 3.200]` mute measures as
+  `[3.0056, 3.2101]` after a real AC-3 round trip — the MDCT window smears the edges by about one
+  frame, so asserting at the nominal boundary would flake.
+- 2026-09-01 — **The control-window check is the most important assertion in the suite.** Every other
+  check passes on a file whose audio has been silenced end to end, which is exactly what an ungated
+  `afade` chain, a mis-signed time offset, or an `enable` expression that evaluates true everywhere
+  all produce. `verify` therefore also measures ≥1 s of audio clear of every mute and requires
+  ≥ −50 dB. A test deliberately silences a whole render and asserts that this check — and only
+  really this check — catches it.
+- 2026-09-01 — The §4 idempotency loop is closed and tested: re-probing our own output with the same
+  profile hash reports `already_clean`.
 
 ## 15. Working agreement for future sessions
 
