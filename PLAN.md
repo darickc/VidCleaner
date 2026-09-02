@@ -403,6 +403,32 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   is derived from and discarding the formatted message (renamed to `argv`); and `run()` drained
   stdout inline, which blocks until EOF and made `process.wait(timeout=...)` unreachable, so a hung
   ffmpeg would never have been killed (stdout now has its own pump thread).
+- 2026-09-01 — **M1 step 5 (probe, extract, subtitles) complete.** Adds `pipeline/probe.py`,
+  `extract.py`, `subtitles.py` and `lang.py`. Verified: 852 unit + 59 integration tests pass, and
+  the three stages run end to end on the real 4.26 GiB test episode.
+- 2026-09-01 — **§3's "subtitle windowing is essential" is confirmed with numbers.** On PLURIBUS
+  S01E01 (56:28, 540 English cues) the matcher finds 44 hits, which become **28 windows covering
+  186 s of 3388 s — 5.5% of the runtime**. Windowed STT therefore transcribes about 3 minutes of
+  audio instead of 56, an ~18x reduction, which is what makes CPU-only STT viable at all.
+  Detected words: fuck 18, god 10, shit 8, goddamn 3, bullshit 2, jesus 2, christ 1.
+- 2026-09-01 — **Only subtitle streams in a language we ship a word list for are redacted.** The
+  test episode carries **61** text subtitle streams and exactly **one** is English; extracting and
+  redacting the other 60 would be pure waste, since no word list can match them. Streams with no
+  `language` tag are skipped rather than guessed at — the same file has three (Chinese, titled but
+  untagged). Multi-language word lists remain a §11 "later" item.
+- 2026-09-01 — Subtitle windows pad the **cue** bounds by ±1.5 s rather than the hit's proportional
+  span: the proportional estimate can be wrong within a long cue, and a window that is too narrow
+  loses the word entirely. Hit *time spans* are still derived from character offsets, which keeps a
+  match near the end of a long cue near the end of its time range.
+- 2026-09-01 — Redaction splices into `SSAEvent.text` through a visible-character offset map, because
+  `pysubs2`'s `plaintext` **setter strips ASS override tags**. Markup outside a match is preserved
+  exactly; a word split across a tag boundary (`f{\i1}uck`) is still matched and masked, which
+  necessarily destroys the override block inside the span — that is the right trade for a profanity
+  filter, and it is counted in `tags_dropped` rather than happening silently. `\N` is not a phrase
+  separator here either, so `god\Ndamn` redacts to `***\Ndamn`, consistent with detection.
+- 2026-09-01 — Confirmed the ONE CLOCK premise empirically: extracting a stream whose `start_time`
+  is 0.5 s yields a WAV of exactly 10.000 s, not 10.5 s — ffmpeg drops the offset rather than
+  padding. So `wav_time = container_time − start_time`, and `stt` adds it back exactly once.
 
 ## 15. Working agreement for future sessions
 

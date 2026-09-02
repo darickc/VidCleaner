@@ -1,0 +1,415 @@
+"""Stage 3: pick a subtitle track, find candidate windows, redact text (PLAN.md §6 step 3, §7).
+
+Subtitles do two jobs. They narrow which parts of the audio need STT at all --
+without that, a feature film needs a full-file pass -- and they name the word,
+so STT only has to supply the *timing*.
+
+Redaction shares the *same* ``Matcher`` instance as detection, so what gets
+masked is exactly what gets muted, including whitelist scope. Two constraints
+shape the implementation:
+
+* ``pysubs2``'s ``SSAEvent.plaintext`` **setter destroys ASS override tags**
+  (it substitutes out ``{...}`` blocks), so redaction splices into
+  ``SSAEvent.text`` through an offset map instead.
+* Only streams in a language we actually have a word list for are redacted.
+  The M1 test media carries **61** text subtitle streams; extracting and
+  redacting 60 of them for languages with no word list is pure waste.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+import pysubs2
+
+from vidcleaner.matching.compiler import Matcher, mask_text
+from vidcleaner.pipeline import lang
+from vidcleaner.pipeline.artifacts import (
+    ProbeResult,
+    SubtitleCue,
+    SubtitleHit,
+    SubtitleSource,
+    SubtitlesResult,
+    SubtitleStreamInfo,
+    TimeRange,
+    merge_ranges,
+)
+from vidcleaner.pipeline.workspace import Workspace
+
+NAME = "subtitles"
+
+__all__ = [
+    "REDACTABLE_LANGUAGES",
+    "RedactionStats",
+    "choose_subtitle_source",
+    "cue_windows",
+    "find_hits",
+    "load",
+    "parse_cues",
+    "redact_file",
+    "redact_line",
+    "run",
+]
+
+#: Languages we ship word lists for. Multi-language lists are a §11 "later" item.
+REDACTABLE_LANGUAGES = frozenset({"eng"})
+
+#: §6 step 3: pad each cue by 1.5 s, then merge windows less than 2 s apart.
+WINDOW_PAD_S = 1.5
+WINDOW_MERGE_GAP_S = 2.0
+
+SIDECAR_SUFFIXES = (".srt", ".ass", ".ssa", ".vtt")
+
+_SUB_EXTRACT_FORMAT = {
+    "ass": ("ass", ".ass"),
+    "ssa": ("ass", ".ass"),
+    "webvtt": ("webvtt", ".vtt"),
+}
+#: ASS override blocks and escapes: never scanned, always preserved.
+_MARKUP_RE = re.compile(r"(\{[^}]*\}|\\[Nnh])")
+#: Raw sequences that render as a single visible character.
+_ESCAPE_WIDTH = {"\\N": "\n", "\\n": "\n", "\\h": " "}
+
+
+@dataclass(frozen=True, slots=True)
+class RedactionStats:
+    path: Path
+    cues_total: int = 0
+    cues_changed: int = 0
+    hits: int = 0
+    tags_dropped: int = 0
+
+
+# ------------------------------------------------------------ source choice
+
+
+def find_sidecars(source: Path) -> list[Path]:
+    """Sibling subtitle files sharing the source's stem."""
+    stem = source.stem
+    out: list[Path] = []
+    try:
+        candidates = sorted(source.parent.iterdir())
+    except OSError:
+        return out
+    for candidate in candidates:
+        if not candidate.is_file() or candidate.suffix.lower() not in SIDECAR_SUFFIXES:
+            continue
+        if candidate.stem == stem or candidate.stem.startswith(f"{stem}."):
+            out.append(candidate)
+    return out
+
+
+def _sidecar_language(sidecar: Path, source_stem: str) -> str | None:
+    """``Movie.eng.srt`` -> ``eng``; ``Movie.srt`` -> unknown."""
+    extra = sidecar.stem[len(source_stem) :].strip(".")
+    for part in extra.split("."):
+        if part and lang.to_iso639_1(part) is not None:
+            return lang.normalize_tag(part)
+    return None
+
+
+def choose_subtitle_source(
+    probe: ProbeResult,
+    *,
+    preferred_language: str | None,
+    sidecars: Sequence[Path] = (),
+) -> SubtitleSource:
+    """§6 step 3's precedence: preferred sidecar, sidecar, embedded, none."""
+    source_stem = Path(probe.path).stem
+
+    preferred_sidecars = [
+        s for s in sidecars if lang.matches(_sidecar_language(s, source_stem), preferred_language)
+    ]
+    for sidecar in preferred_sidecars or list(sidecars):
+        detected = _sidecar_language(sidecar, source_stem)
+        if preferred_sidecars or detected is None:
+            return SubtitleSource(
+                kind="sidecar",
+                path=str(sidecar),
+                codec_name=sidecar.suffix.lstrip(".").lower(),
+                language=detected or preferred_language,
+                reason="sidecar_preferred_language" if preferred_sidecars else "sidecar_untagged",
+            )
+
+    text_streams = probe.text_subtitles
+    for stream in text_streams:
+        if lang.matches(stream.language, preferred_language) and not stream.is_forced:
+            return _embedded(stream, "embedded_preferred_language")
+    for stream in text_streams:
+        if lang.matches(stream.language, preferred_language):
+            return _embedded(stream, "embedded_preferred_language_forced")
+    for stream in text_streams:
+        if not stream.is_forced:
+            return _embedded(stream, "embedded_any_text")
+    if text_streams:
+        return _embedded(text_streams[0], "embedded_forced_only")
+
+    reason = "no_text_subtitles_only_bitmap" if probe.subtitles else "no_subtitles"
+    return SubtitleSource(kind="none", reason=reason)
+
+
+def _embedded(stream: SubtitleStreamInfo, reason: str) -> SubtitleSource:
+    return SubtitleSource(
+        kind="embedded",
+        stream_typed_index=stream.typed_index,
+        codec_name=stream.codec_name,
+        language=stream.language,
+        reason=reason,
+    )
+
+
+def redactable_streams(probe: ProbeResult) -> list[int]:
+    """Text streams whose language we have a word list for.
+
+    A stream with no language tag is skipped: redacting it would mean guessing,
+    and the M1 media has three such streams (Chinese, titled but untagged).
+    """
+    return [
+        s.typed_index
+        for s in probe.text_subtitles
+        if s.language is not None
+        and any(lang.matches(s.language, known) for known in REDACTABLE_LANGUAGES)
+    ]
+
+
+# ------------------------------------------------------------------ parsing
+
+
+def parse_cues(path: Path) -> list[SubtitleCue]:
+    """Parse to visible text, ASS override tags stripped."""
+    try:
+        subs = pysubs2.load(str(path))
+    except Exception as exc:  # pysubs2 raises a variety of parse errors
+        raise ValueError(f"cannot parse subtitles at {path}: {exc}") from exc
+
+    cues: list[SubtitleCue] = []
+    for index, event in enumerate(subs):
+        if event.is_comment or event.is_drawing:
+            continue
+        text = event.plaintext.strip()
+        if not text:
+            continue
+        cues.append(
+            SubtitleCue(
+                index=index,
+                start=event.start / 1000.0,
+                end=event.end / 1000.0,
+                text=text,
+            )
+        )
+    return cues
+
+
+def find_hits(cues: Iterable[SubtitleCue], matcher: Matcher) -> list[SubtitleHit]:
+    """Word-list matches per cue, with a proportional time span for each.
+
+    The span is derived from character offsets rather than word counts, which
+    keeps a match near the end of a long cue near the end of its time range.
+    """
+    hits: list[SubtitleHit] = []
+    for cue in cues:
+        length = max(1, len(cue.text))
+        duration = cue.duration
+        for match in matcher.finditer(cue.text):
+            hits.append(
+                SubtitleHit(
+                    cue_index=cue.index,
+                    start=cue.start + duration * (match.start / length),
+                    end=cue.start + duration * (match.end / length),
+                    word_raw=match.raw,
+                    word_canonical=match.canonical,
+                    category=match.category,
+                    char_start=match.start,
+                    char_end=match.end,
+                )
+            )
+    return hits
+
+
+def cue_windows(
+    cues: Sequence[SubtitleCue],
+    hits: Sequence[SubtitleHit],
+    *,
+    pad_s: float = WINDOW_PAD_S,
+    merge_gap_s: float = WINDOW_MERGE_GAP_S,
+    duration: float | None = None,
+    offset_s: float = 0.0,
+) -> list[TimeRange]:
+    """STT candidate windows around every cue that contains a hit.
+
+    Padding is applied to the *cue* bounds rather than the hit's proportional
+    span: the proportional estimate can be off within the cue, and a window that
+    is too narrow loses the word entirely.
+    """
+    by_index = {cue.index: cue for cue in cues}
+    raw: list[TimeRange] = []
+    for hit in hits:
+        cue = by_index.get(hit.cue_index)
+        start = (cue.start if cue else hit.start) + offset_s - pad_s
+        end = (cue.end if cue else hit.end) + offset_s + pad_s
+        raw.append(
+            TimeRange(
+                start=max(0.0, start),
+                end=min(duration, end) if duration else end,
+            )
+        )
+    return merge_ranges(raw, merge_gap_s)
+
+
+# ----------------------------------------------------------------- redaction
+
+
+def _visible_map(raw: str) -> tuple[str, list[int], list[int]]:
+    """Split markup out of ``SSAEvent.text``, returning the visible text and offsets.
+
+    ``vis_to_raw[i]`` is where visible character ``i`` starts in ``raw``, and
+    ``raw_width[i]`` is how many raw characters it occupies (2 for ``\\N``).
+    """
+    visible_parts: list[str] = []
+    vis_to_raw: list[int] = []
+    raw_width: list[int] = []
+    cursor = 0
+    for token in _MARKUP_RE.split(raw):
+        if not token:
+            continue
+        if _MARKUP_RE.fullmatch(token):
+            if (rendered := _ESCAPE_WIDTH.get(token)) is not None:
+                visible_parts.append(rendered)
+                vis_to_raw.append(cursor)
+                raw_width.append(len(token))
+            cursor += len(token)
+            continue
+        for offset, char in enumerate(token):
+            visible_parts.append(char)
+            vis_to_raw.append(cursor + offset)
+            raw_width.append(1)
+        cursor += len(token)
+    return "".join(visible_parts), vis_to_raw, raw_width
+
+
+def redact_line(raw: str, matcher: Matcher, *, mask_char: str = "*") -> tuple[str, int, int]:
+    """Mask matches in one event's raw text. Returns ``(text, hits, tags_dropped)``.
+
+    Matching runs on the *visible* text with markup removed, so a word split
+    across a tag boundary (``f{\\i1}uck``) is still found -- and, since the mask
+    replaces the whole raw span, the override block inside it is necessarily
+    lost. That is the right trade for a profanity filter, but it is counted in
+    ``tags_dropped`` rather than happening silently.
+
+    Markup *outside* a match is untouched, and replacements are spliced back to
+    front so earlier offsets stay valid.
+    """
+    visible, vis_to_raw, raw_width = _visible_map(raw)
+    matches = [m for m in matcher.finditer(visible) if not matcher.suppressed(m, visible)]
+    if not matches:
+        return raw, 0, 0
+
+    out = raw
+    dropped = 0
+    for match in reversed(matches):
+        begin = vis_to_raw[match.start]
+        last = match.end - 1
+        finish = vis_to_raw[last] + raw_width[last]
+        replaced = out[begin:finish]
+        # Any override block inside the span dies with it; only count real
+        # `{...}` blocks, not the \N escapes that map to a visible character.
+        dropped += len(re.findall(r"\{[^}]*\}", replaced))
+        out = out[:begin] + mask_text(match.raw, mask_char) + out[finish:]
+    return out, len(matches), dropped
+
+
+def redact_file(
+    source: Path, dest: Path, matcher: Matcher, *, mask_char: str = "*"
+) -> RedactionStats:
+    """Redact a subtitle file, preserving timing, styles and markup."""
+    subs = pysubs2.load(str(source))
+    changed = hits = dropped = 0
+    for event in subs:
+        if event.is_comment or event.is_drawing or not event.text:
+            continue
+        text, count, lost = redact_line(event.text, matcher, mask_char=mask_char)
+        if count:
+            event.text = text
+            changed += 1
+            hits += count
+            dropped += lost
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subs.save(str(dest))
+    return RedactionStats(dest, len(subs), changed, hits, dropped)
+
+
+# --------------------------------------------------------------------- stage
+
+
+def _extract_stream(ctx, probe: ProbeResult, typed_index: int) -> Path:
+    stream = next(s for s in probe.subtitles if s.typed_index == typed_index)
+    codec, suffix = _SUB_EXTRACT_FORMAT.get(stream.codec_name, ("srt", ".srt"))
+    target = ctx.ws.subs_dir / f"in_{typed_index}{suffix}"
+    ctx.runner.run(
+        [
+            "-i",
+            probe.path,
+            "-map",
+            f"0:s:{typed_index}",
+            "-c:s",
+            codec,
+            str(target),
+        ],
+        label=f"extract-sub-{typed_index}",
+        timeout=600,
+    )
+    return target
+
+
+def run(ctx) -> None:
+    probe = ProbeResult.read(ctx.ws.probe_json)
+    matcher = ctx.matcher
+    if matcher is None:
+        from vidcleaner.matching.compiler import build_matcher  # noqa: PLC0415
+
+        matcher = build_matcher()
+        ctx.matcher = matcher
+
+    sidecars = find_sidecars(Path(probe.path))
+    source = choose_subtitle_source(
+        probe, preferred_language=ctx.settings.preferred_language, sidecars=sidecars
+    )
+
+    cues: list[SubtitleCue] = []
+    if source.kind == "sidecar" and source.path:
+        cues = parse_cues(Path(source.path))
+    elif source.kind == "embedded" and source.stream_typed_index is not None:
+        extracted = _extract_stream(ctx, probe, source.stream_typed_index)
+        source = source.model_copy(update={"path": str(extracted)})
+        cues = parse_cues(extracted)
+
+    hits = find_hits(cues, matcher)
+    windows = cue_windows(cues, hits, duration=probe.duration or None)
+
+    result = SubtitlesResult(
+        source=source,
+        cues=cues,
+        hits=hits,
+        windows=windows,
+        redactable=redactable_streams(probe),
+        sidecars=[str(s) for s in sidecars],
+    )
+    ctx.log.info(
+        "subtitles.done",
+        kind=source.kind,
+        reason=source.reason,
+        language=source.language,
+        cues=len(cues),
+        hits=len(hits),
+        windows=len(windows),
+        window_seconds=round(sum(w.duration for w in windows), 1),
+        redactable=len(result.redactable),
+    )
+    result.write(ctx.ws.subs_json)
+
+
+def load(ws: Workspace) -> SubtitlesResult:
+    return SubtitlesResult.read(ws.subs_json)

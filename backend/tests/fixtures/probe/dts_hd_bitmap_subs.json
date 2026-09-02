@@ -1,0 +1,51 @@
+{
+  "_comment": "Hand-written: a DTS-HD MA 7.1 Blu-ray rip with PGS subtitles. Neither shape can be generated with ffmpeg (the dca encoder is experimental and text-to-bitmap subtitle transcoding is refused), so the parser and codec policy are exercised against this instead.",
+  "streams": [
+    {
+      "index": 0, "codec_name": "hevc", "codec_type": "video", "profile": "Main 10",
+      "width": 3840, "height": 2160, "pix_fmt": "yuv420p10le", "avg_frame_rate": "24000/1001",
+      "start_time": "0.000000",
+      "disposition": {"default": 1, "attached_pic": 0, "forced": 0},
+      "tags": {"BPS": "58000000", "DURATION": "02:08:14.000000000"}
+    },
+    {
+      "index": 1, "codec_name": "dts", "codec_type": "audio", "profile": "DTS-HD MA",
+      "channels": 8, "channel_layout": "7.1", "sample_rate": "48000",
+      "bits_per_raw_sample": "24", "start_time": "0.000000",
+      "disposition": {"default": 1, "forced": 0, "original": 1},
+      "tags": {"language": "eng", "title": "Surround 7.1", "BPS": "4200000", "DURATION": "02:08:14.000000000"}
+    },
+    {
+      "index": 2, "codec_name": "ac3", "codec_type": "audio", "channels": 2,
+      "channel_layout": "stereo", "sample_rate": "48000", "bit_rate": "192000",
+      "start_time": "0.000000",
+      "disposition": {"default": 0, "forced": 0, "comment": 1},
+      "tags": {"language": "eng", "title": "Director Commentary"}
+    },
+    {
+      "index": 3, "codec_name": "hdmv_pgs_subtitle", "codec_type": "subtitle",
+      "disposition": {"default": 1, "forced": 0},
+      "tags": {"language": "eng", "title": "English"}
+    },
+    {
+      "index": 4, "codec_name": "subrip", "codec_type": "subtitle",
+      "disposition": {"default": 0, "forced": 0},
+      "tags": {"language": "eng", "title": "English SDH"}
+    },
+    {
+      "index": 5, "codec_name": "dvd_subtitle", "codec_type": "subtitle",
+      "disposition": {"default": 0, "forced": 1},
+      "tags": {"language": "fre"}
+    },
+    {"index": 6, "codec_name": "ttf", "codec_type": "attachment", "tags": {"filename": "font.ttf"}}
+  ],
+  "chapters": [
+    {"id": 0, "time_base": "1/1000", "start": 0, "end": 300000, "tags": {"title": "Chapter 1"}},
+    {"id": 1, "time_base": "1/1000", "start": 300000, "end": 600000, "tags": {"title": "Chapter 2"}}
+  ],
+  "format": {
+    "filename": "movie.mkv", "nb_streams": 7, "format_name": "matroska,webm",
+    "duration": "7694.000000", "size": "56000000000",
+    "tags": {"encoder": "libebml v1.4.2 + libmatroska v1.6.4"}
+  }
+}

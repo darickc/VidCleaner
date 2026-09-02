@@ -1,0 +1,13 @@
+{
+  "_comment": "A TS-derived rip whose audio stream starts at +1.4s. This is the offset stt applies and render undoes -- the ONE CLOCK case.",
+  "streams": [
+    {"index": 0, "codec_name": "h264", "codec_type": "video", "width": 1280, "height": 720,
+     "start_time": "1.400000", "disposition": {"default": 1}},
+    {"index": 1, "codec_name": "ac3", "codec_type": "audio", "channels": 6, "sample_rate": "48000",
+     "bit_rate": "448000", "start_time": "1.400000", "disposition": {"default": 1},
+     "tags": {"language": "eng"}}
+  ],
+  "chapters": [],
+  "format": {"filename": "ts.mkv", "format_name": "matroska,webm", "duration": "1800.000000",
+             "size": "2000000000", "tags": {}}
+}

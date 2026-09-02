@@ -1,0 +1,26 @@
+{
+  "_comment": "AAC in Matroska reports no stream.bit_rate; mkvmerge's BPS tag is the fallback. Also: no default audio disposition, so source selection falls through to preferred_language.",
+  "streams": [
+    {
+      "index": 0, "codec_name": "h264", "codec_type": "video", "width": 1920, "height": 1080,
+      "start_time": "0.000000", "disposition": {"default": 1}
+    },
+    {
+      "index": 1, "codec_name": "aac", "codec_type": "audio", "profile": "LC", "channels": 2,
+      "channel_layout": "stereo", "sample_rate": "48000", "start_time": "0.000000",
+      "disposition": {"default": 0, "forced": 0},
+      "tags": {"language": "jpn", "BPS-eng": "192000", "NUMBER_OF_BYTES-eng": "144000000"}
+    },
+    {
+      "index": 2, "codec_name": "aac", "codec_type": "audio", "profile": "LC", "channels": 2,
+      "channel_layout": "stereo", "sample_rate": "48000", "start_time": "0.000000",
+      "disposition": {"default": 0, "forced": 0},
+      "tags": {"language": "eng", "NUMBER_OF_BYTES": "144000000", "DURATION": "00:24:00.000000000"}
+    }
+  ],
+  "chapters": [],
+  "format": {
+    "filename": "episode.mkv", "format_name": "matroska,webm",
+    "duration": "1440.000000", "size": "600000000", "tags": {}
+  }
+}
