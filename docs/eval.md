@@ -101,6 +101,55 @@ windowed remains the default and why full is reserved for files that have no usa
 **`base` is not good enough for full mode** (recall 0.33). It remains fine for the drift probe,
 where all that is needed is enough words to align against.
 
+## The M2 demo: a 56-minute episode with its subtitles removed
+
+§11 asks for "a movie with no subs processed overnight; timing error report". Run on
+PLURIBUS S01E01 with every subtitle stream stripped, so the pipeline had nothing but audio.
+
+It auto-promoted to a full pass (`mode=full`, `reason=no_subtitles`) and transcribed
+**3,236 words in 560 segments** with `medium` — note the segment count, since the
+pre-M2 alignment would have collapsed all 3,236 words into one segment. Transcription took
+**19.6 minutes for 56.5 minutes of audio, about 2.9× realtime** on 14 threads, comfortably
+faster than §3's 1.5–2× estimate.
+
+| | windowed (M1, with subtitles) | full (M2, subtitles removed) |
+|---|---|---|
+| detections | 49 | **40** |
+| muted | 36.1 s over 43 ranges | **26.3 s over 37 ranges** |
+| flagged suspicious | 10 | **1** |
+| words | fuck 19, god 12, shit 8, goddamn 3, bullshit 3, jesus 2, christ 1, god damn 1 | fuck 15, god 10, shit 7, bullshit 2, goddamn 2, jesus 2, christ 1, god damn 1 |
+
+Full mode recovers **82% of the windowed detections with no subtitles at all**, and mutes
+**10 seconds less** doing it — because the windowed run's ten subtitle-only fallbacks each
+smear 1.2–1.9 s across a word that is nearer 0.3 s, while every full-mode range is located by
+STT.
+
+### Timing error report
+
+Comparing the 27 detections both runs found:
+
+| compared against | median | mean | max |
+|---|---|---|---|
+| all matched detections | **+0.009 s** | +0.083 s | 0.74 s |
+| windowed `source=both` rows (subtitle + STT agreeing) | **+0.004 s** | +0.033 s | — |
+| windowed `source=subtitle` fallbacks | **+0.551 s** | +0.551 s | — |
+
+Where both modes locate a word by speech recognition they agree to within about 9 ms. Where the
+windowed run had to fall back to a subtitle's proportional span, the two disagree by more than
+half a second — and it is the *fallback* that is wrong. That is the quantitative version of a
+claim M1 could only assert.
+
+### What each mode found that the other missed
+
+Full mode missed 22 windowed detections and found 13 the windowed run did not. The two dense
+shouting sequences at 1777–1792 s and 1834–1843 s split cleanly: full mode caught the first,
+windowed caught the second. This is the strongest argument for §6's audit pass — the union is
+better than either alone.
+
+Three of the 13 full-only detections carry a confidence below 0.01, which is almost certainly
+recognition noise rather than speech. **A confidence floor for `source="stt"` detections is
+worth considering**, and the harness can now measure whether one helps.
+
 ## Known gaps
 
 * No labels are verified, so no timing numbers. This is the single most valuable next step, and

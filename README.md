@@ -14,7 +14,8 @@ and Jellyfin are refreshed afterwards.
 
 ## Status
 
-Milestone **M1 — core clean via CLI** is complete. The pipeline runs end to end on a real file:
+Milestones **M1 — core clean via CLI** and **M2 — full-file STT, drift and evaluation** are
+complete. The pipeline runs end to end on a real file:
 
 ```bash
 cd backend
@@ -27,6 +28,16 @@ first and default audio track is the muted "Clean" track, with the untouched ori
 "Original", English subtitles redacted, and chapters, attachments and every other stream copied
 through. Both record the run in the database. `uv run vidcleaner words` shows the built-in word
 lists and runs the false-positive gate over them.
+
+Subtitles are used to narrow which parts of the audio need speech recognition, which is what
+makes CPU-only STT practical — about 5% of an episode's runtime on the test media. Before they
+are trusted, a **drift check** samples three cues across the file and measures how far they sit
+from the audio, so a subtitle track authored for another frame rate or another cut cannot mute
+the wrong second. A file with **no usable subtitles** falls back to transcribing the whole thing
+(`--stt-mode full`, or automatically), guarded by `stt_full_max_hours` so a long film cannot
+occupy the worker all night.
+
+Detection quality is measured rather than asserted: see [docs/eval.md](docs/eval.md).
 
 There is no automation yet — no job queue, no Sonarr/Radarr integration, and the review UI is
 still a shell. Those are M3 and M4.

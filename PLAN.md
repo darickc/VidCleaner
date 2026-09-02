@@ -200,7 +200,7 @@ VidCleaner/
 
 - [x] **M0 — Skeleton & plan in repo**: copy this plan to `PLAN.md`, `CLAUDE.md`, `git init`, backend/frontend scaffolds, Dockerfile builds, `/api/health`, SQLite + Alembic baseline, settings load/save, api+worker entrypoint. *Demo: container runs on unraid, UI shell loads.*
 - [x] **M1 — Core clean via CLI**: word lists + matcher (tests), probe/extract/subtitles/windowed STT (faster-whisper + whisperX)/detect/render/verify on a local file; `vidcleaner clean <file> --dry-run|--out`; codec policy; subtitle redaction. *Demo: before/after MKV with Clean/Original tracks plays in Infuse; word counts printed.*
-- [ ] **M2 — Full-file STT + drift + robustness**: full mode with VAD, drift check, censored-token handling, suspicious guards, resumable stage markers, eval set with precision/recall in `docs/eval.md`. *Demo: movie with no subs processed overnight; timing error report.*
+- [x] **M2 — Full-file STT + drift + robustness**: full mode (**VAD removed — see the Decision Log; it was inert in windowed mode and cost 5.5x the recall in full mode**), drift check, censored-token handling, suspicious guards, resumable stage markers, eval set with precision/recall in `docs/eval.md`. *Demo: movie with no subs processed overnight; timing error report.*
 - [ ] **M3 — Worker, swap, integrations**: job queue/claiming, backup/swap/rollback, Sonarr/Radarr clients + sync + backfill, webhook receivers with dedupe/upgrade handling, arr rescan + Jellyfin refresh + mapping check. *Demo: enable a series → existing episodes cleaned; Sonarr imports a new episode → auto-cleaned → Jellyfin shows Clean default.*
 - [ ] **M4 — UI**: Queue, Library (toggle/profile), Title, Item (counts, detections, snippet players, whitelist + reprocess, restore original), Settings with Test buttons and webhook setup. *Demo: mark a false positive, reprocess, word audible again.*
 - [ ] **M5 — Profiles, audit pass, retention, hardening**: Words & Profiles page, per-title override, audit jobs, backup retention/purge, disk guards, stale-path handling, PUID/PGID, unraid template, README, thread/model tuning. *Demo: fresh unraid install from template to first cleaned episode in < 15 min of setup.*
@@ -852,6 +852,49 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   recorded in `docs/eval.md`: the labels were seeded from a *windowed* run, so they under-count
   what a full pass hears and some "false positives" are probably real words missing from the
   labels.
+
+- 2026-09-02 — **M2 COMPLETE. Demo recorded.** §11 asks for "a movie with no subs processed
+  overnight; timing error report". Run on the real test episode, PLURIBUS S01E01, with **every
+  subtitle stream stripped**, so the pipeline had nothing but audio:
+
+  | stage | time |
+  |---|---|
+  | probe | 0.1 s |
+  | extract | 4.0 s |
+  | subtitles | 0.0 s (none present; drift skipped, `no_cues`) |
+  | transcribe | **1173.1 s** — auto-promoted to `full`, `medium`, 14 threads, **2.9× realtime** |
+  | detect | 0.0 s |
+
+  `mode=full`, `mode_reason=no_subtitles`: auto-promotion worked on a real 56-minute file.
+  **3,236 words in 560 segments** — the segment count matters, because the pre-M2 alignment
+  would have collapsed all 3,236 into one. 2.9× realtime is comfortably better than §3's
+  1.5–2× estimate for `medium`.
+
+  | | windowed (M1, with subs) | full (M2, subs removed) |
+  |---|---|---|
+  | detections | 49 | **40** |
+  | muted | 36.1 s / 43 ranges | **26.3 s / 37 ranges** |
+  | suspicious | 10 | **1** |
+
+  Full mode recovers **82% of the windowed detections with no subtitles at all**, and mutes
+  **10 s less** doing it: the windowed run's ten subtitle-only fallbacks each smear 1.2–1.9 s
+  across a ~0.3 s word, while every full-mode range is located by STT.
+
+  **Timing error report.** Over the 27 detections both runs found: median **+0.009 s**, mean
+  +0.083 s, max 0.74 s. Against windowed `source=both` rows (subtitle and STT agreeing) the
+  median is **+0.004 s**; against windowed `source=subtitle` fallbacks it is **+0.551 s** — and
+  it is the fallback that is wrong. That quantifies what M1 could only assert.
+
+  Full mode missed 22 windowed detections and found 13 the windowed run missed; the dense
+  shouting sequences at 1777–1792 s and 1834–1843 s split cleanly between the two modes. **That
+  is the strongest evidence yet for §6's audit pass**: the union beats either mode alone.
+
+  **Still owed:** (a) **no eval label has been verified by ear**, so `docs/eval.md` reports
+  presence but withholds timing error — this needs someone who can listen, and it is the single
+  most valuable next step; (b) three of the 13 full-only detections score confidence < 0.01,
+  which looks like recognition noise, so **a confidence floor for `source="stt"` detections**
+  is worth measuring (the harness can now answer it); (c) mute coverage tops out at 0.69, so a
+  padding sweep is the obvious follow-up.
 
 ## 15. Working agreement for future sessions
 
