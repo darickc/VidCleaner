@@ -274,24 +274,32 @@ class JoinedText:
 def join_tokens(tokens: Sequence[Token]) -> JoinedText:
     """Join ``norm`` values with exactly one space, recording offsets.
 
-    Exactly one space, never a newline: a newline would let the phrase separator
-    bridge a sentence boundary (the bug behind PLAN.md §7's ``[\\s\\-']+``), and
-    two spaces would make phrase matching behave differently here than in the
-    per-cue windowed path. Keeping them identical is what makes the M2 audit
-    pass comparable to the windowed pass.
+    Words are joined by exactly one space, so phrase matching behaves
+    identically here and in the per-cue windowed path -- the property that makes
+    the M2 audit pass comparable to a windowed run.
+
+    A punctuation-only token instead emits ``"\\n"``, which the phrase separator
+    excludes. Without that, ``"Oh my God. Damn."`` would join to ``"god damn"``
+    and match the phrase across a sentence boundary: the same defect as
+    PLAN.md §7's ``[\\s\\-']+``, arriving via punctuation rather than a line break.
     """
     parts: list[str] = []
     starts: list[int] = []
     ends: list[int] = []
     cursor = 0
+    pending_break = False
     for tok in tokens:
         if not tok.norm:
+            # Punctuation-only token: zero width, but it leaves a hard break so
+            # a phrase cannot span it.
             starts.append(cursor)
             ends.append(cursor)
+            pending_break = True
             continue
         if parts:
-            parts.append(" ")
+            parts.append("\n" if pending_break else " ")
             cursor += 1
+        pending_break = False
         starts.append(cursor)
         parts.append(tok.norm)
         cursor += len(tok.norm)

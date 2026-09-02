@@ -429,6 +429,39 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
 - 2026-09-01 — Confirmed the ONE CLOCK premise empirically: extracting a stream whose `start_time`
   is 0.5 s yields a WAV of exactly 10.000 s, not 10.5 s — ffmpeg drops the offset rather than
   padding. So `wav_time = container_time − start_time`, and `stt` adds it back exactly once.
+- 2026-09-01 — **M1 step 6 (detector) complete.** `pipeline/detect.py` is a pure function of
+  already-loaded values, so the whole detector is unit-testable with no ffmpeg, no torch and no
+  database. Verified: 912 passed.
+- 2026-09-01 — **§7's fuzzy timing selector must score against the entry's whole form table, not the
+  matched surface string.** `fuzz.ratio("fuck", "fucking")` is 72.7, below the ≥85 bar, so a
+  subtitle hit on `fuck` would silently lose its timing to Whisper's `fucking` and fall back to the
+  0.3-confidence proportional span. Every comparison target is already an authored form, so this
+  widens *timing* recall without widening the word list.
+- 2026-09-01 — Two orderings inside the detector are load-bearing and each has a regression test:
+  **censored tokens resolve before fuzzy matching** (`fuzz.ratio("f***","fuck")` is ~50, so a
+  fuzzy-first implementation loses the pairing), and **guards run before padding** (otherwise 200 ms
+  of padding tips a legitimate 2.9 s span over the 3 s limit and flags it for nothing).
+- 2026-09-01 — Extension to §7, at no cost: within the windows already transcribed, the matcher is
+  also run over the STT tokens themselves, emitting `source="stt"` detections. Whisper regularly
+  hears a word the subtitles sanitised (fan subs, or subs cut for TV) and the audio is already
+  transcribed. Deduplication is by time overlap **plus a related canonical** — overlap alone would
+  let a wide subtitle fallback span swallow a different word spoken beside it, while canonical-only
+  matching let a partially located `god damn` phrase double-count as a bare `god`.
+- 2026-09-01 — **A punctuation-only token now emits a hard break in the joined transcript.** Words
+  join with a single space, but `join_tokens` puts `"\n"` where punctuation was, because the phrase
+  separator excludes it. Without that, `"Oh my God. Damn."` joined to `"god damn"` and matched the
+  phrase across a sentence boundary — the same defect as §7's `[\s\-']+`, arriving via punctuation
+  rather than a line break.
+- 2026-09-01 — **One STT token supplies timing for at most one subtitle hit.** Two hits in the same
+  cue ("Bull. Shit.") otherwise both claimed the nearest token, leaving the second word unmuted and
+  producing a spurious STT-only duplicate.
+- 2026-09-01 — Whitelisted words are marked `whitelisted=1, muted=0` by the detector, since
+  `find_hits` deliberately does not consult the whitelist (§5's rollup needs the rows to exist).
+  `Matcher.is_suppressed(canonical, context)` exists for callers holding a serialized
+  `SubtitleHit` rather than a live `Match`.
+- 2026-09-01 — A masked token is only named when the revealed letters pin it down: `f***` stays
+  `<censored>` (it fits fuck, fag and faggot) while `f**k` and `b*tch` resolve uniquely. §7 mutes
+  either way at 0.6 confidence — the mask itself is unambiguous evidence that something was censored.
 
 ## 15. Working agreement for future sessions
 

@@ -198,12 +198,21 @@ class Matcher:
 
     def suppressed(self, match: Match, context: str = "") -> bool:
         """True when the whitelist suppresses this hit in the current scope."""
-        if match.canonical in self._suppress_all:
+        return self.is_suppressed(match.canonical, context or match.raw)
+
+    def is_suppressed(self, canonical: str, context: str = "") -> bool:
+        """Whitelist check by canonical, for callers holding no :class:`Match`.
+
+        The detector needs this: subtitle hits arrive as serialized
+        ``SubtitleHit`` records rather than live matches, and whitelisted words
+        are deliberately still *matched* so §5's rollup can show and undo them.
+        """
+        if canonical in self._suppress_all:
             return True
-        needles = self._suppress_ctx.get(match.canonical)
+        needles = self._suppress_ctx.get(canonical)
         if not needles:
             return False
-        haystack = fold(context or match.raw)
+        haystack = fold(context)
         return any(n in haystack for n in needles)
 
 

@@ -166,12 +166,22 @@ def test_join_uses_single_spaces_and_no_newline():
     assert "\n" not in j.text
 
 
-def test_punctuation_only_token_does_not_shift_indices():
+def test_punctuation_only_token_becomes_a_hard_break():
+    """Otherwise "Oh my God. Damn." joins to "god damn" and matches the phrase.
+
+    That is the same defect as PLAN.md §7's `[\\s\\-']+` phrase separator, arriving
+    via punctuation instead of a line break.
+    """
     toks = _toks(["god", "...", "damn"])
     j = join_tokens(toks)
-    assert j.text == "god damn"
-    assert j.starts[1] == j.ends[1]
+    assert j.text == "god\ndamn"
+    assert j.starts[1] == j.ends[1], "the punctuation token stays zero width"
     assert j.text[j.starts[2] : j.ends[2]] == "damn"
+
+
+def test_words_without_punctuation_are_joined_by_a_space():
+    j = join_tokens(_toks(["god", "damn"]))
+    assert j.text == "god damn"
 
 
 def test_span_to_tokens_single_word():
