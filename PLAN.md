@@ -380,6 +380,29 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   (ffmpeg refuses text-to-bitmap subtitle transcoding, so PGS/VobSub cannot be synthesized without
   committing binary media). Audio is a steady 1 kHz sine so that "silent inside the range, unchanged
   outside" is unambiguous.
+- 2026-09-01 — **M1 step 4 (codec policy + graph builder) complete.** Adds `pipeline/codecs.py` and
+  `pipeline/graph.py` (the latter beyond §4's list), both pure functions with golden tests and no
+  ffmpeg dependency, plus an integration tier that feeds the generated graphs to a real ffmpeg.
+  Verified: 781 passed.
+- 2026-09-01 — **AC-3 stereo deviates from §3's flat 640k.** §3 says "AC3→`ac3 640k`", which for a
+  two-hour *stereo* track is 576 MB against 173 MB at 192k for no audible gain — and this file is
+  added to every episode in the library. Stereo AC-3 now tracks the source bitrate with a 192k floor
+  and a 640k ceiling; **3+ channels keep 640k exactly as §3 specifies.**
+- 2026-09-01 — Mute ranges are chunked across chained `volume` filters at 90 terms each, with an
+  outer `if(between(t,chunk_start,chunk_end),…,0)` guard so that outside a chunk's own span ffmpeg
+  evaluates one `between` rather than ninety. Chaining was chosen over parenthesised grouping inside
+  a single expression: no depth arithmetic, and each filter simply multiplies the gain by 0 or 1.
+  Verified against real ffmpeg at 0/1/89/90/91/200/1000/1999 ranges (1999 ranges = 23 chunks, 50 KB
+  of graph text).
+- 2026-09-01 — Graph times are fixed-point milliseconds, **rounded outward** (start down, end up), so
+  quantization can only lengthen a mute and never leak a syllable; and never scientific notation,
+  which ffmpeg's expression parser would not accept. A `MAX_RANGES = 2000` guard raises rather than
+  emitting a pathological graph — that many ranges is a detector fault, not a very profane film.
+- 2026-09-01 — Two bugs found by the tests rather than by review, both in `pipeline/ffmpeg.py`:
+  `FFmpegError` assigned `self.args`, which is a `BaseException` slot, replacing the tuple `str(exc)`
+  is derived from and discarding the formatted message (renamed to `argv`); and `run()` drained
+  stdout inline, which blocks until EOF and made `process.wait(timeout=...)` unreachable, so a hung
+  ffmpeg would never have been killed (stdout now has its own pump thread).
 
 ## 15. Working agreement for future sessions
 
