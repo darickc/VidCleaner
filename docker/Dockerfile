@@ -47,15 +47,18 @@ WORKDIR /app
 
 # Dependencies first so code edits do not invalidate the layer.
 COPY backend/pyproject.toml backend/uv.lock ./
+# --extra stt pulls faster-whisper and whisperX. torch comes from the PyTorch
+# CPU index (pinned in pyproject.toml), so this does NOT drag the nvidia-*-cu12
+# wheel set -- which would add roughly 2.5 GB to an image targeting ~3 GB.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --extra stt --no-install-project
 
 COPY backend/ /app/
 COPY --from=frontend /build/dist /app/static
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra stt
 
 VOLUME ["/config", "/media", "/backups", "/work"]
 EXPOSE 8585

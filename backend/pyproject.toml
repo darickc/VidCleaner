@@ -18,13 +18,34 @@ dependencies = [
     "cryptography>=44.0",
 ]
 
-# Speech-to-text stack. Not installed by default: it pulls torch (~2 GB) and is
-# unused until M1. Install with `uv sync --extra stt`.
+# Speech-to-text stack. Not installed by default: it pulls torch (~2 GB).
+# Install with `uv sync --extra stt`.
 [project.optional-dependencies]
 stt = [
     "faster-whisper>=1.1",
     "whisperx>=3.3",
+    # torch/torchaudio arrive transitively via whisperx, but `[tool.uv.sources]`
+    # only applies to *direct* dependencies -- so they are named here in order
+    # to pin the CPU wheel index below.
+    "torch>=2.4",
+    "torchaudio>=2.4",
 ]
+
+# PLAN.md §10 requires CPU-only torch. Resolved from PyPI, torch drags the whole
+# nvidia-*-cu12 wheel set on amd64 Linux -- roughly +2.5 GB in an image whose
+# target is ~3 GB total -- for a design that never touches CUDA.
+#
+# The marker matters: the PyTorch CPU index carries no macOS wheels, so pinning
+# it unconditionally would make the lock unresolvable on an arm64 Mac. macOS
+# builds have no CUDA variant to avoid anyway.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchaudio = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [project.scripts]
 vidcleaner = "vidcleaner.cli:main"

@@ -45,8 +45,11 @@ cd frontend && npm test
 ```
 
 With no container mounts present, the backend writes to `.local/` in the repo root and serves
-the SPA from `frontend/dist` once you have run `npm run build`. `ffmpeg` is not needed for M0;
-`brew install ffmpeg` when you start on M1.
+the SPA from `frontend/dist` once you have run `npm run build`. **`ffmpeg` >= 7.0 must be on
+PATH** (`brew install ffmpeg`) -- the pipeline and the integration tests both need it. The
+speech-to-text stack is an optional extra: `uv sync --extra stt` (faster-whisper + whisperX,
+CPU-only torch). Without it everything except the `transcribe` stage still runs, and the
+integration tests that need speech recognition skip themselves.
 
 ## Container
 

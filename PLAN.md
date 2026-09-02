@@ -499,6 +499,36 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   really this check — catches it.
 - 2026-09-01 — The §4 idempotency loop is closed and tested: re-probing our own output with the same
   profile hash reports `already_clean`.
+- 2026-09-01 — **M1 step 8 (STT) complete.** Adds `pipeline/stt.py` (protocol, `ScriptedTranscriber`,
+  the stage) and `pipeline/whisper_backend.py` (real faster-whisper + whisperX, every heavy import
+  inside a function). Verified: 1041 passed, and a real windowed transcription ran end to end on a
+  60 s clip cut from the M1 test episode.
+- 2026-09-01 — **§10's CPU-only torch is now actually enforced, and it needed more than an index
+  pin.** `[tool.uv.sources]` only applies to *direct* dependencies, but torch arrives transitively
+  via whisperX, so `torch`/`torchaudio` are named explicitly in the `stt` extra and pinned to
+  `https://download.pytorch.org/whl/cpu` with `marker = "sys_platform == 'linux'"` (that index
+  carries no macOS wheels, and macOS has no CUDA build to avoid). Result: the lock went from **34
+  `nvidia-*-cu12` packages to zero**, and `torchvision`/`torchcodec` dropped out too. Linux resolves
+  `torch 2.14.0+cpu`; macOS resolves from PyPI. The relock also moved whisperX 3.8.6 → 3.7.2 to
+  satisfy the constraint. The Dockerfile now passes `--extra stt` on both `uv sync` lines.
+- 2026-09-01 — `ScriptedTranscriber` ships in production code, not in `tests/`: it backs
+  `--transcript foo.json` (re-run detect and render without repeating a 40-minute STT pass) and it
+  is what lets the whole integration tier exercise the pipeline with no torch installed. It filters
+  by window rather than ignoring windows, so the windowing logic stays exercised.
+- 2026-09-01 — whisperX alignment is **optional at runtime**. If the import fails or its API has
+  moved, the faster-whisper timings are kept with `aligned=False` and the detector's guards absorb
+  the extra slop — losing timing accuracy is much better than failing the job. A test simulates the
+  missing import and asserts the degradation.
+- 2026-09-01 — §3's VAD claim is confirmed by test: with `vad_filter=True`, a pure 1 kHz tone
+  produces **zero** words, so Silero VAD does suppress the hallucination Whisper otherwise emits on
+  non-speech. `Transcript.dropped_out_of_window` guards `clip_timestamps`, whose semantics have
+  shifted between faster-whisper releases; it is asserted to be 0.
+- 2026-09-01 — **Real-media STT results (60 s clip, 8 subtitle hits, 2 windows / 29 s).**
+  `base`: 20 words, 5 exact pairings, 4 suspicious. `large-v3-turbo` (the shipped default):
+  27 words, 6 exact pairings, only 2 suspicious, and it additionally caught a `fuck` the subtitles
+  had omitted. Both runs exercised the guards for real — whisperX returned one 4.1 s span for a
+  single word, which the >3 s guard rejected in favour of the subtitle span exactly as §7 intends.
+  This is the concrete evidence that the guards are load-bearing, not decorative.
 
 ## 15. Working agreement for future sessions
 
