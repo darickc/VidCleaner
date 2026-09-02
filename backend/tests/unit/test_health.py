@@ -6,6 +6,19 @@ from fastapi.testclient import TestClient
 
 from vidcleaner import __version__
 from vidcleaner.api import health as health_module
+from vidcleaner.db.migrate import alembic_config
+
+
+def current_head() -> str:
+    """The head revision, read from Alembic rather than hardcoded.
+
+    A literal "0001" here made every future migration break an unrelated test.
+    """
+    from alembic.script import ScriptDirectory
+
+    head = ScriptDirectory.from_config(alembic_config()).get_current_head()
+    assert head is not None
+    return head
 
 
 def test_health_reports_database_and_disk(client: TestClient) -> None:
@@ -16,7 +29,7 @@ def test_health_reports_database_and_disk(client: TestClient) -> None:
     assert body["version"] == __version__
     assert body["role"] == "all"
     assert body["database"]["ok"] is True
-    assert body["database"]["revision"] == "0001"
+    assert body["database"]["revision"] == current_head()
     assert set(body["disk"]) == {"config", "media", "backups", "work"}
     assert body["disk"]["work"]["free_bytes"] > 0
 

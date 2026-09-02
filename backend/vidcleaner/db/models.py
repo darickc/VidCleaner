@@ -24,6 +24,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -122,12 +123,34 @@ class MediaItem(Base):
 
 
 class Job(Base):
-    """A unit of pipeline work. This table doubles as the queue (§4)."""
+    """A unit of pipeline work. This table doubles as the queue (§4).
+
+    Two column semantics PLAN.md leaves undefined and which the worker depends on:
+
+    * ``priority`` -- **lower runs sooner**. §4 claims with
+      ``ORDER BY priority, created_at``, so §8's "backfill priority below webhook
+      jobs" is a *higher* number. See ``db.constants.DEFAULT_PRIORITY``.
+    * ``attempts`` -- **how many times this job has been claimed**, not how many
+      times it failed. Counting failures loses crashes, so a worker killed
+      mid-render would never burn an attempt and a poison job would loop forever.
+    """
 
     __tablename__ = "jobs"
     __table_args__ = (
         Index("ix_jobs_claim", "state", "priority", "created_at"),
         Index("ix_jobs_media_item_id", "media_item_id"),
+        Index("ix_jobs_retry_at", "retry_at"),
+        # One live job per media item, enforced by the database because the api and
+        # the worker enqueue from separate processes: a SELECT-then-INSERT check
+        # cannot be atomic across them.
+        Index(
+            "ux_jobs_one_active_per_item",
+            "media_item_id",
+            unique=True,
+            sqlite_where=text(
+                "state NOT IN ('done', 'failed', 'already_clean', 'stale', 'cancelled')"
+            ),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -140,6 +163,11 @@ class Job(Base):
     claimed_by: Mapped[str | None] = mapped_column(String(64))
     heartbeat: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """Not claimable before this. §6 asks for "retry with backoff", which cannot
+    survive a restart without somewhere to write the schedule."""
+    force: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    """Ignore stage markers and the ``already_clean`` tag (§4's "unless forced")."""
     work_dir: Mapped[str | None] = mapped_column(Text)
     source_fingerprint: Mapped[str | None] = mapped_column(String(64))
     stt_mode: Mapped[str | None] = mapped_column(String(16))

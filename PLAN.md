@@ -936,6 +936,64 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   range, rather than the median of each column separately — so every figure in a row comes from
   one real execution instead of a combination that never happened.
 
+- 2026-09-02 — **M3 step 1 (queue schema and constants) complete.** Migration `0002`, plus
+  `STAGE_TO_STATE`, `DEFAULT_PRIORITY`, `TERMINAL_STATES`/`RUNNING_STATES` and a `cancelled`
+  state in `db/constants.py`, and `utcnow`/`immediate_connection` in `db/session.py`.
+  Verified: 1102 passed.
+- 2026-09-02 — **§6's "transient API failures retry with backoff" had nowhere to live.** §5's
+  `jobs` has no scheduling column, so a requeued job is claimable immediately and the worker
+  hot-loops on it until `attempts` runs out — turning a 60-second backoff into a spin.
+  `jobs.retry_at` added, with `ix_jobs_retry_at` and a claim predicate. Also **`jobs.force`**:
+  §4 requires "unless forced" and §9.3 offers "reprocess all", and deriving that from `trigger`
+  would conflate two independent things.
+- 2026-09-02 — **`jobs.priority`'s direction was undefined and is a classic silent inversion.**
+  §4 claims with `ORDER BY priority, created_at`, so *lower runs sooner* and §8's "backfill
+  priority below webhook jobs" means a **higher** number. Pinned in `DEFAULT_PRIORITY` as
+  `manual/reprocess 50, webhook 100, backfill 200, audit 900`, and a test asserts that the
+  column's existing default of 100 is the webhook value — so the numbers cannot drift apart
+  from the column they configure.
+- 2026-09-02 — **`attempts` means "how many times this job has been claimed", not "how many
+  times it failed"**, and the docstring now says so. Counting failures loses crashes: a worker
+  killed mid-render would never burn an attempt, so a job that reliably kills the worker would
+  loop forever. The consequence is that `persist_run`, which increments at the *end* of a run,
+  must not double-count on the worker path (step 3).
+- 2026-09-02 — **`JOB_STATES` gains `cancelled`.** §6.0 requires an upgrade to "supersede any
+  running job" and §9.1 puts a cancel button on the Queue page, but there was no state to put
+  such a job in. No migration needed — `db/constants.py` already records that states are TEXT
+  precisely so adding a value never requires one.
+- 2026-09-02 — **`STAGE_TO_STATE` lives in `db/constants.py`, not the worker.** M4's API needs
+  to render it without importing the worker, and the two vocabularies are asymmetric in both
+  directions: stage `transcribe` → state `transcribing` and `detect` → `detecting`, while
+  `subtitles` and `snippets` are spelled the same. A test asserts it covers `JOB_STAGES` exactly
+  and that every value is a real `JOB_STATE`.
+- 2026-09-02 — **One live job per media item is enforced by the database, not by a query.**
+  The api (webhooks, backfill) and the worker (audit passes) enqueue from separate processes, so
+  a `SELECT`-then-`INSERT` guard cannot be atomic across them. `ux_jobs_one_active_per_item` is
+  a partial unique index on `media_item_id` where the state is non-terminal; the terminal list
+  is written out as a literal in the migration rather than imported from `db.constants`, because
+  a migration must describe the schema *as of that revision* and would otherwise change meaning
+  the next time someone edits `TERMINAL_STATES`.
+- 2026-09-02 — **`BEGIN IMMEDIATE` is required for the claim, and `busy_timeout` cannot
+  substitute.** Under WAL, a `SELECT`-then-`UPDATE` upgrade fails with `SQLITE_BUSY_SNAPSHOT`
+  *immediately*: SQLite does not invoke the busy handler for snapshot conflicts. `BEGIN
+  IMMEDIATE` takes the write lock before the read, and `busy_timeout` **does** cover that —
+  measured, a contending transaction blocks for the timeout and then raises "database is
+  locked", which `claim_next` will report as "no work". `immediate_connection` is deliberately
+  scoped to the two read-then-write operations rather than installed as a global `begin` event:
+  emitting it for every transaction would make the api's read-only queries take the write lock,
+  which is the one thing WAL exists to prevent.
+- 2026-09-02 — **`DateTime(timezone=True)` is a no-op on SQLite**, so an aware datetime
+  round-trips as a **naive** one and `datetime.now(UTC) - job.heartbeat` raises `TypeError`.
+  Every value the queue compares against a column now comes from `db.session.utcnow()` (naive
+  UTC). A test writes one row via `func.now()` (19 characters) and one from Python (26) and
+  asserts both compare correctly in SQL *and* in Python. Nothing had hit this because the CLI
+  never compared two timestamps — M1 and M2 only ever wrote them.
+- 2026-09-02 — `tests/unit/test_health.py` hardcoded revision `"0001"`, so the first migration
+  after the baseline would have broken a test about the health endpoint. It now reads the head
+  from Alembic's own `ScriptDirectory`. A companion test asserts every model index exists in the
+  migrated database, since column drift was already guarded but index drift was not — and a
+  half-landed `0002` would show up as a missing unique index rather than as an error.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
