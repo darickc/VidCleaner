@@ -42,7 +42,13 @@ from pathlib import Path
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 LABELS_DIR = Path(__file__).resolve().parents[1] / "tests" / "eval" / "labels"
+#: Where the clips you verify by hand are written. Deliberately **not** under
+#: `.local/`: those files are opened in Audacity's file dialog, and a hidden
+#: directory is not reachable from a GUI file picker. Gitignored -- it holds
+#: audio cut from copyrighted media.
+VERIFY_DIR = REPO_ROOT / "eval-clips"
 #: A detection matches a label when the canonical agrees and the spans are within
 #: this of each other. Deliberately loose: it asks "did we find the word", which
 #: is the precision/recall question. Timing error is reported separately, exactly.
@@ -461,7 +467,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--labels", type=Path, default=LABELS_DIR)
     parser.add_argument("--models", default="large-v3-turbo")
     parser.add_argument("--modes", default="windowed")
-    parser.add_argument("--work-dir", type=Path, default=Path(".local/eval"))
+    parser.add_argument(
+        "--work-dir",
+        type=Path,
+        default=Path(".local/eval"),
+        help="scratch for cut clips and pipeline work dirs (machine-facing)",
+    )
+    parser.add_argument(
+        "--dest",
+        type=Path,
+        default=VERIFY_DIR,
+        help=f"where verify/export-audacity put files you open by hand (default {VERIFY_DIR})",
+    )
     parser.add_argument("--out", type=Path, help="markdown file to update in place")
     parser.add_argument(
         "--allow-unverified-timing",
@@ -544,7 +561,7 @@ def _verification_command(label_sets: list[LabelSet], args) -> int:
                 file=sys.stderr,
             )
             continue
-        target = args.work_dir / "verify" / label_set.name
+        target = args.dest / label_set.name
 
         if args.command == "verify":
             updated = verify_labels(label_set, media, target)
@@ -857,8 +874,12 @@ def export_audacity(label_set: LabelSet, media: Path, dest: Path) -> list[Path]:
     File > Export > Export Labels over the same .txt, then run ``import-audacity``.
     Boundaries are far easier to place by eye on a waveform than by ear alone.
     """
+    import logging
+
     from vidcleaner.pipeline.ffmpeg import FFmpegRunner
 
+    # A debug line per snippet buries the path the person actually needs.
+    logging.disable(logging.INFO)
     dest.mkdir(parents=True, exist_ok=True)
     runner = FFmpegRunner(log_path=dest / "ffmpeg.log")
     written = []

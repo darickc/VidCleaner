@@ -185,9 +185,10 @@ Boundaries are much easier to place by eye on a waveform than by ear, so for the
 cd backend && uv run python -m scripts.eval export-audacity --media-dir ../video
 ```
 
-That writes a `.wav` and a matching `.txt` per clip into
-`backend/.local/eval/verify/<name>/` — a **hidden** directory, so the command prints the
-absolute path and an `open` line to reveal it. (`--work-dir` puts them somewhere else.)
+That writes a `.wav` and a matching `.txt` per clip into **`eval-clips/<name>/`** at the repo
+root. Deliberately not under `.local/`: these files get opened from Audacity's file dialog, and
+a hidden directory is not reachable from a GUI file picker. It is gitignored, since it holds
+audio cut from the media. `--dest` puts them elsewhere.
 
 In Audacity: open `c1.wav`, then
 **File > Import > Labels** for `c1.txt`; the labels appear as a track under the waveform and the

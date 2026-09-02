@@ -16,6 +16,9 @@ backend/static/
 # Local test media (real library files; large and not ours to distribute)
 video/
 
+# Clips cut for hand-verifying eval labels (audio from the media above)
+eval-clips/
+
 # Local runtime data (container mounts these; dev falls back to ./.local)
 .local/
 *.db
