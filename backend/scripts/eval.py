@@ -528,6 +528,12 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _shell_quote(text: str) -> str:
+    import shlex
+
+    return shlex.quote(text)
+
+
 def _verification_command(label_sets: list[LabelSet], args) -> int:
     """The half of §12 that needs a human: confirming word boundaries by ear."""
     for label_set in label_sets:
@@ -544,11 +550,18 @@ def _verification_command(label_sets: list[LabelSet], args) -> int:
             updated = verify_labels(label_set, media, target)
         elif args.command == "export-audacity":
             written = export_audacity(label_set, media, target)
-            print(f"wrote {len(written)} files to {target}")
+            # Absolute, because the default work dir is a *hidden* directory and
+            # a relative path in a message is not something anyone can act on.
+            where = target.resolve()
+            print(f"wrote {len(written)} files to:\n\n    {where}\n")
+            for clip in label_set.clips:
+                print(f"    {clip.id}.wav  +  {clip.id}.txt   ({len(clip.labels)} labels)")
             print(
-                "Open each .wav in Audacity, File > Import > Labels for the matching .txt, "
-                "drag the boundaries against the waveform, then File > Export > Export Labels "
-                "back over the same .txt and run `import-audacity`."
+                f"\nReveal them with:\n\n    open {_shell_quote(str(where))}\n\n"
+                "In Audacity: open cN.wav, then File > Import > Labels for the matching "
+                "cN.txt. Drag the boundaries against the waveform, then File > Export > "
+                "Export Labels back over the same cN.txt and run:\n\n"
+                "    uv run python -m scripts.eval import-audacity"
             )
             continue
         else:

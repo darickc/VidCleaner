@@ -185,7 +185,11 @@ Boundaries are much easier to place by eye on a waveform than by ear, so for the
 cd backend && uv run python -m scripts.eval export-audacity --media-dir ../video
 ```
 
-That writes a `.wav` and a matching `.txt` per clip. In Audacity: open `c1.wav`, then
+That writes a `.wav` and a matching `.txt` per clip into
+`backend/.local/eval/verify/<name>/` — a **hidden** directory, so the command prints the
+absolute path and an `open` line to reveal it. (`--work-dir` puts them somewhere else.)
+
+In Audacity: open `c1.wav`, then
 **File > Import > Labels** for `c1.txt`; the labels appear as a track under the waveform and the
 boundaries drag directly. When done, **File > Export > Export Labels** back over the same
 `c1.txt`, then:
