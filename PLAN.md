@@ -896,6 +896,19 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   is worth measuring (the harness can now answer it); (c) mute coverage tops out at 0.69, so a
   padding sweep is the obvious follow-up.
 
+- 2026-09-02 — **Label verification tooling added**, closing the "still owed" item from the M2
+  demo. `scripts/eval.py` gains three commands: `verify` (plays each unverified label's exact
+  span through `afplay`/`ffplay` and takes 50 ms nudges, needing no extra software),
+  `export-audacity` and `import-audacity` (a `.wav` plus a three-column Audacity label track per
+  clip — boundaries are far easier to place by eye on a waveform than by ear, and Audacity's
+  format is three tab-separated fields, so any editor that reads it works). Both routes rewrite
+  the YAML in place and set `verified: true`; `run` starts reporting real timing error once the
+  set is complete. The Audacity track is in *clip* time and the label file in *episode* time, so
+  the importer converts — a test pins that, since getting it wrong would move every verified
+  boundary by the clip offset, silently, in the one file that is supposed to be ground truth.
+  A round-trip test also asserts the emitter loses no label, category or clip and preserves the
+  header, because a verification session must not corrupt the set it is improving.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

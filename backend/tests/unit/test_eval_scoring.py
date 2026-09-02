@@ -261,3 +261,73 @@ def test_unverified_labels_are_reported_as_such():
             break
     else:
         pytest.skip("every committed label has been verified")
+
+
+# ---------------------------------------------------- verification round trip
+
+
+def test_the_yaml_emitter_round_trips_the_committed_set(tmp_path):
+    """A save must never quietly lose a label, a category or a clip.
+
+    ``verify`` and ``import-audacity`` both rewrite the file in place, so this is
+    the guard that stops a verification session corrupting the label set it was
+    meant to improve.
+    """
+    from scripts.eval import _emit_yaml, _header_of
+
+    original = load_all()[0]
+    path = tmp_path / "out.yaml"
+    path.write_text(_emit_yaml(original, _header_of(original.path)))
+    back = load_label_set(path)
+
+    assert [c.id for c in back.clips] == [c.id for c in original.clips]
+    assert len(back.all_labels) == len(original.all_labels)
+    for before, after in zip(original.clips, back.clips):
+        assert (before.start, before.end) == (after.start, after.end)
+        for a, b in zip(before.labels, after.labels):
+            assert (round(a.start, 2), round(a.end, 2), a.word, a.category) == (
+                b.start,
+                b.end,
+                b.word,
+                b.category,
+            )
+
+
+def test_the_emitter_preserves_the_header(tmp_path):
+    """The header carries the one-clock rule and the verification status."""
+    from scripts.eval import _emit_yaml, _header_of
+
+    label_set = load_all()[0]
+    out = _emit_yaml(label_set, _header_of(label_set.path))
+    assert "SOURCE CONTAINER TIME" in out
+    assert out.startswith("#")
+
+
+def test_audacity_labels_come_back_in_source_time(tmp_path):
+    """Audacity works in file time; the label set is in episode time.
+
+    Getting this conversion wrong would move every verified boundary by the clip
+    offset -- silently, and in the one file that is supposed to be ground truth.
+    """
+    from scripts.eval import Clip, LabelSet, import_audacity
+
+    clip = Clip(id="c1", start=1765.0, end=1790.0, labels=(Label(0.0, 0.0, "shit", "strong"),))
+    label_set = LabelSet(name="t", file="t.mkv", duration_s=3388.0, clips=(clip,))
+    (tmp_path / "c1.txt").write_text("5.620000\t5.970000\tshit\n")
+
+    updated = import_audacity(label_set, tmp_path)
+    label = updated.clips[0].labels[0]
+    assert label.start == pytest.approx(1770.62)
+    assert label.end == pytest.approx(1770.97)
+    assert label.verified
+    assert label.category == "strong", "the category must survive the round trip"
+
+
+def test_a_clip_with_no_exported_track_is_left_alone(tmp_path):
+    """Verifying one clip must not blank the clips you have not got to yet."""
+    from scripts.eval import Clip, LabelSet, import_audacity
+
+    clip = Clip(id="c1", start=0.0, end=10.0, labels=(Label(1.0, 1.5, "shit", "strong"),))
+    label_set = LabelSet(name="t", file="t.mkv", duration_s=100.0, clips=(clip,))
+    updated = import_audacity(label_set, tmp_path)
+    assert updated.clips[0].labels == clip.labels

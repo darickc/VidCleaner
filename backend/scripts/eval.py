@@ -453,7 +453,10 @@ def write_report(path: Path, table: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="VidCleaner detection quality harness")
-    parser.add_argument("command", choices=("validate", "run", "report"))
+    parser.add_argument(
+        "command",
+        choices=("validate", "run", "report", "verify", "export-audacity", "import-audacity"),
+    )
     parser.add_argument("--media-dir", type=Path, help="directory holding the labelled media")
     parser.add_argument("--labels", type=Path, default=LABELS_DIR)
     parser.add_argument("--models", default="large-v3-turbo")
@@ -488,6 +491,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0
 
+    if args.command in ("verify", "export-audacity", "import-audacity"):
+        return _verification_command(label_sets, args)
+
     rows: list[dict] = []
     for label_set in label_sets:
         media = resolve_media(label_set, args.media_dir)
@@ -519,6 +525,40 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         write_report(args.out, table)
         print(f"\nwrote {args.out}", file=sys.stderr)
+    return 0
+
+
+def _verification_command(label_sets: list[LabelSet], args) -> int:
+    """The half of §12 that needs a human: confirming word boundaries by ear."""
+    for label_set in label_sets:
+        media = resolve_media(label_set, args.media_dir)
+        if media is None and args.command != "import-audacity":
+            print(
+                f"skipping {label_set.name}: {label_set.file!r} not found. Pass --media-dir.",
+                file=sys.stderr,
+            )
+            continue
+        target = args.work_dir / "verify" / label_set.name
+
+        if args.command == "verify":
+            updated = verify_labels(label_set, media, target)
+        elif args.command == "export-audacity":
+            written = export_audacity(label_set, media, target)
+            print(f"wrote {len(written)} files to {target}")
+            print(
+                "Open each .wav in Audacity, File > Import > Labels for the matching .txt, "
+                "drag the boundaries against the waveform, then File > Export > Export Labels "
+                "back over the same .txt and run `import-audacity`."
+            )
+            continue
+        else:
+            updated = import_audacity(label_set, target)
+
+        path = save_label_set(updated)
+        done = sum(1 for x in updated.all_labels if x.verified)
+        print(f"wrote {path}: {done}/{len(updated.all_labels)} labels verified")
+        if updated.verified:
+            print("All labels verified -- `run` will now report timing error.")
     return 0
 
 
@@ -568,6 +608,312 @@ def _run_set(label_set: LabelSet, media: Path, args) -> list[dict]:
                     file=sys.stderr,
                 )
     return rows
+
+
+# --------------------------------------------------------- label verification
+
+VERIFY_CONTEXT_S = 1.5
+NUDGE_S = 0.05
+
+
+def _emit_yaml(label_set: LabelSet, header: str) -> str:
+    """Re-emit a label file, preserving its header comment block.
+
+    Hand-rolled rather than ``yaml.dump`` because the header explains the one
+    clock rule and the verification status, and a round trip through PyYAML
+    would silently delete all of it.
+    """
+    out = [header.rstrip(), "", "media:", f"  name: {label_set.name}"]
+    out += [f'  file: "{label_set.file}"', f"  duration_s: {label_set.duration_s}", "", "clips:"]
+    for clip in label_set.clips:
+        out += [f"  - id: {clip.id}", f"    start: {clip.start}", f"    end: {clip.end}"]
+        if clip.note:
+            out.append("    note: >-")
+            out += [f"      {line}" for line in _wrap(clip.note, 72)]
+        if clip.labels:
+            out.append("    labels:")
+            for lab in clip.labels:
+                note = lab.note.replace('"', "'")
+                out.append(
+                    f"      - {{start: {lab.start:.2f}, end: {lab.end:.2f}, word: {lab.word}, "
+                    f"category: {lab.category}, verified: {str(lab.verified).lower()}, "
+                    f'note: "{note}"}}'
+                )
+        else:
+            out.append("    labels: []")
+        if clip.negatives:
+            out.append("    negatives:")
+            for neg in clip.negatives:
+                note = str(neg.get("note", "")).replace('"', "'")
+                out.append(
+                    f"      - {{start: {float(neg['start']):.2f}, "
+                    f'end: {float(neg["end"]):.2f}, note: "{note}"}}'
+                )
+        out.append("")
+    return "\n".join(out) + "\n"
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    import textwrap
+
+    return textwrap.wrap(" ".join(text.split()), width) or [""]
+
+
+def _header_of(path: Path) -> str:
+    lines = []
+    for line in path.read_text().splitlines():
+        if line.startswith("#") or not line.strip():
+            lines.append(line)
+        else:
+            break
+    return "\n".join(lines)
+
+
+def _snippet(runner, source: Path, start: float, end: float, dest: Path) -> Path:
+    """Cut one span to a WAV so a plain player can play exactly it."""
+    dest.unlink(missing_ok=True)
+    runner.run(
+        [
+            "-ss",
+            f"{max(0.0, start):.3f}",
+            "-t",
+            f"{max(0.05, end - start):.3f}",
+            "-i",
+            str(source),
+            "-map",
+            "0:a:0",
+            "-ac",
+            "1",
+            "-ar",
+            "22050",
+            "-f",
+            "wav",
+            str(dest),
+        ],
+        label="snippet",
+        timeout=120,
+    )
+    return dest
+
+
+def _play(path: Path) -> None:
+    import shutil
+    import subprocess
+
+    player = shutil.which("afplay") or shutil.which("ffplay")
+    if player is None:
+        print("  (no afplay/ffplay on PATH -- open the file yourself)")
+        return
+    args = [player, str(path)]
+    if player.endswith("ffplay"):
+        args = [player, "-nodisp", "-autoexit", "-loglevel", "quiet", str(path)]
+    subprocess.run(args, check=False)
+
+
+VERIFY_HELP = """
+  enter / y  accept these boundaries and mark the label verified
+  r          replay just the labelled span
+  c          replay with 1.5 s of context either side
+  a / A      move the START 50 ms earlier / later
+  z / Z      move the END 50 ms earlier / later
+  w WORD     correct the word
+  d          drop this label (it is not actually profanity here)
+  s          skip, leaving it unverified
+  q          save and quit
+"""
+
+
+def verify_labels(label_set: LabelSet, media: Path, work_dir: Path) -> LabelSet:
+    """Play each unverified label and let a human fix its boundaries.
+
+    This is the one part of §12 that cannot be automated: a word boundary has to
+    come from someone hearing it, and a boundary seeded by a model makes the
+    timing numbers circular.
+    """
+    import logging
+
+    from vidcleaner.pipeline.ffmpeg import FFmpegRunner
+
+    # This loop is a conversation with a person; a debug line per snippet would
+    # scroll the prompt off the screen between every label.
+    logging.disable(logging.INFO)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    runner = FFmpegRunner(log_path=work_dir / "ffmpeg.log")
+    span_wav, ctx_wav = work_dir / "_span.wav", work_dir / "_context.wav"
+
+    todo = [(c, i) for c in label_set.clips for i, x in enumerate(c.labels) if not x.verified]
+    print(f"{len(todo)} unverified label(s). {VERIFY_HELP}")
+
+    updated = {c.id: list(c.labels) for c in label_set.clips}
+    quit_now = False
+    for position, (clip, index) in enumerate(todo, 1):
+        if quit_now:
+            break
+        label = updated[clip.id][index]
+        _snippet(runner, media, label.start, label.end, span_wav)
+        print(
+            f"\n[{position}/{len(todo)}] clip {clip.id}  {label.word!r}  "
+            f"{label.start:.2f}-{label.end:.2f}  ({label.end - label.start:.2f}s)"
+        )
+        if label.note:
+            print(f"          {label.note}")
+        _play(span_wav)
+
+        while True:
+            try:
+                answer = input("  > ").strip()
+            except EOFError:
+                quit_now = True
+                break
+            command = answer[:1].lower()
+            if answer == "" or command == "y":
+                label = _replace(label, verified=True, note="verified by ear")
+                break
+            if command == "q":
+                quit_now = True
+                break
+            if command == "s":
+                break
+            if command == "d":
+                updated[clip.id][index] = None
+                break
+            if command == "w" and len(answer) > 1:
+                label = _replace(label, word=answer[1:].strip())
+                print(f"  word is now {label.word!r}")
+                continue
+            if command == "r":
+                _play(_snippet(runner, media, label.start, label.end, span_wav))
+                continue
+            if command == "c":
+                _play(
+                    _snippet(
+                        runner,
+                        media,
+                        label.start - VERIFY_CONTEXT_S,
+                        label.end + VERIFY_CONTEXT_S,
+                        ctx_wav,
+                    )
+                )
+                continue
+            if answer in ("a", "A", "z", "Z"):
+                delta = -NUDGE_S if answer in ("a", "z") else NUDGE_S
+                if answer.lower() == "a":
+                    label = _replace(label, start=round(label.start + delta, 3))
+                else:
+                    label = _replace(label, end=round(label.end + delta, 3))
+                print(f"  {label.start:.2f}-{label.end:.2f} ({label.end - label.start:.2f}s)")
+                _play(_snippet(runner, media, label.start, label.end, span_wav))
+                continue
+            print(VERIFY_HELP)
+        updated[clip.id][index] = label if updated[clip.id][index] is not None else None
+
+    clips = tuple(
+        Clip(
+            id=c.id,
+            start=c.start,
+            end=c.end,
+            note=c.note,
+            labels=tuple(x for x in updated[c.id] if x is not None),
+            negatives=c.negatives,
+        )
+        for c in label_set.clips
+    )
+    return LabelSet(
+        name=label_set.name,
+        file=label_set.file,
+        duration_s=label_set.duration_s,
+        clips=clips,
+        path=label_set.path,
+    )
+
+
+def _replace(label: Label, **kw) -> Label:
+    from dataclasses import replace
+
+    return replace(label, **kw)
+
+
+# ------------------------------------------------------ Audacity round trip
+
+
+def export_audacity(label_set: LabelSet, media: Path, dest: Path) -> list[Path]:
+    """Write a WAV plus an Audacity label track per clip.
+
+    Audacity's label format is three tab-separated fields -- start, end, text --
+    with times relative to the file. Drag the boundaries against the waveform,
+    File > Export > Export Labels over the same .txt, then run ``import-audacity``.
+    Boundaries are far easier to place by eye on a waveform than by ear alone.
+    """
+    from vidcleaner.pipeline.ffmpeg import FFmpegRunner
+
+    dest.mkdir(parents=True, exist_ok=True)
+    runner = FFmpegRunner(log_path=dest / "ffmpeg.log")
+    written = []
+    for clip in label_set.clips:
+        wav = dest / f"{clip.id}.wav"
+        if not wav.is_file():
+            _snippet(runner, media, clip.start, clip.end, wav)
+        track = dest / f"{clip.id}.txt"
+        track.write_text(
+            "".join(
+                f"{x.start - clip.start:.6f}\t{x.end - clip.start:.6f}\t{x.word}\n"
+                for x in clip.labels
+            )
+        )
+        written += [wav, track]
+    return written
+
+
+def import_audacity(label_set: LabelSet, source: Path) -> LabelSet:
+    """Read corrected Audacity label tracks back, in source time."""
+    clips = []
+    for clip in label_set.clips:
+        track = source / f"{clip.id}.txt"
+        if not track.is_file():
+            clips.append(clip)
+            continue
+        labels = []
+        by_word = {x.word: x for x in clip.labels}
+        for line in track.read_text().splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            start, end, word = float(parts[0]), float(parts[1]), parts[2].strip()
+            previous = by_word.get(word)
+            labels.append(
+                Label(
+                    start=round(clip.start + start, 3),
+                    end=round(clip.start + end, 3),
+                    word=word,
+                    category=previous.category if previous else "",
+                    verified=True,
+                    note="verified in Audacity",
+                )
+            )
+        clips.append(
+            Clip(
+                id=clip.id,
+                start=clip.start,
+                end=clip.end,
+                note=clip.note,
+                labels=tuple(sorted(labels, key=lambda x: x.start)),
+                negatives=clip.negatives,
+            )
+        )
+    return LabelSet(
+        name=label_set.name,
+        file=label_set.file,
+        duration_s=label_set.duration_s,
+        clips=tuple(clips),
+        path=label_set.path,
+    )
+
+
+def save_label_set(label_set: LabelSet) -> Path:
+    assert label_set.path is not None
+    header = _header_of(label_set.path)
+    label_set.path.write_text(_emit_yaml(label_set, header))
+    return label_set.path
 
 
 if __name__ == "__main__":  # pragma: no cover

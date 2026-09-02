@@ -150,6 +150,58 @@ Three of the 13 full-only detections carry a confidence below 0.01, which is alm
 recognition noise rather than speech. **A confidence floor for `source="stt"` detections is
 worth considering**, and the harness can now measure whether one helps.
 
+## Verifying the labels by ear
+
+This is the one part of §12 that cannot be automated. Until it is done, timing error stays
+withheld. Two routes; both rewrite the label file in place and set `verified: true`.
+
+### Quick pass, no extra software
+
+```bash
+cd backend && uv run python -m scripts.eval verify --media-dir ../video
+```
+
+Plays each unverified label's exact span through `afplay` (or `ffplay`) and waits:
+
+| key | |
+|---|---|
+| `enter` / `y` | boundaries are right — mark verified |
+| `r` / `c` | replay the span / replay with 1.5 s of context |
+| `a` / `A` | move the **start** 50 ms earlier / later |
+| `z` / `Z` | move the **end** 50 ms earlier / later |
+| `w WORD` | correct the word |
+| `d` | drop the label — not actually profanity here |
+| `s` / `q` | skip / save and quit |
+
+It saves on quit, so it can be done in several sittings; `verify` only offers labels that are
+still unverified. Listen for the word to be *fully* enclosed — a boundary 50 ms inside the word
+is what leaves an audible fragment after muting.
+
+### Precise pass, in Audacity
+
+Boundaries are much easier to place by eye on a waveform than by ear, so for the final pass:
+
+```bash
+cd backend && uv run python -m scripts.eval export-audacity --media-dir ../video
+```
+
+That writes a `.wav` and a matching `.txt` per clip. In Audacity: open `c1.wav`, then
+**File > Import > Labels** for `c1.txt`; the labels appear as a track under the waveform and the
+boundaries drag directly. When done, **File > Export > Export Labels** back over the same
+`c1.txt`, then:
+
+```bash
+cd backend && uv run python -m scripts.eval import-audacity
+```
+
+The `.txt` is three tab-separated fields — start, end, text — in *clip* time; the importer
+converts back to episode time. Any editor that reads that format works.
+
+### When they are all verified
+
+`validate` reports the count, and `run` starts printing real median and mean timing error
+instead of `unverified`. That is the number that decides padding.
+
 ## Known gaps
 
 * No labels are verified, so no timing numbers. This is the single most valuable next step, and
