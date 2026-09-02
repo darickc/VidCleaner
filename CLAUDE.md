@@ -32,5 +32,16 @@ Sonarr/Radarr, with a review UI. Python (FastAPI + worker) backend, React/TypeSc
   `-filter_complex_script`: it was removed in ffmpeg 9. Use `pipeline/ffmpeg.py::FFmpegRunner`,
   which picks the right flag for the installed version.
 - Every pipeline stage is a pure function of its on-disk inputs in `/work/<job_id>/` and writes a
-  `<stage>.done` marker.
+  `<stage>.done` marker. Markers carry the code version, so an upgrade never resumes onto artifacts
+  written by different code. `job.json` is artifact zero: the work dir is self-describing, so resume
+  never needs the database.
+- **One clock.** Every time value persisted to `subs.json`/`transcript.json`/`detections.json` is in
+  *source container time*. `audio.wav` is 0-based; `pipeline/stt.py` is the only place that applies
+  the audio stream's `start_time` and `pipeline/render.py` the only place that undoes it. See the
+  header of `pipeline/artifacts.py`.
+- Stages take the ffmpeg runner by injection and are resolved through `importlib`, so nothing on the
+  ordinary import path pulls torch. `tests/unit/test_no_stt_import.py` enforces this — keep
+  faster-whisper and whisperX imports inside functions.
+- Persistence lives in `pipeline/persist.py` and is called *after* the pipeline, never threaded
+  through `StageContext`.
 - Library files are only ever changed by `pipeline/swap.py` (rename-based, never unlink).

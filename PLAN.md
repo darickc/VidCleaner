@@ -107,12 +107,22 @@ VidCleaner/
       db/ models.py session.py alembic/
       api/ webhooks.py library.py items.py jobs.py wordlists.py settings.py media.py health.py
       integrations/ sonarr.py radarr.py jellyfin.py pathmap.py
-      matching/ compiler.py normalize.py   # word list → regex; token normalization; censored tokens
-      pipeline/ stages.py probe.py subtitles.py drift.py stt.py detect.py render.py verify.py swap.py refresh.py snippets.py codecs.py
+      matching/ compiler.py normalize.py wordlists.py profile.py
+                                     # word list → regex; token normalization; censored tokens;
+                                     # YAML loading/validation; the DB bridge
+      pipeline/ workspace.py artifacts.py stages.py    # job dirs, typed artifacts, resumable driver
+                ffmpeg.py graph.py lang.py             # subprocess layer, filter builder, ISO 639
+                probe.py extract.py subtitles.py codecs.py
+                stt.py whisper_backend.py              # lazy-import boundary for torch
+                detect.py render.py verify.py persist.py
+                drift.py                               # M2
+                swap.py refresh.py                     # M3
+                snippets.py                            # M4
       worker/ runner.py claim.py
       data/wordlists/{strong,mild,religious,slurs,sexual}.yaml  data/never_match.yaml
       cli.py                 # `vidcleaner clean <file> [--dry-run]`, `vidcleaner detect <file>`
-    tests/ unit/ integration/ fixtures/ (CC0 speech wav + SRT, generated tone MKVs)
+    scripts/make_fixtures.py   # generates the test media from ffmpeg's own sources
+    tests/ unit/ integration/ fixtures/ (hand-written SRT + ffmetadata, committed ffprobe JSON)
   frontend/ (Vite + React + TS + TanStack Query + Tailwind)  src/pages/{Queue,Library,Title,Item,Words,Settings}
 ```
 
@@ -184,12 +194,12 @@ VidCleaner/
 - Entrypoint: `gosu $PUID:$PGID`, `umask 0002`, run migrations, start `api` and `worker` (exit if either dies). Env: `PUID PGID TZ VIDCLEANER_PORT=8585 VIDCLEANER_ROLE=all OMP_NUM_THREADS`.
 - Volumes: `/config`, `/media` (host `/mnt/user/media`, same as arrs/Jellyfin), `/backups` (default `/mnt/user/media/.vidcleaner-backups` so swaps are same-filesystem renames), `/work` (host cache/SSD).
 - `docker-compose.yml` + `unraid/vidcleaner.xml` CA-style template; healthcheck `GET /api/health`.
-- Dev on the Mac: `brew install ffmpeg` (not installed yet), `uv run uvicorn --reload`, `uv run vidcleaner-worker`, `npm run dev` with API proxy; fixtures via `scripts/make_fixtures.py`. Real tests on the unraid box via compose.
+- Dev on the Mac: `brew install ffmpeg` (present, 9.0.1), `uv run uvicorn --reload`, `uv run vidcleaner-worker`, `npm run dev` with API proxy; fixtures via `scripts/make_fixtures.py`. Real tests on the unraid box via compose.
 
 ## 11. Milestones (tick as completed)
 
 - [x] **M0 — Skeleton & plan in repo**: copy this plan to `PLAN.md`, `CLAUDE.md`, `git init`, backend/frontend scaffolds, Dockerfile builds, `/api/health`, SQLite + Alembic baseline, settings load/save, api+worker entrypoint. *Demo: container runs on unraid, UI shell loads.*
-- [ ] **M1 — Core clean via CLI**: word lists + matcher (tests), probe/extract/subtitles/windowed STT (faster-whisper + whisperX)/detect/render/verify on a local file; `vidcleaner clean <file> --dry-run|--out`; codec policy; subtitle redaction. *Demo: before/after MKV with Clean/Original tracks plays in Infuse; word counts printed.*
+- [x] **M1 — Core clean via CLI**: word lists + matcher (tests), probe/extract/subtitles/windowed STT (faster-whisper + whisperX)/detect/render/verify on a local file; `vidcleaner clean <file> --dry-run|--out`; codec policy; subtitle redaction. *Demo: before/after MKV with Clean/Original tracks plays in Infuse; word counts printed.*
 - [ ] **M2 — Full-file STT + drift + robustness**: full mode with VAD, drift check, censored-token handling, suspicious guards, resumable stage markers, eval set with precision/recall in `docs/eval.md`. *Demo: movie with no subs processed overnight; timing error report.*
 - [ ] **M3 — Worker, swap, integrations**: job queue/claiming, backup/swap/rollback, Sonarr/Radarr clients + sync + backfill, webhook receivers with dedupe/upgrade handling, arr rescan + Jellyfin refresh + mapping check. *Demo: enable a series → existing episodes cleaned; Sonarr imports a new episode → auto-cleaned → Jellyfin shows Clean default.*
 - [ ] **M4 — UI**: Queue, Library (toggle/profile), Title, Item (counts, detections, snippet players, whitelist + reprocess, restore original), Settings with Test buttons and webhook setup. *Demo: mark a false positive, reprocess, word audible again.*
@@ -560,6 +570,45 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   neither stage needs STT. `render` also tolerates a missing `subs.json` by skipping redaction
   rather than failing an otherwise good render. This flag is the mechanism behind M4's "reprocess
   after a whitelist edit".
+- 2026-09-01 — **M1 absorbed four items §11 lists under M2**, because §6/§7 make them integral to the
+  stages M1 had to build rather than separable robustness work: censored-token handling (§7 defines
+  it as part of matching), the suspicious guards (§7 defines them as part of padding), resumable
+  stage markers (they *are* the stage contract in CLAUDE.md), and VAD (a faster-whisper parameter,
+  already in `AppSettings`). **M2 therefore reduces to**: full-file STT as a selectable mode, the
+  drift check (`pipeline/drift.py` — the `SubtitlesResult.offset_s` and `.reliable` fields are
+  already reserved and already read by the detector), and the labelled eval set with
+  precision/recall in `docs/eval.md`.
+- 2026-09-01 — **M1 COMPLETE. Demo recorded.** `vidcleaner clean` run on the real test episode,
+  PLURIBUS S01E01 (4.26 GiB, 56:28, eac3 5.1 Atmos, 61 subtitle streams):
+
+  | stage | time |
+  |---|---|
+  | probe | 0.1 s |
+  | extract | 3.9 s |
+  | subtitles | 0.4 s |
+  | transcribe | 67.4 s (186 s of windows, `large-v3-turbo` + wav2vec2, 14 threads → **2.8× realtime**) |
+  | detect | 0.0 s |
+  | render | 18.5 s |
+  | verify | 4.4 s |
+  | **total** | **~95 s for a 56-minute episode** |
+
+  540 English cues → 44 subtitle hits → 28 windows (5.5% of runtime) → 306 transcribed words →
+  **49 detections** (34 `both`, 10 subtitle-only, 5 STT-only that the subtitles had omitted),
+  **36.1 s muted across 43 ranges**, 10 flagged for review. Counts: fuck 19, god 12, shit 8,
+  bullshit 3, goddamn 3, jesus 2, christ 1, god damn 1.
+
+  Output (4.57 GiB): `a:0` eac3 5.1 eng **Clean, default**; `a:1` eac3 5.1 eng **Original**,
+  default cleared, **Atmos profile intact**; all 61 subtitle streams preserved with only the English
+  one redacted (44 words masked); duration identical to the source (3388.416 s); all five
+  `VIDCLEANER*` tags present. **Verify: 26/26 checks pass**, mute windows measured −90.3 dB against
+  a −19.1 dB control window.
+
+  **Still owed:** "plays in Infuse" is the one part of the §11 demo only Darick can confirm — the
+  file is at `video/PLUR1BUS - S01E01 - We is Us.CLEAN.mkv`. And the container was not built: the
+  Docker daemon was not running on this Mac, so §10's image (now carrying `--extra stt`) and the
+  ffmpeg-7.x behaviour of `-/filter_complex` and the 100-term expression budget remain unverified on
+  Debian trixie. `get_caps()` version-gates the flag and two integration tests pin the budget, so
+  the risk is contained, but it is not yet proven there.
 
 ## 15. Working agreement for future sessions
 

@@ -14,9 +14,22 @@ and Jellyfin are refreshed afterwards.
 
 ## Status
 
-Milestone **M0 — skeleton** is complete: the api and worker processes, the database schema,
-settings, the UI shell, and the container packaging. There is no cleaning pipeline yet; that
-is M1.
+Milestone **M1 — core clean via CLI** is complete. The pipeline runs end to end on a real file:
+
+```bash
+cd backend
+uv run vidcleaner detect "/media/Movies/Some Film (2024)/Some Film.mkv"          # counts only
+uv run vidcleaner clean  "/media/Movies/Some Film (2024)/Some Film.mkv" --out out.mkv
+```
+
+`detect` prints per-word counts and flags anything that needs review; `clean` writes an MKV whose
+first and default audio track is the muted "Clean" track, with the untouched original kept as
+"Original", English subtitles redacted, and chapters, attachments and every other stream copied
+through. Both record the run in the database. `uv run vidcleaner words` shows the built-in word
+lists and runs the false-positive gate over them.
+
+There is no automation yet — no job queue, no Sonarr/Radarr integration, and the review UI is
+still a shell. Those are M3 and M4.
 
 ## Development
 
