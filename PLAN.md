@@ -909,6 +909,33 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   A round-trip test also asserts the emitter loses no label, category or clip and preserves the
   header, because a verification session must not corrupt the set it is improving.
 
+- 2026-09-02 — **Eval labels are verified per label, not per set, because some clips cannot be
+  labelled by hand at all.** Darick verified c1, c3 and c4 in Audacity — moving boundaries,
+  deleting three labels that were not really there, and labelling one span "fuck it" — but
+  reported **c2 as too difficult**: it is six shouted repetitions of `fuck` running together,
+  and no one can place their boundaries on a waveform. The words are certainly there, so c2 is
+  still good ground truth for *presence*; it is simply not ground truth for *timing*. Three
+  consequences: (a) `score` now measures timing error and mute coverage over **verified labels
+  only** while presence still counts every label, with the count reported in an `n` column —
+  the previous all-or-nothing rule would have meant reporting timing never; (b)
+  `import-audacity` marks a clip verified **only if its boundaries actually moved**, so an
+  untouched track is reported as "unchanged, left UNVERIFIED" instead of being silently
+  certified — the failure that would have quietly poisoned the one number the harness exists to
+  produce; (c) hand-typed labels are mapped to a word-list canonical, since "fuck it" is a real
+  thing to have heard but would otherwise have matched no detection and read as a miss.
+  Result: **9 of 15 labels verified**, and real timing numbers for the first time.
+- 2026-09-02 — **faster-whisper on CPU is not deterministic, and precision is the casualty.**
+  Three *identical* runs of `base`/windowed produced **8, 12 and 72 false positives**
+  (P = 0.62, 0.54, 0.15). The 72 is `base` entering a **repetition loop** on the c2 shouting
+  and emitting `fuck` dozens of times at one timestamp; whether it does turns on tiny numerical
+  differences, so it is bistable. Recall and timing are stable across the same runs (TP
+  13/14/13, median timing within ~20 ms) — so a single run measures those fine and measures
+  precision not at all. `large-v3-turbo` is markedly steadier (4 and 9 false positives, no
+  degeneration), which is an argument for the shipped default beyond raw accuracy. Added
+  `--repeat N`, which reports the **median run** chosen by F1 plus the observed false-positive
+  range, rather than the median of each column separately — so every figure in a row comes from
+  one real execution instead of a combination that never happened.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

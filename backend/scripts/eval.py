@@ -18,8 +18,13 @@ knowable without listening to it.
 them, and a machine-seeded boundary is only ever the opinion of whichever model
 seeded it -- measuring a model against its own output is circular. Labels
 therefore carry ``verified: false`` until a human confirms them, and timing error
-is withheld from the report unless ``--allow-unverified-timing`` says otherwise.
-See ``docs/eval.md``.
+is measured over **only the verified ones**, with the count reported beside it.
+
+Per-label rather than all-or-nothing, because some clips cannot be labelled by
+hand at all: c2 of the committed set is six shouted repetitions of one word
+running together, so the words are certainly there -- valid ground truth for
+presence -- but nobody can place their boundaries. Requiring a fully verified set
+before reporting any timing meant reporting it never. See ``docs/eval.md``.
 
 Media is never committed: the labels reference one file by name and are useless
 without it. That is the intended trade -- the timings are the valuable part and
@@ -190,6 +195,8 @@ class Metrics:
     mute_coverage: list[float] = field(default_factory=list)
     misses: list[str] = field(default_factory=list)
     spurious: list[str] = field(default_factory=list)
+    spread: tuple[int, int] | None = None
+    """min/max false positives across repeats, when --repeat was used."""
 
     @property
     def precision(self) -> float:
@@ -275,13 +282,19 @@ def score(clip: Clip, detections, mute_ranges=(), *, tolerance_s: float = MATCH_
         if not candidates:
             metrics.false_negatives += 1
             metrics.misses.append(f"{label.word} @ {label.start:.2f}")
-            metrics.mute_coverage.append(0.0)
+            if label.verified:
+                metrics.mute_coverage.append(0.0)
             continue
         best = min(candidates, key=lambda d: abs((d.start_s + d.end_s) / 2 - label.midpoint))
         remaining.remove(best)
         metrics.true_positives += 1
-        metrics.timing_errors.append(abs(best.start_s - label.start))
-        metrics.mute_coverage.append(_covered(label, mute_ranges))
+        # Presence counts for every label, but timing and coverage are only
+        # meaningful against a boundary a human actually confirmed. An
+        # unverified span is the seeding model's opinion, and scoring a model
+        # against its own opinion measures nothing.
+        if label.verified:
+            metrics.timing_errors.append(abs(best.start_s - label.start))
+            metrics.mute_coverage.append(_covered(label, mute_ranges))
 
     for detection in remaining:
         metrics.false_positives += 1
@@ -423,6 +436,8 @@ _HEADERS = [
     ("f1", "F1"),
     ("median_err", "median err"),
     ("mean_err", "mean err"),
+    ("n_timed", "n"),
+    ("fp_spread", "FP range"),
     ("coverage", "mute cov"),
     ("seconds", "wall"),
 ]
@@ -440,6 +455,24 @@ def format_table(rows: list[dict]) -> str:
 
 def _fmt(value, suffix="", places=3):
     return "n/a" if value is None else f"{value:.{places}f}{suffix}"
+
+
+def _median_metrics(runs: list[Metrics]) -> Metrics:
+    """Collapse repeats to the median run, chosen by F1.
+
+    The median *run* rather than the median of each column independently, so the
+    reported precision, recall and timing all come from one real execution and
+    cannot describe a combination that never happened.
+    """
+    if len(runs) == 1:
+        return runs[0]
+    ordered = sorted(runs, key=lambda m: (m.f1, m.precision))
+    chosen = ordered[len(ordered) // 2]
+    chosen.spread = (
+        min(m.false_positives for m in runs),
+        max(m.false_positives for m in runs),
+    )
+    return chosen
 
 
 def write_report(path: Path, table: str) -> None:
@@ -468,6 +501,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--models", default="large-v3-turbo")
     parser.add_argument("--modes", default="windowed")
     parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help=(
+            "run each cell N times and report the median. Recall and timing error "
+            "are stable run to run; PRECISION IS NOT, because a false positive "
+            "usually comes from the model entering a repetition loop, which is "
+            "bistable -- measured on base/windowed, 8, 12 and 72 false positives "
+            "across three identical runs. Use 3+ before trusting a precision figure"
+        ),
+    )
+    parser.add_argument(
         "--work-dir",
         type=Path,
         default=Path(".local/eval"),
@@ -480,11 +525,6 @@ def main(argv: list[str] | None = None) -> int:
         help=f"where verify/export-audacity put files you open by hand (default {VERIFY_DIR})",
     )
     parser.add_argument("--out", type=Path, help="markdown file to update in place")
-    parser.add_argument(
-        "--allow-unverified-timing",
-        action="store_true",
-        help="report timing error even though no human has confirmed the labels",
-    )
     args = parser.parse_args(argv)
 
     try:
@@ -582,13 +622,23 @@ def _verification_command(label_sets: list[LabelSet], args) -> int:
             )
             continue
         else:
-            updated = import_audacity(label_set, target)
+            updated, notes = import_audacity(label_set, target)
+            for note in notes:
+                print(f"  {note}")
 
         path = save_label_set(updated)
         done = sum(1 for x in updated.all_labels if x.verified)
-        print(f"wrote {path}: {done}/{len(updated.all_labels)} labels verified")
-        if updated.verified:
-            print("All labels verified -- `run` will now report timing error.")
+        total = len(updated.all_labels)
+        print(f"\nwrote {path}\n  {done}/{total} labels verified")
+        if done:
+            print(f"  `run` will report timing error over those {done}.")
+        for clip in updated.clips:
+            unverified = [x for x in clip.labels if not x.verified]
+            if unverified:
+                print(
+                    f"  {clip.id}: {len(unverified)} label(s) still unverified -- they count "
+                    "for precision and recall, but not for timing."
+                )
     return 0
 
 
@@ -602,18 +652,25 @@ def _run_set(label_set: LabelSet, media: Path, args) -> list[dict]:
     for model in [m.strip() for m in args.models.split(",") if m.strip()]:
         for mode in [m.strip() for m in args.modes.split(",") if m.strip()]:
             started = time.monotonic()
-            total = Metrics()
-            for clip in label_set.clips:
-                path, start = cut[clip.id]
-                detections, ranges = run_clip(
-                    path,
-                    model=model,
-                    stt_mode=mode,
-                    work_dir=args.work_dir / "work",
-                    shift=start,
-                )
-                total = total.merge(score(clip, detections, ranges))
-            hide = not label_set.verified and not args.allow_unverified_timing
+            runs: list[Metrics] = []
+            for attempt in range(max(1, args.repeat)):
+                total = Metrics()
+                for clip in label_set.clips:
+                    path, start = cut[clip.id]
+                    detections, ranges = run_clip(
+                        path,
+                        model=model,
+                        stt_mode=mode,
+                        # A fresh work dir per attempt, or the second attempt
+                        # would resume onto the first one's transcript and every
+                        # repeat would be identical by construction.
+                        work_dir=args.work_dir / "work" / f"run{attempt}",
+                        shift=start,
+                    )
+                    total = total.merge(score(clip, detections, ranges))
+                runs.append(total)
+            total = _median_metrics(runs)
+            timed = len(total.timing_errors)
             rows.append(
                 {
                     "model": model,
@@ -624,8 +681,13 @@ def _run_set(label_set: LabelSet, media: Path, args) -> list[dict]:
                     "precision": _fmt(total.precision, places=2),
                     "recall": _fmt(total.recall, places=2),
                     "f1": _fmt(total.f1, places=2),
-                    "median_err": "unverified" if hide else _fmt(total.median_timing_error, "s"),
-                    "mean_err": "unverified" if hide else _fmt(total.mean_timing_error, "s"),
+                    # Reported over however many labels are verified, rather than
+                    # withheld until every one is. Some clips cannot be labelled
+                    # by hand at all, so all-or-nothing meant "never".
+                    "median_err": _fmt(total.median_timing_error, "s"),
+                    "mean_err": _fmt(total.mean_timing_error, "s"),
+                    "n_timed": timed,
+                    "fp_spread": (f"{total.spread[0]}-{total.spread[1]}" if total.spread else ""),
                     "coverage": _fmt(total.mean_mute_coverage, places=2),
                     "seconds": f"{time.monotonic() - started:.0f}s",
                     "_metrics": total,
@@ -898,32 +960,91 @@ def export_audacity(label_set: LabelSet, media: Path, dest: Path) -> list[Path]:
     return written
 
 
-def import_audacity(label_set: LabelSet, source: Path) -> LabelSet:
-    """Read corrected Audacity label tracks back, in source time."""
-    clips = []
+def canonical_for(word: str) -> tuple[str, str]:
+    """Map a hand-typed label to a word-list canonical. Returns (canonical, note).
+
+    People label what they *hear*: c4 came back with "fuck it", which is a real
+    thing to have heard but is not a canonical, so it would have matched no
+    detection at all and read as a false negative. The matcher already knows the
+    answer, so ask it rather than making the human learn the word list.
+    """
+    from vidcleaner.matching.compiler import build_matcher
+
+    matches = list(build_matcher().finditer(word))
+    if not matches:
+        return word, f"no word-list entry matches {word!r}"
+    canonical = matches[0].canonical
+    if canonical != word.strip().lower():
+        return canonical, f"{word!r} recorded as canonical {canonical!r}"
+    return canonical, ""
+
+
+def _same_labels(track: list[tuple[float, float, str]], clip: Clip) -> bool:
+    """True when a track is byte-for-byte what was exported -- i.e. untouched."""
+    if len(track) != len(clip.labels):
+        return False
+    return all(
+        abs(round(clip.start + start, 3) - existing.start) < 0.002
+        and abs(round(clip.start + end, 3) - existing.end) < 0.002
+        for (start, end, _), existing in zip(track, clip.labels, strict=True)
+    )
+
+
+def import_audacity(label_set: LabelSet, source: Path) -> tuple[LabelSet, list[str]]:
+    """Read corrected Audacity label tracks back, in source time.
+
+    Only clips whose boundaries actually moved are marked verified. A track that
+    is exactly what was exported means nobody got to it -- which is a real and
+    expected outcome, because some clips cannot be labelled by hand at all. c2 of
+    the committed set is six shouted repetitions of one word running together;
+    the words are certainly there, so it remains valid ground truth for
+    *presence*, but no one can place their boundaries, so it must not claim to be
+    ground truth for *timing*. Marking it verified anyway would quietly poison
+    the one number this whole harness exists to produce.
+    """
+    clips, notes = [], []
     for clip in label_set.clips:
-        track = source / f"{clip.id}.txt"
-        if not track.is_file():
+        track_path = source / f"{clip.id}.txt"
+        if not track_path.is_file():
             clips.append(clip)
             continue
-        labels = []
-        by_word = {x.word: x for x in clip.labels}
-        for line in track.read_text().splitlines():
+
+        track: list[tuple[float, float, str]] = []
+        for line in track_path.read_text().splitlines():
             parts = line.split("\t")
-            if len(parts) < 3:
-                continue
-            start, end, word = float(parts[0]), float(parts[1]), parts[2].strip()
-            previous = by_word.get(word)
+            if len(parts) >= 3:
+                track.append((float(parts[0]), float(parts[1]), parts[2].strip()))
+
+        if not track and clip.labels:
+            notes.append(f"{clip.id}: every label was deleted; left as it was")
+            clips.append(clip)
+            continue
+        if _same_labels(track, clip):
+            if clip.labels:
+                notes.append(f"{clip.id}: unchanged, so left UNVERIFIED ({len(track)} labels)")
+            clips.append(clip)
+            continue
+
+        by_word = {x.word: x for x in clip.labels}
+        labels = []
+        for start, end, word in track:
+            canonical, note = canonical_for(word)
+            if note:
+                notes.append(f"{clip.id}: {note}")
+            previous = by_word.get(canonical) or by_word.get(word)
             labels.append(
                 Label(
                     start=round(clip.start + start, 3),
                     end=round(clip.start + end, 3),
-                    word=word,
+                    word=canonical,
                     category=previous.category if previous else "",
                     verified=True,
                     note="verified in Audacity",
                 )
             )
+        dropped = len(clip.labels) - len(labels)
+        if dropped > 0:
+            notes.append(f"{clip.id}: {dropped} label(s) removed by hand")
         clips.append(
             Clip(
                 id=clip.id,
@@ -934,12 +1055,15 @@ def import_audacity(label_set: LabelSet, source: Path) -> LabelSet:
                 negatives=clip.negatives,
             )
         )
-    return LabelSet(
-        name=label_set.name,
-        file=label_set.file,
-        duration_s=label_set.duration_s,
-        clips=tuple(clips),
-        path=label_set.path,
+    return (
+        LabelSet(
+            name=label_set.name,
+            file=label_set.file,
+            duration_s=label_set.duration_s,
+            clips=tuple(clips),
+            path=label_set.path,
+        ),
+        notes,
     )
 
 

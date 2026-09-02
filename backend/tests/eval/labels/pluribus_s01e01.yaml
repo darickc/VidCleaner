@@ -27,9 +27,8 @@ clips:
       three subtitle-only fallbacks: STT located none of them, so each mutes
       ~1.2s where the word is ~0.3s
     labels:
-      - {start: 1770.40, end: 1771.38, word: shit, category: strong, verified: false, note: "seeded from M1: source=subtitle confidence=0.3 SUSPICIOUS"}
-      - {start: 1771.95, end: 1772.92, word: fuck, category: strong, verified: false, note: "seeded from M1: source=subtitle confidence=0.3 SUSPICIOUS"}
-      - {start: 1774.14, end: 1775.13, word: fuck, category: strong, verified: false, note: "seeded from M1: source=subtitle confidence=0.3 SUSPICIOUS"}
+      - {start: 1770.91, end: 1771.38, word: shit, category: strong, verified: true, note: "verified in Audacity"}
+      - {start: 1772.80, end: 1773.52, word: fuck, category: strong, verified: true, note: "verified in Audacity"}
 
   - id: c2
     start: 1830.0
@@ -52,12 +51,11 @@ clips:
       `goddamn` immediately followed by a bare `god` -- the phrase/compound
       rollup case
     labels:
-      - {start: 3021.79, end: 3022.16, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
-      - {start: 3030.53, end: 3031.11, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
-      - {start: 3040.52, end: 3040.76, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
-      - {start: 3043.28, end: 3043.60, word: shit, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
-      - {start: 3049.04, end: 3049.80, word: goddamn, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
-      - {start: 3049.82, end: 3049.88, word: god, category: religious, verified: false, note: "seeded from M1: source=stt confidence=0.299"}
+      - {start: 3021.77, end: 3022.20, word: fuck, category: strong, verified: true, note: "verified in Audacity"}
+      - {start: 3030.53, end: 3030.72, word: fuck, category: strong, verified: true, note: "verified in Audacity"}
+      - {start: 3040.45, end: 3040.83, word: fuck, category: strong, verified: true, note: "verified in Audacity"}
+      - {start: 3042.85, end: 3043.54, word: shit, category: strong, verified: true, note: "verified in Audacity"}
+      - {start: 3049.00, end: 3049.43, word: goddamn, category: strong, verified: true, note: "verified in Audacity"}
 
   - id: c4
     start: 1850.0
@@ -66,9 +64,8 @@ clips:
       a subtitle-only `god` beside located `fuck`s: religious category against
       strong
     labels:
-      - {start: 1855.25, end: 1856.24, word: god, category: religious, verified: false, note: "seeded from M1: source=subtitle confidence=0.3 SUSPICIOUS"}
-      - {start: 1861.03, end: 1861.13, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
-      - {start: 1864.01, end: 1864.45, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 1860.88, end: 1861.23, word: fuck, category: strong, verified: true, note: "verified in Audacity"}
+      - {start: 1864.16, end: 1864.49, word: fuck, category: strong, verified: true, note: "verified in Audacity"}
 
   - id: c5
     start: 600.0
@@ -77,5 +74,4 @@ clips:
       CONTROL: no detections in the M1 run. Catches a detector that fires
       everywhere, which precision over labelled regions alone cannot
     labels: []
-    # Intentionally empty. A control clip's value is that any detection
-    # here is a false positive, however good the numbers look elsewhere.
+

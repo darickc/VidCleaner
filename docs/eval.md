@@ -4,9 +4,9 @@
 padding, where the guards sit — was previously argued from a handful of observations. This is
 where those arguments get settled with numbers.
 
-> **Status: provisional.** The labels were seeded from the M1 run and **no human has listened
-> to them**. Presence numbers (precision, recall, F1) are meaningful today; timing error is
-> withheld until the labels are verified. See *Ground truth* below.
+> **Status: 9 of 15 labels verified by ear.** Timing error is measured over those 9. The other
+> 6 are clip c2, which cannot be labelled by hand — see *Ground truth*. Precision needs
+> `--repeat`; see *Run-to-run stability*.
 
 ## Running it
 
@@ -26,15 +26,21 @@ intended trade — the timings are the valuable part and they are tiny.
 **Presence is solid.** The English subtitles name the words that are spoken, so "is there a
 `fuck` in this clip" is knowable without hearing it. Precision and recall mean what they say.
 
-**Timing is not, yet.** A word boundary has to come from someone hearing it. A machine-seeded
-boundary is only the opinion of whichever model seeded it, and scoring a model against its own
-output is circular. Every label therefore carries `verified: false`, and the harness prints
-`unverified` instead of a timing error unless `--allow-unverified-timing` is passed.
+**Timing needs a human, and is tracked per label.** A word boundary has to come from someone
+hearing it; a machine-seeded boundary is only the opinion of whichever model seeded it, and
+scoring a model against its own output is circular. Each label therefore carries a `verified`
+flag, and timing error and mute coverage are measured over **only the verified ones**, with the
+count in the `n` column. Presence still counts every label.
+
+Per label rather than all-or-nothing, because **some clips cannot be labelled by hand at all**.
+Clip c2 is six shouted repetitions of the same word running together; the words are certainly
+there, so it remains good ground truth for presence, but nobody can place their boundaries on a
+waveform. Requiring a fully verified set before reporting any timing would have meant reporting
+timing never.
 
 **One further bias worth stating.** The labels were seeded from a *windowed* `large-v3-turbo`
 run, so they under-count words that only a full pass hears. Some of the false positives below
-are very likely real profanity missing from the label set rather than detector errors. Verifying
-the labels fixes this too.
+are very likely real profanity missing from the label set rather than detector errors.
 
 ## The clips
 
@@ -43,7 +49,7 @@ Five clips, chosen for distinct failure modes rather than density.
 | id | span | why |
 |---|---|---|
 | c1 | 1765–1790 | three subtitle-only fallbacks — STT located none of them, so each mutes ~1.2 s where the word is ~0.3 s |
-| c2 | 1830–1846 | a dense run of `fuck`, subtitle and STT agreeing, plus one STT-only hit at 0.22 confidence |
+| c2 | 1830–1846 | a dense run of `fuck`, subtitle and STT agreeing, plus one STT-only hit at 0.22 confidence. **Presence only** — the repetitions run together and cannot be separated by hand |
 | c3 | 3015–3055 | `goddamn` immediately followed by a bare `god` — the compound-rollup case |
 | c4 | 1850–1870 | a subtitle-only `god` beside located `fuck`s — religious against strong |
 | c5 | 600–640 | **control, no labels.** Any detection here is a false positive |
@@ -59,6 +65,9 @@ detector that fires everywhere.
 * **median / mean timing error** — §12 asks for the mean; both are reported. M1 already saw a
   single 4.1 s whisperX span, and one outlier like that makes a mean describe the outlier rather
   than the model.
+* **n** — how many labels were verified by ear, and therefore how many the timing columns and
+  mute coverage are computed over. Presence uses all of them.
+* **FP range** — with `--repeat`, the lowest and highest false-positive count seen. See below.
 * **mute coverage** — the fraction of each labelled word that the *padded, merged* mute ranges
   actually silence. This is the metric that corresponds to "did the viewer hear it". Detection
   precision and recall do not: a detection whose range lands 200 ms short still leaves the word
@@ -66,14 +75,43 @@ detector that fires everywhere.
 
 <!-- BEGIN RESULTS -->
 
-| Model | Mode | TP | FP | FN | P | R | F1 | median err | mean err | mute cov | wall |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| base | windowed | 15 | 8 | 3 | 0.65 | 0.83 | 0.73 | unverified | unverified | 0.59 | 86s |
-| base | full | 6 | 1 | 12 | 0.86 | 0.33 | 0.48 | unverified | unverified | 0.32 | 97s |
-| large-v3-turbo | windowed | 14 | 4 | 4 | 0.78 | 0.78 | 0.78 | unverified | unverified | 0.62 | 75s |
-| large-v3-turbo | full | 13 | 0 | 5 | 1.00 | 0.72 | 0.84 | unverified | unverified | 0.69 | 102s |
+| Model | Mode | TP | FP | FN | P | R | F1 | median err | mean err | n | FP range | mute cov | wall |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| base | windowed | 13 | 6 | 2 | 0.68 | 0.87 | 0.76 | 0.425s | 0.367s | 9 | 4-7 | 0.85 | 284s |
+| base | full | 7 | 9 | 8 | 0.44 | 0.47 | 0.45 | 0.111s | 0.179s | 6 | 4-75 | 0.50 | 227s |
+| large-v3-turbo | windowed | 13 | 10 | 2 | 0.57 | 0.87 | 0.68 | 0.154s | 0.258s | 9 | 4-11 | 0.84 | 274s |
+| large-v3-turbo | full | 12 | 3 | 3 | 0.80 | 0.80 | 0.80 | 0.134s | 0.148s | 7 | 1-3 | 0.68 | 279s |
 
 <!-- END RESULTS -->
+
+## Run-to-run stability — read this before comparing precision
+
+faster-whisper on CPU with `int8` and multiple threads is **not deterministic**, and the
+difference is not small. Three identical runs of `base` / windowed produced:
+
+| run | TP | FP | FN | P |
+|---|---|---|---|---|
+| 1 | 13 | **8** | 2 | 0.62 |
+| 2 | 14 | **12** | 1 | 0.54 |
+| 3 | 13 | **72** | 2 | 0.15 |
+
+The 72 is not a bug in the harness: it is `base` entering a **repetition loop** on clip c2's
+shouting and emitting `fuck` dozens of times at the same timestamp. Whether it does so turns on
+tiny numerical differences between runs, so it is bistable — it either happens or it does not.
+
+Consequences, which shape how this table should be read:
+
+* **Recall and timing error are stable.** Across those three runs TP moved 13/14/13 and the
+  median timing error stayed within about 20 ms. Those numbers can be trusted from one run.
+* **Precision is not.** A false positive is usually degeneration, so a single-run precision
+  figure is close to meaningless for a weak model.
+* `large-v3-turbo` is markedly steadier — 4 and 9 false positives across two runs, no
+  degeneration — which is an argument for the shipped default beyond raw accuracy.
+
+The `--repeat N` flag therefore runs each cell N times and reports the **median run**, chosen by
+F1, with the observed false-positive range in the `FP range` column. The median *run* rather
+than the median of each column separately, so every figure in a row comes from one real
+execution instead of a combination that never happened. The table below uses `--repeat 3`.
 
 ## What these numbers changed
 
@@ -89,17 +127,38 @@ pass, and there it is actively harmful:
 | `vad_filter=True` | 0.67 | **0.11** | 0.19 | 0.11 |
 | `vad_filter=False` | 0.69 | **0.61** | 0.65 | 0.50 |
 
+(Measured against the earlier, unverified label set — before c1/c3/c4 were corrected by ear —
+so these figures are not directly comparable with the table above. The conclusion does not
+depend on them: it rests on Silero reporting zero seconds of speech in sixteen seconds of
+dialogue, which is measurable directly.)
+
 Measured directly on clip c2 — sixteen seconds of shouted dialogue — Silero reports **zero
 seconds of speech** at its default threshold, and 0.9 s at a threshold of 0.2. No threshold
 rescues it. VAD cost 5.5× the recall and bought no precision at all, on exactly the files full
 mode exists to serve: the ones with no subtitles, where there is nothing else to fall back on.
 
-**`large-v3-turbo` in full mode is the best configuration measured** (F1 0.84, precision 1.00,
-the highest mute coverage). It is also the slowest, at roughly 1.4× realtime here, which is why
-windowed remains the default and why full is reserved for files that have no usable subtitles.
+**`large-v3-turbo` is the right default**, on both accuracy and stability. `base` is cheaper but
+degenerates on hard audio (see above) and its recall in full mode is poor. `base` remains fine
+for the drift probe, which only needs enough words to align against, and is not affected by the
+occasional repetition loop because drift takes a median over many anchors.
 
-**`base` is not good enough for full mode** (recall 0.33). It remains fine for the drift probe,
-where all that is needed is enough words to align against.
+**Windowed remains the default mode.** Full mode is competitive on quality but transcribes the
+whole file; windowed touches about 5% of an episode's runtime. Full is for files with no usable
+subtitles, which is exactly what M2 built it for.
+
+### What the verified table says
+
+* **`large-v3-turbo` in full mode is the strongest and steadiest cell** — F1 0.80, and a
+  false-positive range of just 1–3 across three runs.
+* **Timing separates the models clearly**: median error 0.134–0.154 s for `large-v3-turbo`
+  against 0.425 s for `base` in windowed mode. That is the comparison the verified labels were
+  needed for, and it could not be made at all before.
+* **`base` in full mode is the worst of both worlds** — recall 0.47 and a false-positive range
+  of 4 to 75. It should not be used for a full pass.
+* **Precision is understated across the board.** The labels were seeded from a windowed
+  `large-v3-turbo` run, so a detection of a word that genuinely is spoken but was never labelled
+  counts as a false positive. `large-v3-turbo`/windowed scoring *lower* precision than `base`
+  is very likely this effect rather than a real difference.
 
 ## The M2 demo: a 56-minute episode with its subtitles removed
 
@@ -209,11 +268,13 @@ instead of `unverified`. That is the number that decides padding.
 
 ## Known gaps
 
-* No labels are verified, so no timing numbers. This is the single most valuable next step, and
-  it needs someone who can listen to the audio.
-* Mute coverage tops out at 0.69. Some of that is timing error and some is padding; a padding
-  sweep (`pad_pre`/`pad_post` at 40/80/120/160 ms) is the obvious follow-up and the harness
-  already supports it by varying settings.
+* 9 of 15 labels are verified. The remaining 6 are clip c2, which cannot be labelled by hand;
+  either accept it as presence-only, or replace it with a clip whose words are separable.
+* Mute coverage is the number to optimise. Some of the shortfall is timing error and some is
+  padding; a padding sweep (`pad_pre`/`pad_post` at 40/80/120/160 ms) is the obvious follow-up,
+  and now that timing is measurable it can be settled rather than argued.
+* Precision needs `--repeat 3` to mean anything, which triples the runtime. If that becomes a
+  problem, pinning `cpu_threads=1` would make runs reproducible at the cost of speed.
 * One episode, one language, one genre.
 
 Conclusions that change behaviour belong in `PLAN.md` §14, not here.

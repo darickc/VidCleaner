@@ -37,8 +37,10 @@ def clip(*labels, negatives=(), start=0.0, end=60.0) -> Clip:
     return Clip(id="c", start=start, end=end, labels=tuple(labels), negatives=tuple(negatives))
 
 
-def label(word: str, start: float, end: float) -> Label:
-    return Label(start=start, end=end, word=word)
+def label(word: str, start: float, end: float, *, verified: bool = True) -> Label:
+    """Verified by default: most of these tests are about timing and coverage,
+    which are only measured against boundaries a human confirmed."""
+    return Label(start=start, end=end, word=word, verified=verified)
 
 
 # -------------------------------------------------------------------- scoring
@@ -315,7 +317,7 @@ def test_audacity_labels_come_back_in_source_time(tmp_path):
     label_set = LabelSet(name="t", file="t.mkv", duration_s=3388.0, clips=(clip,))
     (tmp_path / "c1.txt").write_text("5.620000\t5.970000\tshit\n")
 
-    updated = import_audacity(label_set, tmp_path)
+    updated, _ = import_audacity(label_set, tmp_path)
     label = updated.clips[0].labels[0]
     assert label.start == pytest.approx(1770.62)
     assert label.end == pytest.approx(1770.97)
@@ -329,5 +331,81 @@ def test_a_clip_with_no_exported_track_is_left_alone(tmp_path):
 
     clip = Clip(id="c1", start=0.0, end=10.0, labels=(Label(1.0, 1.5, "shit", "strong"),))
     label_set = LabelSet(name="t", file="t.mkv", duration_s=100.0, clips=(clip,))
-    updated = import_audacity(label_set, tmp_path)
+    updated, _ = import_audacity(label_set, tmp_path)
     assert updated.clips[0].labels == clip.labels
+
+
+def test_an_unverified_label_counts_for_presence_but_not_timing():
+    """Some clips cannot be labelled by hand at all.
+
+    c2 of the committed set is six shouted repetitions of one word running
+    together: the words are certainly there, so it is valid ground truth for
+    *presence*, but nobody can place their boundaries. Scoring its timing would
+    measure the seeding model against itself. Withholding the whole row instead
+    was the old behaviour, and it meant timing was reported never.
+    """
+    metrics = score(
+        clip(label("fuck", 10.0, 10.4, verified=False)),
+        [FakeDetection("fuck", 10.3, 10.7)],
+        [FakeRange(10.0, 10.4)],
+    )
+    assert metrics.true_positives == 1, "presence still counts"
+    assert metrics.recall == 1.0
+    assert metrics.timing_errors == [], "but its boundary is not evidence"
+    assert metrics.mute_coverage == []
+    assert metrics.median_timing_error is None
+
+
+def test_verified_and_unverified_labels_mix_correctly():
+    metrics = score(
+        clip(label("fuck", 10.0, 10.4), label("shit", 20.0, 20.4, verified=False)),
+        [FakeDetection("fuck", 10.05, 10.45), FakeDetection("shit", 20.9, 21.3)],
+    )
+    assert metrics.true_positives == 1
+    assert metrics.false_negatives == 1, "the unverified one is simply too far away"
+    assert len(metrics.timing_errors) == 1
+
+
+def test_an_untouched_track_is_not_marked_verified(tmp_path):
+    """The bug this exists to prevent: exporting a clip, not getting to it, and
+    having the importer certify it anyway."""
+    from scripts.eval import Clip, LabelSet, import_audacity
+
+    original = Label(1765.0 + 5.0, 1765.0 + 5.5, "fuck", "strong", verified=False)
+    clip_ = Clip(id="c1", start=1765.0, end=1790.0, labels=(original,))
+    label_set = LabelSet(name="t", file="t.mkv", duration_s=3388.0, clips=(clip_,))
+    # Exactly what export writes for that label.
+    (tmp_path / "c1.txt").write_text("5.000000\t5.500000\tfuck\n")
+
+    updated, notes = import_audacity(label_set, tmp_path)
+    assert not updated.clips[0].labels[0].verified
+    assert any("unchanged" in n for n in notes)
+
+
+def test_a_moved_boundary_is_marked_verified(tmp_path):
+    from scripts.eval import Clip, LabelSet, import_audacity
+
+    original = Label(1770.0, 1770.5, "fuck", "strong", verified=False)
+    clip_ = Clip(id="c1", start=1765.0, end=1790.0, labels=(original,))
+    label_set = LabelSet(name="t", file="t.mkv", duration_s=3388.0, clips=(clip_,))
+    (tmp_path / "c1.txt").write_text("5.200000\t5.600000\tfuck\n")
+
+    updated, _ = import_audacity(label_set, tmp_path)
+    assert updated.clips[0].labels[0].verified
+    assert updated.clips[0].labels[0].start == pytest.approx(1770.2)
+
+
+def test_a_hand_typed_word_is_mapped_to_a_canonical(tmp_path):
+    """People label what they hear. "fuck it" is a real thing to have heard, and
+    would otherwise have matched no detection at all and read as a miss."""
+    from scripts.eval import Clip, LabelSet, canonical_for, import_audacity
+
+    assert canonical_for("fuck it")[0] == "fuck"
+
+    clip_ = Clip(id="c1", start=1850.0, end=1870.0, labels=())
+    label_set = LabelSet(name="t", file="t.mkv", duration_s=3388.0, clips=(clip_,))
+    (tmp_path / "c1.txt").write_text("14.163584\t14.492396\tfuck it\n")
+
+    updated, notes = import_audacity(label_set, tmp_path)
+    assert updated.clips[0].labels[0].word == "fuck"
+    assert any("canonical" in n for n in notes)
