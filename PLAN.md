@@ -668,6 +668,31 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   byte-for-byte, so existing work dirs still resume. `--model` also now overrides
   `stt_drift_model`, which M2 step 4 would otherwise leave pinned to `small`.
 
+- 2026-09-02 — **M2 step 2 (full-pass robustness) complete.** Three defects that are
+  invisible on 3 minutes of windows and serious on a 2-hour file, all in
+  `whisper_backend.py`:
+  * **`_merge_alignment` collapsed the whole transcript into one segment**, concatenating
+    every segment's text. A full pass would have produced a single `TranscriptSegment` of
+    ~20,000 words — destroying the structure `transcript.json` exists to carry. Aligned words
+    are now placed back into the segment containing their midpoint, so segmentation and text
+    survive; a word nudged just outside its segment goes to the nearest rather than being
+    dropped.
+  * **`_align` handed every segment plus the whole audio file to one `whisperx.align` call.**
+    Now batched (`ALIGN_CHUNK_S = 300`, `ALIGN_CHUNK_SEGMENTS = 128`), with the audio loaded
+    **once** via `whisperx.load_audio` and the array reused — a 2-hour `audio.wav` is ~460 MB
+    as float32. M1's "alignment is optional at runtime" is extended to **per batch**: one bad
+    stretch of audio no longer costs the other 119 minutes their timing accuracy.
+  * **Full-mode progress never moved.** The denominator was `total_window_s`, which is 0 with
+    no windows. It is now `total_window_s or duration_s`, and a full pass measures **position
+    rather than accumulated duration** — with `vad_filter=True` silence produces no segments,
+    so an accumulator stalls partway and never finishes. Recognition also now owns 0→0.80 of
+    the bar and alignment 0.80→1.00, because on a full pass alignment costs about as much as
+    recognition and previously the job sat at 100% for many minutes.
+
+  Verified on 30 s of real speech from the M1 test episode: **3 segments preserved**
+  (one, before), **37/37 words aligned** by real whisperX through the batched path, progress
+  reporting `0.32 → 0.63 → 0.80 → 1.00` where full mode previously emitted only `1.0`.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
