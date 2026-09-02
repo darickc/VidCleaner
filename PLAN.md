@@ -801,6 +801,58 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
 - 2026-09-02 — Re-verified on the real episode after all of the above: **unchanged** —
   `ok`, offset −0.164 s, spread 0.211 s, coverage 0.95, 44 hits, 28 windows / 186.1 s.
 
+- 2026-09-02 — **M2 steps 7–8 (the eval harness and the labelled set) complete.**
+  `backend/scripts/eval.py`, `backend/tests/eval/labels/pluribus_s01e01.yaml` (5 clips,
+  18 labels, committed) and **`docs/eval.md`** — a new top-level directory not in §4's layout.
+  Media is never committed: the labels name one file and are useless without it, which is the
+  intended trade since the timings are the valuable part and they are tiny. Label times are
+  **source container time**, per ONE CLOCK, and the loader rejects a label outside its clip —
+  the likeliest authoring mistake is writing clip-relative times.
+- 2026-09-02 — **§12's ground truth is split in two, because only half of it is knowable
+  without listening.** *Presence* is solid: the English subtitles name the words, so precision
+  and recall mean what they say today. *Timing* is not — a word boundary has to come from
+  someone hearing it, and scoring a model against a boundary seeded by a model is circular.
+  Every label carries `verified: false` and the harness prints `unverified` instead of a timing
+  error until that changes. §12 also asks for "mean timing error"; the harness reports median
+  **and** mean, since M1 already saw a single 4.1 s whisperX span and one such outlier makes a
+  mean describe the outlier. Added beyond §12: **mute coverage**, the fraction of a labelled
+  word the padded, merged ranges actually silence — the only metric that corresponds to "did
+  the viewer hear it", and consistently the lowest number in the table.
+- 2026-09-02 — **Cutting eval clips: `-ss` before `-i` with `-c copy` snaps to the preceding
+  keyframe**, up to 2.5 s early here. Trusting the requested start put a systematic ~1.9 s
+  error into every comparison and made a working detector score 0.21 precision. `-copyts` was
+  tried and rejected — it keeps source timestamps but leaves the muxed subtitle timestamps
+  rebased and the container duration an absolute end time, so the clip disagrees with itself.
+  The working form is a rough input seek followed by an **accurate output seek**, video dropped.
+- 2026-09-02 — **Silero VAD is now OFF by default, and the reason is the most surprising finding
+  of M2.** faster-whisper documents that *"vad_filter will be ignored if clip_timestamps is
+  used"* and gates VAD on `clip_timestamps == "0"` — so VAD has **never applied to this
+  project's default windowed mode**, despite §3 leaning on it to cut hallucination from 40% to
+  0.2%. M1's test that "a 1 kHz tone with `vad_filter=True` produces zero words" was true, but
+  it exercised the *full*-mode path. Where VAD does apply it is actively harmful: measured on
+  the eval set, full mode scores **recall 0.11 with VAD against 0.61 without, at identical
+  precision (0.67 vs 0.69)**. On clip c2 — sixteen seconds of shouted dialogue — Silero reports
+  **zero seconds of speech** at its default threshold and 0.9 s at 0.2; no threshold rescues it.
+  It cost 5.5× the recall on exactly the files full mode exists to serve. An integration test
+  now asserts faster-whisper's documented contract, so a library change re-opens the question
+  instead of silently reversing it.
+- 2026-09-02 — **First measured quality numbers** (5 clips, 18 labels, presence only):
+
+  | model | mode | P | R | F1 | mute cov | wall |
+  |---|---|---|---|---|---|---|
+  | base | windowed | 0.65 | 0.83 | 0.73 | 0.59 | 86 s |
+  | base | full | 0.86 | 0.33 | 0.48 | 0.32 | 97 s |
+  | large-v3-turbo | windowed | 0.78 | 0.78 | 0.78 | 0.62 | 75 s |
+  | **large-v3-turbo** | **full** | **1.00** | **0.72** | **0.84** | **0.69** | 102 s |
+
+  `large-v3-turbo` in full mode is the best configuration measured, and also the slowest
+  (~1.4× realtime), which is exactly why windowed stays the default and full is reserved for
+  files with no usable subtitles. `base` is not good enough for full mode (recall 0.33) but
+  remains fine for the drift probe, which only needs enough words to align against. Caveat
+  recorded in `docs/eval.md`: the labels were seeded from a *windowed* run, so they under-count
+  what a full pass hears and some "false positives" are probably real words missing from the
+  labels.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

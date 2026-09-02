@@ -1,0 +1,81 @@
+# Labelled evaluation clips -- PLAN.md §12's quality loop.
+#
+# ONE CLOCK: every time here is SOURCE CONTAINER TIME of the full episode, the
+# same clock as probe.json / subs.json / transcript.json / detections.json. The
+# harness converts to clip-relative itself. Never author clip-relative times.
+#
+# The media is NOT in this repository and is not ours to distribute. These
+# labels are useless without it, which is the intended trade: the timings are
+# the valuable part and they are tiny.
+#
+# `verified: false` means the span was seeded from the M1 run and NO HUMAN HAS
+# LISTENED TO IT. Presence is still trustworthy -- the English subtitles name
+# the words -- so precision and recall are meaningful today. Timing error is
+# not, and the harness withholds it until the labels are verified. See
+# docs/eval.md.
+
+media:
+  name: pluribus_s01e01
+  file: "PLUR1BUS - S01E01 - We is Us.mkv"
+  duration_s: 3388.416
+
+clips:
+  - id: c1
+    start: 1765.0
+    end: 1790.0
+    note: >-
+      three subtitle-only fallbacks: STT located none of them, so each mutes
+      ~1.2s where the word is ~0.3s
+    labels:
+      - {start: 1770.40, end: 1771.38, word: shit, category: strong, verified: false, note: "seeded from M1: source=subtitle confidence=0.3 SUSPICIOUS"}
+      - {start: 1771.95, end: 1772.92, word: fuck, category: strong, verified: false, note: "seeded from M1: source=subtitle confidence=0.3 SUSPICIOUS"}
+      - {start: 1774.14, end: 1775.13, word: fuck, category: strong, verified: false, note: "seeded from M1: source=subtitle confidence=0.3 SUSPICIOUS"}
+
+  - id: c2
+    start: 1830.0
+    end: 1846.0
+    note: >-
+      dense run of `fuck`, all subtitle+STT agreement, plus one STT-only hit
+      at 0.22 confidence
+    labels:
+      - {start: 1834.83, end: 1834.92, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 1835.46, end: 1835.99, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 1836.64, end: 1837.23, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 1837.50, end: 1837.69, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 1837.86, end: 1838.13, word: fuck, category: strong, verified: false, note: "seeded from M1: source=stt confidence=0.22"}
+      - {start: 1842.98, end: 1843.16, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+
+  - id: c3
+    start: 3015.0
+    end: 3055.0
+    note: >-
+      `goddamn` immediately followed by a bare `god` -- the phrase/compound
+      rollup case
+    labels:
+      - {start: 3021.79, end: 3022.16, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 3030.53, end: 3031.11, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 3040.52, end: 3040.76, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 3043.28, end: 3043.60, word: shit, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 3049.04, end: 3049.80, word: goddamn, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 3049.82, end: 3049.88, word: god, category: religious, verified: false, note: "seeded from M1: source=stt confidence=0.299"}
+
+  - id: c4
+    start: 1850.0
+    end: 1870.0
+    note: >-
+      a subtitle-only `god` beside located `fuck`s: religious category against
+      strong
+    labels:
+      - {start: 1855.25, end: 1856.24, word: god, category: religious, verified: false, note: "seeded from M1: source=subtitle confidence=0.3 SUSPICIOUS"}
+      - {start: 1861.03, end: 1861.13, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+      - {start: 1864.01, end: 1864.45, word: fuck, category: strong, verified: false, note: "seeded from M1: source=both confidence=0.95"}
+
+  - id: c5
+    start: 600.0
+    end: 640.0
+    note: >-
+      CONTROL: no detections in the M1 run. Catches a detector that fires
+      everywhere, which precision over labelled regions alone cannot
+    labels: []
+    # Intentionally empty. A control clip's value is that any detection
+    # here is a false positive, however good the numbers look elsewhere.

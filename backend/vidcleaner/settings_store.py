@@ -51,7 +51,13 @@ class AppSettings(BaseModel):
     )
     cpu_threads: int = Field(default=0, ge=0, description="0 = auto (cores - 2)")
     beam_size: int = Field(default=2, ge=1, le=5)
-    vad_filter: bool = True
+    vad_filter: bool = False
+    """Silero VAD. **Only affects full/audit passes**: faster-whisper documents
+    that "vad_filter will be ignored if clip_timestamps is used", and windowed
+    passes always use clip_timestamps -- so this has never applied to the default
+    mode. Off by default because it is actively harmful where it *does* apply:
+    measured on the eval set, full-mode recall is 0.61 without it and 0.11 with
+    it, at identical precision. See docs/eval.md and the Decision Log."""
     initial_prompt_hint: bool = True
     mute_censored_tokens: bool = True
     preferred_language: str = "eng"

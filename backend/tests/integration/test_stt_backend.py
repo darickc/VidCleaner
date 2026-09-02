@@ -95,6 +95,24 @@ def test_the_progress_callback_reaches_one(transcriber, audio_wav):
     assert seen and seen[-1] == 1.0
 
 
+def test_vad_is_inert_whenever_windows_are_used(transcriber, audio_wav):
+    """faster-whisper: "vad_filter will be ignored if clip_timestamps is used".
+
+    Worth a test because it is the opposite of what the code reads like. §3 leans
+    on VAD to suppress Whisper's hallucination on non-speech, and `vad_filter` is
+    passed on every request -- but a windowed pass always sets `clip_timestamps`,
+    so VAD has never applied to the project's default mode. It applies only to a
+    full pass, which is exactly where it was measured to be harmful (recall 0.11
+    against 0.61 without it). See docs/eval.md.
+    """
+    from faster_whisper.transcribe import WhisperModel
+
+    doc = WhisperModel.transcribe.__doc__ or ""
+    assert "vad_filter will be ignored if clip_timestamps is used" in doc, (
+        "faster-whisper changed this contract; re-measure before trusting vad_filter"
+    )
+
+
 def test_alignment_degrades_gracefully_when_whisperx_is_missing(
     transcriber, audio_wav, monkeypatch
 ):
