@@ -9,6 +9,7 @@ import pytest
 from vidcleaner.matching.compiler import ProfileSpec, build_matcher
 from vidcleaner.pipeline.artifacts import (
     ProfileSnapshot,
+    SubtitleCue,
     SubtitleSource,
     SubtitlesResult,
     TimeRange,
@@ -196,9 +197,17 @@ def _probe():
     )
 
 
-def _subs(windows=()):
+def _subs(windows=(), cues=1):
+    """Subtitles that parsed. ``cues=0`` models a file with no subtitles at all,
+    which ``resolve_mode`` treats very differently -- see ``test_stt_mode.py``.
+    """
     return SubtitlesResult(
-        source=SubtitleSource(kind="embedded", language="eng"), windows=list(windows)
+        source=SubtitleSource(kind="embedded", language="eng"),
+        cues=[
+            SubtitleCue(index=i, start=float(i) * 2, end=float(i) * 2 + 1.5, text="nothing here")
+            for i in range(cues)
+        ],
+        windows=list(windows),
     )
 
 

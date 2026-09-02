@@ -677,7 +677,17 @@ def run(ctx) -> None:
         ctx.matcher = matcher
 
     tokens = tokens_from_transcript(transcript, matcher.never_match)
-    mode = "windowed" if subs.cues else "full"
+    # The transcript records the mode that produced it (`stt.resolve_mode`), and
+    # the detector must match what it was handed. Deriving the mode here
+    # independently -- as this did -- meant `--stt-mode full` on a file that also
+    # had subtitles ran a whole-file transcript through the windowed matcher,
+    # whose cue-midpoint guard then discarded most of what the expensive pass
+    # found. The fallback covers a transcript written before this field existed.
+    mode = (
+        transcript.mode
+        if transcript.segments or transcript.mode_reason
+        else ("windowed" if subs.cues else "full")
+    )
     result = detect(
         matcher=matcher,
         cues=subs.cues,
@@ -692,6 +702,7 @@ def run(ctx) -> None:
     ctx.log.info(
         "detect.done",
         mode=mode,
+        mode_reason=transcript.mode_reason,
         tokens=len(tokens),
         **{k: v for k, v in result.stats.items()},
         muted_s=result.total_muted_s,

@@ -42,6 +42,7 @@ __all__ = [
     "get_transcriber",
     "load",
     "model_for_mode",
+    "resolve_mode",
     "run",
 ]
 
@@ -73,10 +74,18 @@ class TranscribeRequest(BaseModel):
     """``probe.source_audio.start_time``. See the ONE CLOCK note in artifacts."""
     model_cache_dir: Path | None = None
     mode: Literal["windowed", "full", "audit"] = "windowed"
+    duration_s: float = 0.0
+    """The source duration. Only used as the progress denominator for a whole-file
+    pass, where ``total_window_s`` is 0 and progress would otherwise never move."""
 
     @property
     def total_window_s(self) -> float:
         return sum(w.duration for w in self.windows)
+
+    @property
+    def progress_total_s(self) -> float | None:
+        """Denominator for ``on_progress``. ``None`` when nothing is known."""
+        return self.total_window_s or self.duration_s or None
 
 
 @runtime_checkable
@@ -147,6 +156,46 @@ def model_for_mode(settings, mode: str) -> str:
     return settings.stt_full_model
 
 
+def resolve_mode(
+    spec_mode: str,
+    subs: SubtitlesResult,
+    *,
+    duration_s: float,
+    settings,
+) -> tuple[str, str]:
+    """The single place the effective STT mode is chosen. Returns ``(mode, reason)``.
+
+    Both ``stt`` and ``detect`` need the answer, and before this existed they
+    derived it independently -- ``stt`` from ``spec.stt_mode`` and ``detect`` from
+    "are there any cues" -- so a file with unusable subtitles could be transcribed
+    one way and matched the other. The answer is written to ``Transcript.mode``,
+    which makes the artifact the source of truth and keeps a resumed job (or a
+    ``--transcript`` replay) consistent with the run that produced it.
+
+    An explicit ``full``/``audit`` always wins, and deliberately ignores the
+    runtime cap: the cap exists to stop the pipeline *volunteering* for a
+    multi-hour pass, not to overrule someone who asked for one.
+    """
+    if spec_mode != "windowed":
+        return spec_mode, "explicit"
+    if not subs.usable:
+        reason = "subtitles_unusable"
+    elif not subs.cues:
+        reason = "no_subtitles"
+    else:
+        # Cues that parsed and simply contained no profanity are *evidence of a
+        # clean file*, not missing information -- promoting on that would put
+        # every clean episode through a full-file pass, which is the most
+        # expensive thing this pipeline can do and would buy nothing. Only the
+        # absence of usable subtitles justifies transcribing everything.
+        return "windowed", "subtitles" if subs.windows else "no_candidate_windows"
+
+    cap_s = float(getattr(settings, "stt_full_max_hours", 0.0) or 0.0) * 3600.0
+    if cap_s and duration_s > cap_s:
+        return "windowed", "full_skipped_too_long"
+    return "full", reason
+
+
 def resolve_threads(cpu_threads: int = 0) -> int:
     """§4: ``cores - 2`` for CTranslate2, leaving room for the API and ffmpeg."""
     if cpu_threads > 0:
@@ -196,6 +245,7 @@ def build_request(
         time_offset_s=probe.source_audio.start_time,
         model_cache_dir=ctx.deploy.config_dir / "models",
         mode=mode,  # type: ignore[arg-type]
+        duration_s=probe.duration,
     )
 
 
@@ -208,17 +258,29 @@ def run(ctx) -> None:
 
         ctx.matcher = build_matcher()
 
-    mode = ctx.spec.stt_mode
+    mode, reason = resolve_mode(
+        ctx.spec.stt_mode, subs, duration_s=probe.duration, settings=ctx.settings
+    )
     if mode == "windowed" and not subs.windows:
-        # Nothing to transcribe: no cue contained a word-list hit. An empty
-        # transcript is the correct artifact, and M2's full mode is the
-        # fallback for files with no usable subtitles at all.
+        # Either no cue contained a word-list hit (nothing to transcribe), or a
+        # promotion to full was refused by the runtime cap. Either way an empty
+        # transcript is the correct artifact -- but it records *which*, so the
+        # CLI and M3's job row can tell "clean file" from "we gave up".
         Transcript(
             mode="windowed",
             model=model_for_mode(ctx.settings, mode),
             audio_start_offset_s=probe.source_audio.start_time,
+            mode_reason=reason,
         ).write(ctx.ws.transcript_json)
-        ctx.log.info("transcribe.skipped", reason="no candidate windows")
+        if reason == "full_skipped_too_long":
+            ctx.log.warning(
+                "transcribe.full_skipped",
+                reason=reason,
+                duration_s=round(probe.duration, 1),
+                cap_hours=ctx.settings.stt_full_max_hours,
+            )
+        else:
+            ctx.log.info("transcribe.skipped", reason=reason)
         return
 
     request = build_request(ctx, probe, subs, mode=mode)
@@ -229,12 +291,15 @@ def run(ctx) -> None:
         transcriber=transcriber.name,
         model=request.model,
         mode=mode,
+        mode_reason=reason,
         windows=len(request.windows),
         window_seconds=round(request.total_window_s, 1),
         language=request.language,
         threads=resolve_threads(request.cpu_threads),
     )
     transcript = transcriber.transcribe(request, on_progress=lambda f: ctx.progress(NAME, f))
+    # The transcriber reports what it did; the *why* is the stage's to record.
+    transcript = transcript.model_copy(update={"mode_reason": reason})
     transcript.write(ctx.ws.transcript_json)
     ctx.log.info(
         "transcribe.done",

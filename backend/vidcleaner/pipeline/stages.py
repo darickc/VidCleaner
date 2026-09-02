@@ -182,16 +182,26 @@ def get_stage(name: str, registry: dict[str, str] | None = None) -> StageModule:
     return import_module(target)  # type: ignore[return-value]
 
 
-def deterministic_job_id(source: Path, profile_hash: str, prefix: str = "cli") -> str:
+def deterministic_job_id(
+    source: Path, profile_hash: str, prefix: str = "cli", stt_mode: str = "windowed"
+) -> str:
     """A stable id, so re-running ``clean`` resumes instead of redoing STT.
 
     Worth the two lines: it means the resume path is exercised every day rather
     than only by its unit test. M3's real jobs keep the ``jobs`` table's uuid4.
+
+    ``stt_mode`` is part of the id because the profile hash deliberately excludes
+    the STT model and mode (§14). Without it, ``--stt-mode full`` after a windowed
+    run lands in the same work dir, finds ``transcribe.done``, and silently
+    resumes onto the *windowed* transcript -- the expensive flag doing nothing at
+    all. The default mode keeps its old id byte-for-byte, so existing work dirs
+    still resume.
     """
     digest = hashlib.sha1(
         f"{source.resolve()}\0{profile_hash}".encode(), usedforsecurity=False
     ).hexdigest()
-    return f"{prefix}-{digest[:10]}"
+    suffix = "" if stt_mode == "windowed" else f"-{stt_mode}"
+    return f"{prefix}-{digest[:10]}{suffix}"
 
 
 def build_spec(
@@ -210,7 +220,7 @@ def build_spec(
         key: value for key, value in settings.model_dump().items() if key not in SECRET_FIELDS
     }
     return JobSpec(
-        job_id=job_id or deterministic_job_id(source, profile.profile_hash),
+        job_id=job_id or deterministic_job_id(source, profile.profile_hash, stt_mode=stt_mode),
         version=__version__,
         source_path=str(source),
         out_path=str(out) if out else None,

@@ -44,6 +44,18 @@ def add_arguments(parser: argparse.ArgumentParser, *, with_output: bool) -> None
     )
     parser.add_argument("--model", help="override the speech-to-text model")
     parser.add_argument(
+        "--stt-mode",
+        choices=("windowed", "full", "audit"),
+        default="windowed",
+        dest="stt_mode",
+        help=(
+            "windowed: transcribe only the windows the subtitles point at (default); "
+            "full: transcribe the whole file, which is far slower but needs no subtitles; "
+            "audit: a full pass intended for re-checking an already-cleaned file. "
+            "full and audit ignore the stt_full_max_hours cap"
+        ),
+    )
+    parser.add_argument(
         "--transcript",
         type=Path,
         help="replay this transcript.json instead of running speech-to-text",
@@ -264,7 +276,11 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
 
     if args.model:
         settings = settings.model_copy(
-            update={"stt_windowed_model": args.model, "stt_full_model": args.model}
+            update={
+                "stt_windowed_model": args.model,
+                "stt_full_model": args.model,
+                "stt_drift_model": args.model,
+            }
         )
 
     categories = DEFAULT_CATEGORIES
@@ -289,6 +305,7 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
         out=args.out.expanduser() if getattr(args, "out", None) else None,
         dry_run=dry_run,
         force=args.force,
+        stt_mode=getattr(args, "stt_mode", "windowed"),
         job_id=args.job_id,
     )
 

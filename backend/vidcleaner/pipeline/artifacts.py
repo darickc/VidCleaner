@@ -320,9 +320,17 @@ class SubtitlesResult(Artifact):
     windows: list[TimeRange] = Field(default_factory=list)
     """Merged STT candidate windows (§6 step 3)."""
     offset_s: float = 0.0
-    """Drift correction. Always 0.0 in M1; M2's ``drift.py`` fills it in."""
+    """Drift correction, added to every cue time. ``drift.py`` fills it in."""
     reliable: bool = True
-    """False widens windows and disables subtitle-derived timing. M2."""
+    """False widens the windows; the timing is still offset-corrected. See ``drift``."""
+    usable: bool = True
+    """False means the cues do not describe this audio at all (wrong language or
+    wrong episode). Distinct from ``reliable``: unusable subtitles are discarded
+    and the job is promoted to a full-file pass, whereas unreliable ones are kept
+    with wider windows. PLAN.md §6 conflates the two; see the Decision Log."""
+    window_pad_s: float = 0.0
+    """The padding actually applied to each cue. Recorded because ``reliable``
+    widens it, and a resumed job must not have to re-derive which value was used."""
     redactable: list[int] = Field(default_factory=list)
     """Typed indexes of text subtitle streams whose language we can redact."""
     sidecars: list[str] = Field(default_factory=list)
@@ -349,6 +357,12 @@ class TranscriptSegment(BaseModel):
 
 class Transcript(Artifact):
     mode: Literal["windowed", "full", "audit"] = "windowed"
+    """The mode actually used, which is not always ``JobSpec.stt_mode``: a file
+    with no usable subtitles is promoted to ``full``. ``detect`` reads this rather
+    than re-deriving, so the matcher always matches the transcript it was handed."""
+    mode_reason: str = ""
+    """Why that mode. ``full_skipped_too_long`` is the one worth surfacing: it is
+    the difference between "this file is clean" and "we declined to look"."""
     model: str = ""
     align_model: str | None = None
     language: str | None = None

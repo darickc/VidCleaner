@@ -41,6 +41,14 @@ class AppSettings(BaseModel):
     stt_windowed_model: str = "large-v3-turbo"
     stt_full_model: str = "medium"
     stt_drift_model: str = "small"
+    stt_full_max_hours: float = Field(
+        default=3.0,
+        ge=0.0,
+        description=(
+            "Refuse to *promote* a job to a full-file pass above this runtime "
+            "(PLAN.md §13). 0 = no limit. An explicit --stt-mode full ignores it."
+        ),
+    )
     cpu_threads: int = Field(default=0, ge=0, description="0 = auto (cores - 2)")
     beam_size: int = Field(default=2, ge=1, le=5)
     vad_filter: bool = True

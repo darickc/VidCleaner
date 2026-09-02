@@ -640,6 +640,34 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
     with the documented volume env vars, and a settings PATCH round-trips with the API key
     **`enc:v1:`-encrypted at rest** and masked as `***` on read.
 
+- 2026-09-02 — **M2 step 1 (one mode decision) complete.** The effective STT mode was being
+  decided **twice, from different inputs**: `stt.run` read `spec.stt_mode` while `detect.run`
+  recomputed `"windowed" if subs.cues else "full"`. So `--stt-mode full` on a file that also
+  had subtitles ran the whole-file transcript through the *windowed* matcher, which then
+  emitted a 0.3-confidence `source="subtitle"` fallback mute (~1.5 s) for every cue hit the
+  full pass had listened to and **not** heard — muting dialogue on evidence the expensive
+  pass had just refuted. `stt.resolve_mode()` is now the single rule; its answer is written
+  to `Transcript.mode`/`.mode_reason`, so the artifact is the source of truth and a resumed
+  job or a `--transcript` replay cannot disagree with the run that produced it.
+- 2026-09-02 — **"No candidate windows" does *not* promote to a full pass.** Cues that parsed
+  and matched nothing are evidence the file is clean, not missing information; promoting
+  there would put a full-file transcription on every clean episode in the library. Only
+  `no_subtitles` and `subtitles_unusable` promote. Caught by an existing M1 test rather than
+  by review — whose fixture had also never modelled the case its own docstring described (it
+  carried no cues at all); the fixture now does.
+- 2026-09-02 — **§13's "setting to skip full mode above N hours" is `stt_full_max_hours`,
+  default 3.0** (0 = no limit). It is enforced only inside `resolve_mode`, and only against
+  *promotion*: an explicit `--stt-mode full|audit` ignores it, because the cap exists to stop
+  the pipeline volunteering for a multi-hour pass, not to overrule someone who asked for one.
+  A refused promotion records `full_skipped_too_long` in the transcript, which is what makes
+  "we declined to look" distinguishable from "this file is clean".
+- 2026-09-02 — **`deterministic_job_id` now includes a non-default `stt_mode`.** The profile
+  hash deliberately excludes the STT model and mode (§14), so `--stt-mode full` after a
+  windowed run landed in the same work dir, found `transcribe.done` and silently resumed onto
+  the **windowed** transcript — the flag doing nothing whatsoever. Windowed ids are unchanged
+  byte-for-byte, so existing work dirs still resume. `--model` also now overrides
+  `stt_drift_model`, which M2 step 4 would otherwise leave pinned to `small`.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
