@@ -234,7 +234,13 @@ def plan_swap(
     )
     staged = _staged_path(final)
 
-    stat = fs.stat(source)
+    try:
+        stat = fs.stat(source)
+    except OSError as exc:
+        # Raised here, not left as a bare OSError: `preflight` classifies a vanished
+        # source as `stale` (§6's "path vanished" is a recovery path), but planning
+        # runs first and would otherwise make it a terminal swap failure.
+        raise StaleSourceError(NAME, f"source is gone: {source}") from exc
     return SwapPlan(
         job_id=spec.job_id,
         source_path=str(source),

@@ -1,0 +1,406 @@
+"""The worker run loop, driven through a fake stage registry.
+
+No ffmpeg and no torch: `tests/support/stages/` provides a complete registry that
+writes the real artifact models, so everything the loop actually does -- state
+transitions, progress, the job timeline, retry classification, resume, persistence,
+work-dir pruning -- is exercised in milliseconds.
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+from sqlalchemy import select
+
+from tests.support.stages import CONTROL, REGISTRY
+from vidcleaner.config import Settings
+from vidcleaner.db.models import Backup, Detection, Job, JobLog, MediaItem, Title
+from vidcleaner.db.session import session_scope, utcnow
+from vidcleaner.matching.profile import ensure_seed_data
+from vidcleaner.pipeline.stages import StageError
+from vidcleaner.pipeline.workspace import Workspace
+from vidcleaner.worker.claim import MAX_ATTEMPTS, enqueue
+from vidcleaner.worker.runner import Worker
+
+
+@pytest.fixture(autouse=True)
+def control():
+    CONTROL.reset()
+    yield CONTROL
+    CONTROL.reset()
+
+
+@pytest.fixture
+def worker(migrated: Settings, monkeypatch):
+    """A Worker whose jobs run the fake stages."""
+    from vidcleaner.pipeline import stages as stages_mod
+
+    monkeypatch.setattr(stages_mod, "_STAGE_MODULES", dict(REGISTRY))
+    return Worker(migrated, poll_interval=0.01)
+
+
+@pytest.fixture
+def library(migrated: Settings, tmp_path: Path):
+    """A tracked episode whose file really exists, inside a `/media` tree."""
+    ensure_seed_data()
+    folder = migrated.media_dir / "tv" / "Show"
+    folder.mkdir(parents=True, exist_ok=True)
+    source = folder / "S01E01.mkv"
+    source.write_bytes(b"o" * CONTROL.source_size)
+    with session_scope() as session:
+        title = Title(kind="series", arr_id=42, title="Show", enabled=True)
+        session.add(title)
+        session.flush()
+        item = MediaItem(
+            title_id=title.id,
+            kind="episode",
+            season=1,
+            episode=1,
+            path=str(source),
+            status="pending",
+        )
+        session.add(item)
+        session.flush()
+        return item.id, source
+
+
+def queue_job(item_id: int, **kw) -> str:
+    with session_scope() as session:
+        return enqueue(session, media_item_id=item_id, trigger="manual", **kw).job_id
+
+
+def job_row(job_id: str) -> Job:
+    with session_scope() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        session.expunge(job)
+        return job
+
+
+def timeline(job_id: str) -> list[str]:
+    with session_scope() as session:
+        return [
+            r.msg
+            for r in session.scalars(
+                select(JobLog).where(JobLog.job_id == job_id).order_by(JobLog.id)
+            )
+        ]
+
+
+# ------------------------------------------------------------------ happy path
+
+
+def test_a_queued_job_runs_every_stage_and_lands_done(worker, library) -> None:
+    item_id, source = library
+    job_id = queue_job(item_id)
+
+    assert worker.poll_once() is True
+    assert CONTROL.ran == [
+        "probe",
+        "extract",
+        "subtitles",
+        "transcribe",
+        "detect",
+        "render",
+        "verify",
+        "swap",
+        "refresh",
+    ]
+    job = job_row(job_id)
+    assert job.state == "done"
+    assert job.progress_pct == 100.0
+    assert job.claimed_by is None and job.finished_at is not None
+    assert job.attempts == 1, "claims, not failures"
+
+
+def test_the_library_file_is_swapped_and_recorded(worker, library) -> None:
+    item_id, source = library
+    original = source.read_bytes()
+    job_id = queue_job(item_id)
+    worker.poll_once()
+
+    assert source.read_bytes() == b"c" * CONTROL.out_size
+    backup = worker.settings.backups_dir / "tv" / "Show" / "S01E01.mkv"
+    assert backup.read_bytes() == original
+
+    with session_scope() as session:
+        assert session.scalars(select(Backup)).one().state == "kept"
+        item = session.get(MediaItem, item_id)
+        assert item.status == "clean" and item.last_job_id == job_id
+        assert len(session.scalars(select(Detection)).all()) == CONTROL.detections
+
+
+def test_the_timings_come_from_the_markers(worker, library) -> None:
+    import json
+
+    item_id, _ = library
+    job_id = queue_job(item_id)
+    worker.poll_once()
+    timings = json.loads(job_row(job_id).timings_json)
+    assert set(timings) == set(CONTROL.ran)
+
+
+def test_the_timeline_records_the_whole_run(worker, library) -> None:
+    item_id, _ = library
+    job_id = queue_job(item_id)
+    worker.poll_once()
+    messages = timeline(job_id)
+    assert any(m.startswith("claimed") for m in messages)
+    assert any("probe done" in m for m in messages)
+    assert any("swapped" in m for m in messages)
+    assert any("detected" in m for m in messages)
+
+
+def test_the_big_artifacts_are_pruned_but_the_evidence_stays(worker, library) -> None:
+    """Nothing in PLAN.md reclaims `/work`, and `out.mkv` is source-sized."""
+    item_id, _ = library
+    job_id = queue_job(item_id)
+    worker.poll_once()
+
+    ws = Workspace.for_job(job_id, worker.settings)
+    assert not ws.out_mkv.exists() and not ws.audio_wav.exists()
+    assert not ws.graph_txt.exists()
+    assert ws.detections_json.is_file(), "M4 reads this back"
+    assert ws.job_spec.is_file() and ws.probe_json.is_file()
+    assert ws.snippets_dir.is_dir()
+
+
+def test_an_empty_queue_is_no_work(worker) -> None:
+    assert worker.poll_once() is False
+
+
+# --------------------------------------------------------------------- dry run
+
+
+def test_a_dry_run_stops_after_detecting(worker, library) -> None:
+    item_id, source = library
+    original = source.read_bytes()
+    job_id = queue_job(item_id, dry_run=True)
+    worker.poll_once()
+
+    assert CONTROL.ran == ["probe", "extract", "subtitles", "transcribe", "detect"]
+    assert job_row(job_id).state == "done"
+    assert source.read_bytes() == original, "the library is untouched"
+    with session_scope() as session:
+        assert session.get(MediaItem, item_id).status == "pending"
+
+
+# ---------------------------------------------------------------- already clean
+
+
+def test_an_already_clean_file_short_circuits_after_probe(worker, library) -> None:
+    """§4's idempotency loop. `parse_probe` always computed the flag; before this
+    nothing outside the CLI acted on it."""
+    item_id, source = library
+    original = source.read_bytes()
+    CONTROL.already_clean = True
+    job_id = queue_job(item_id)
+    worker.poll_once()
+
+    assert CONTROL.ran == ["probe"]
+    assert job_row(job_id).state == "already_clean"
+    assert source.read_bytes() == original
+    with session_scope() as session:
+        assert session.get(MediaItem, item_id).status == "already_clean"
+
+
+def test_force_overrides_already_clean(worker, library) -> None:
+    item_id, _ = library
+    CONTROL.already_clean = True
+    job_id = queue_job(item_id, force=True)
+    worker.poll_once()
+    assert "render" in CONTROL.ran
+    assert job_row(job_id).state == "done"
+
+
+# ------------------------------------------------------------------- failures
+
+
+def test_a_render_failure_is_terminal(worker, library) -> None:
+    """§6: retrying re-encodes twenty minutes to fail identically."""
+    item_id, source = library
+    original = source.read_bytes()
+    CONTROL.fail["render"] = StageError("render", "ffmpeg exploded")
+    job_id = queue_job(item_id)
+    worker.poll_once()
+
+    job = job_row(job_id)
+    assert (job.state, job.stage) == ("failed", "render")
+    assert job.retry_at is None
+    assert source.read_bytes() == original, "the library is untouched"
+    with session_scope() as session:
+        assert session.get(MediaItem, item_id).status == "failed"
+
+
+def test_a_verify_failure_leaves_the_library_alone(worker, library) -> None:
+    item_id, source = library
+    original = source.read_bytes()
+    CONTROL.verify_ok = False
+    job_id = queue_job(item_id)
+    worker.poll_once()
+
+    assert job_row(job_id).state == "failed"
+    assert source.read_bytes() == original
+    assert "swap" not in CONTROL.ran
+
+
+def test_an_early_failure_is_requeued_with_a_backoff(worker, library) -> None:
+    item_id, _ = library
+    CONTROL.fail["subtitles"] = StageError("subtitles", "transient")
+    job_id = queue_job(item_id)
+    worker.poll_once()
+
+    job = job_row(job_id)
+    assert job.state == "queued"
+    assert job.retry_at is not None and job.retry_at > utcnow() + timedelta(seconds=30)
+    assert job.error == "transient"
+    # Not claimable yet, so the loop does not spin on it.
+    assert worker.poll_once() is False
+
+
+def test_a_job_that_keeps_failing_is_retired(worker, library) -> None:
+    item_id, _ = library
+    CONTROL.fail["subtitles"] = StageError("subtitles", "always")
+    job_id = queue_job(item_id)
+
+    for _ in range(MAX_ATTEMPTS):
+        with session_scope() as session:
+            session.get(Job, job_id).retry_at = None
+        worker.poll_once()
+
+    job = job_row(job_id)
+    assert job.state == "failed" and job.attempts == MAX_ATTEMPTS
+
+
+def test_a_refresh_failure_still_leaves_the_job_done(worker, library) -> None:
+    """The swap already committed: the library file is correct and a retry would
+    re-run the one non-idempotent stage."""
+    item_id, source = library
+    CONTROL.fail["refresh"] = StageError("refresh", "sonarr is down")
+    job_id = queue_job(item_id)
+    worker.poll_once()
+
+    assert job_row(job_id).state == "done"
+    assert source.read_bytes() == b"c" * CONTROL.out_size
+    assert any("continuing" in m for m in timeline(job_id))
+    with session_scope() as session:
+        assert session.get(MediaItem, item_id).status == "clean"
+
+
+def test_a_vanished_source_is_stale_after_one_retry(worker, library) -> None:
+    item_id, source = library
+    source.unlink()
+    job_id = queue_job(item_id)
+
+    worker.poll_once()
+    assert job_row(job_id).state == "queued", "requeued once, per §6"
+    with session_scope() as session:
+        session.get(Job, job_id).retry_at = None
+    worker.poll_once()
+    assert job_row(job_id).state == "stale"
+
+
+# --------------------------------------------------------------------- resume
+
+
+def test_a_resumed_job_skips_completed_stages(worker, library) -> None:
+    item_id, _ = library
+    CONTROL.fail["render"] = StageError("render", "boom")
+    job_id = queue_job(item_id)
+    worker.poll_once()
+    first = list(CONTROL.ran)
+    assert "detect" in first
+
+    CONTROL.reset()
+    with session_scope() as session:
+        job = session.get(Job, job_id)
+        job.state = "queued"
+        job.retry_at = None
+        job.attempts = 0
+    worker.poll_once()
+
+    assert "probe" not in CONTROL.ran, "resumed from the markers"
+    assert CONTROL.ran[0] == "render"
+    assert job_row(job_id).state == "done"
+
+
+def test_a_resumed_job_does_not_report_zero_percent(worker, library) -> None:
+    """`run_stage` skips a completed stage without calling progress at all."""
+    item_id, _ = library
+    CONTROL.fail["swap"] = StageError("swap", "boom")
+    job_id = queue_job(item_id)
+    worker.poll_once()
+
+    CONTROL.reset()
+    CONTROL.fail["swap"] = StageError("swap", "boom again")
+    with session_scope() as session:
+        job = session.get(Job, job_id)
+        job.state = "queued"
+        job.retry_at = None
+    worker.poll_once()
+    assert job_row(job_id).progress_pct > 50
+
+
+def test_a_changed_profile_discards_the_work_dir(worker, library) -> None:
+    from vidcleaner.db.models import WhitelistEntry
+    from vidcleaner.matching.profile import clear_matcher_cache
+
+    item_id, _ = library
+    CONTROL.fail["render"] = StageError("render", "boom")
+    job_id = queue_job(item_id)
+    worker.poll_once()
+
+    with session_scope() as session:
+        session.add(
+            WhitelistEntry(scope="item", scope_id=item_id, canonical_word="shit", context_text=None)
+        )
+    clear_matcher_cache()
+
+    CONTROL.reset()
+    with session_scope() as session:
+        job = session.get(Job, job_id)
+        job.state = "queued"
+        job.retry_at = None
+        job.attempts = 0
+    worker.poll_once()
+
+    assert CONTROL.ran[0] == "probe", "everything re-ran under the new profile"
+    assert any("work dir discarded" in m for m in timeline(job_id))
+
+
+# ------------------------------------------------------------------ the loop
+
+
+def test_the_loop_recovers_a_stale_job_on_startup(worker, library) -> None:
+    item_id, _ = library
+    job_id = queue_job(item_id)
+    with session_scope() as session:
+        job = session.get(Job, job_id)
+        job.state = "transcribing"
+        job.claimed_by = "a-dead-worker"
+        job.heartbeat = None
+
+    import threading
+
+    thread = threading.Thread(target=worker.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(200):
+            if job_row(job_id).state == "done":
+                break
+            import time
+
+            time.sleep(0.02)
+    finally:
+        worker.request_stop()
+        thread.join(5)
+    assert job_row(job_id).state == "done"
+
+
+def test_the_scheduler_only_runs_when_the_queue_is_idle(worker, library) -> None:
+    ran = worker.scheduler.tick()
+    assert "recover_stale" in ran and "gc_work_dirs" in ran
+    # Nothing is due a second time immediately.
+    assert worker.scheduler.tick() == []

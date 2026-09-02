@@ -72,10 +72,19 @@ class JobMonitor:
     # ------------------------------------------------------------- reporting
 
     def set_stage(self, stage: str, state: str) -> None:
+        """Publish a stage transition immediately, rather than on the next tick.
+
+        There are at most ten of these per job -- nothing beside ffmpeg's
+        roughly-per-second progress callbacks -- and they are the moments §9.1's
+        Queue page actually needs. Without it a job that finishes in under one tick
+        never records a stage at all, so the row still says `probing` when it is
+        done, and a crashed job's `state` is no guide to where it stopped.
+        """
         with self._lock:
             self._stage = stage
             self._state = state
             self._pct = self.tracker.absolute(stage, 0.0)
+        self.beat()
 
     def report(self, stage: str, fraction: float) -> None:
         """``on_progress``. Deliberately does no I/O: the thread owns the writes."""

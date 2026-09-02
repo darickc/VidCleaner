@@ -132,6 +132,18 @@ def test_the_monitor_writes_stage_state_and_progress(migrated: Settings) -> None
         assert job.heartbeat is not None
 
 
+def test_a_stage_transition_is_published_immediately(migrated: Settings) -> None:
+    """A job shorter than one tick would otherwise still read `probing` when done,
+    and a crashed job's state would be no guide to where it stopped."""
+    job_id = queued_job()
+    claim_next(worker_id="w1", settings=migrated)
+    monitor = monitor_for(job_id, migrated)
+    monitor.set_stage("detect", "detecting")  # no beat() call
+    with session_scope() as session:
+        job = session.get(Job, job_id)
+        assert (job.state, job.stage) == ("detecting", "detect")
+
+
 def test_the_monitor_stops_when_the_job_is_cancelled(migrated: Settings) -> None:
     job_id = queued_job()
     claim_next(worker_id="w1", settings=migrated)

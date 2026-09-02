@@ -21,9 +21,22 @@ def test_run_exits_when_stop_is_requested(migrated: Settings) -> None:
     assert not thread.is_alive()
 
 
-def test_poll_once_does_no_work_yet(migrated: Settings) -> None:
-    # Guards the M0 contract: no queue behaviour until M3 implements claiming.
+def test_poll_once_finds_nothing_on_an_empty_queue(migrated: Settings) -> None:
+    """The queue behaviour itself lives in tests/unit/test_worker_run.py."""
     assert Worker(migrated).poll_once() is False
+
+
+def test_the_worker_registers_the_swap_reconciler(migrated: Settings) -> None:
+    """Stale recovery cannot resolve an interrupted swap without it, and the queue
+    deliberately does not import the pipeline to get it (the api imports the queue)."""
+    from vidcleaner.worker import claim
+
+    claim.SWAP_RECONCILER = None
+    try:
+        Worker(migrated)
+        assert claim.SWAP_RECONCILER is not None
+    finally:
+        claim.SWAP_RECONCILER = None
 
 
 def test_check_database_succeeds_after_migration(migrated: Settings) -> None:

@@ -11,6 +11,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select
 
 from vidcleaner.config import Settings
@@ -28,6 +29,17 @@ from vidcleaner.worker.claim import (
     reprioritize,
     should_abort,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_swap_reconciler():
+    """`claim.SWAP_RECONCILER` is process-wide state that `Worker.__init__` sets, so
+    any test that has constructed a Worker leaks it into these. Reset around each
+    test: the default (unset) behaviour is itself under test here."""
+    previous = claim_mod.SWAP_RECONCILER
+    claim_mod.SWAP_RECONCILER = None
+    yield
+    claim_mod.SWAP_RECONCILER = previous
 
 
 def make_items(count: int = 1) -> list[int]:

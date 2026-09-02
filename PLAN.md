@@ -1456,6 +1456,86 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   `Settings.auto_migrate` already existed for exactly this ("mainly smooths dev runs"); a
   failure warns rather than showing a traceback.
 
+- 2026-09-02 — **M3 step 9 (the worker run loop) complete.** `worker/runner.py`,
+  `worker/scheduler.py`, `worker/gc.py`, and `tests/support/stages/` -- a complete fake stage
+  registry. Verified: 1503 passed, including a real worker-driven clean-and-swap of the
+  generated fixture through real ffmpeg, and a kill/resume test.
+- 2026-09-02 — **The runner walks the stages itself rather than calling `run_pipeline`.** It
+  needs to write `jobs.state` per stage, check for a cancellation between them, and re-weight
+  the progress bar when a job is promoted to a full-file pass; `run_pipeline` stays the CLI's
+  path and the one the tests use. §4's "resume from the last completed stage marker" therefore
+  works exactly as before, because `run_stage` is still the only thing that reads or writes a
+  marker.
+- 2026-09-02 — **`tests/support/stages/` is the payoff of `StageContext.stage_registry` being
+  injectable** (M1 step 2 made it per-context "so the worker need not touch
+  `_STAGE_MODULES`"). Nine tiny modules that write the *real* artifact models mean the whole
+  run loop -- state transitions, progress, the timeline, retry classification, resume,
+  persistence, work-dir pruning -- is exercised in under a second with no ffmpeg and no torch.
+  `swap` and `refresh` are **not** faked there: both already have their own injection seams
+  (`FsOps`, `httpx.MockTransport`), so faking them again would only test the fake.
+- 2026-09-02 — **Three real bugs found by that test rather than by review.** (a) `persist_run`
+  never cleared `claimed_by`/`heartbeat`, so a finished job stayed marked as owned by a worker
+  and §9.1's Queue page would have shown it as running forever; it now applies the same rule
+  `claim.set_state` does. (b) `plan_swap` stat'ed the source *before* `preflight` could look at
+  it, so a file that vanished between render and swap surfaced as a bare `OSError` — which
+  `classify` reads as a terminal swap failure — instead of `StaleSourceError`, which §6 says
+  should re-resolve and requeue once. (c) **The worst one:** `run_job` seeded its outcome with
+  `"done"` and recorded it in `finally`, so anything escaping the stage machine that
+  `poll_once` does not catch — a `BaseException` such as `KeyboardInterrupt` — marked an
+  unfinished job **done** and its item **clean**, with no swap having happened. The outcome is
+  now `None` until `_drive` returns, and an escape records nothing and leaves the claim, which
+  is precisely what stale recovery expects from a killed process.
+- 2026-09-02 — **A stage transition is published to the database immediately, not on the next
+  heartbeat tick.** There are at most ten per job — nothing beside ffmpeg's
+  roughly-per-second progress callbacks — and they are the moments §9.1's Queue page actually
+  needs. Without it a job that finishes inside one 5 s tick never records a stage at all: the
+  row still said `probing` when it was done, and a crashed job's `state` was no guide to where
+  it stopped. Found by the kill/resume test.
+- 2026-09-02 — **§6.1's stability wait and free-space check are now wired in, and both were
+  dead.** `probe.wait_for_stable` had zero callers; it runs for `trigger == "webhook"` only,
+  because a `Download` can fire while Sonarr is still hardlinking and everything else would pay
+  at least 10 s for nothing. `check_free_space` only logged a warning; for a non-dry-run job it
+  is now a real precondition that fails the job before any work.
+- 2026-09-02 — **§4's `already_clean` short-circuit now exists outside the CLI.** `parse_probe`
+  has computed the flag since M1 and nothing acted on it; the runner stops after `probe`, and
+  `force` suppresses it. An integration test drives it through a real swap: cleaning the same
+  file twice reports `already_clean` the second time, which closes §4's idempotency loop for
+  the worker.
+- 2026-09-02 — **§4's `render_parallel` is not achievable in the current stage driver and now
+  says so.** `run_pipeline` is strictly sequential over one work dir; overlapping render N with
+  STT N+1 would need two claim lanes plus semaphores. M3 runs serially and writes a job-timeline
+  warning when the setting is above 1 — the same treatment M2 gave `vad_filter` rather than
+  leaving a setting that silently does nothing.
+- 2026-09-02 — **Nothing reclaimed `/work`, and PLAN.md never mentions it.** This is the
+  failure that would actually take the box down: `out.mkv` is source-sized (4.57 GiB in the M1
+  demo) plus roughly 110 MB per hour of `audio.wav`, and §10 puts `/work` on a cache SSD.
+  `worker/gc.py` *prunes* a finished job — `out.mkv`, `audio.wav`, `graph.txt`, `subs/`,
+  `redacted/` — and keeps `job.json`, the JSON artifacts, `ffmpeg.log`, the markers and
+  `snippets/`, because §6 step 10 puts the UI's snippet audio there and M4 reads
+  `detections.json` back. Whole directories are collected only once the job has been terminal
+  for a week, and an *unknown* directory (a CLI run's) only when it is that old too, so a run in
+  progress is never touched.
+- 2026-09-02 — **Periodic work is split by resource, one owner each.** The worker owns what
+  needs queue idleness or the volumes — stale recovery, `/work` collection, §6's audit pass —
+  and `Scheduler.tick()` is called only when `poll_once` found nothing, so every task inherits
+  "runs when the queue is idle" for free, which is exactly what §6 requires of the audit pass.
+  The api owns the hourly arr sync, because a timer in the worker fires however late the current
+  ffmpeg or STT stage happens to be. Last-run times are in memory: a restart re-running one of
+  these is harmless and much cheaper than a table to persist them.
+- 2026-09-02 — The audit pass enqueues **one item per tick** and only for items whose last job
+  actually ran in `windowed` mode — a full pass over a file that already had one would find the
+  same thing at the same cost — and never twice for the same item. §6 says it "runs only when no
+  normal jobs are queued", which the scheduler's idle gating gives it directly.
+- 2026-09-02 — `Worker` gained a `transcriber` parameter, the same seam `build_context` already
+  exposes. It is what lets the ffmpeg integration tier drive a real job end to end (claim →
+  stages → real swap → backups row) without downloading a 2 GB model, using the
+  `ScriptedTranscriber` that already ships in production for `--transcript`.
+- 2026-09-02 — `claim.SWAP_RECONCILER` is process-wide state that `Worker.__init__` sets (so the
+  queue, which the api imports for webhooks, never has to import the pipeline). That leaks
+  between tests, so `tests/unit/test_claim.py` resets it around each test — the *unset*
+  behaviour is itself under test there, since defaulting an interrupted swap to `failed` is the
+  safe direction.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

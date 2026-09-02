@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from vidcleaner.db.constants import TERMINAL_STATES
 from vidcleaner.db.models import Backup, Job, MediaItem, Title
 from vidcleaner.db.models import Detection as DetectionRow
 from vidcleaner.db.session import utcnow
@@ -166,6 +167,12 @@ def persist_run(
     job.error = error
     job.started_at = job.started_at or spec.created_at or datetime.now(UTC)
     job.finished_at = datetime.now(UTC)
+    if state in TERMINAL_STATES:
+        # The same rule `claim.set_state` applies. Without it a finished job keeps
+        # `claimed_by`, so the Queue page shows it as still owned by a worker --
+        # found by the run-loop test, not by review.
+        job.claimed_by = None
+        job.heartbeat = None
     session.flush()
 
     count = 0
