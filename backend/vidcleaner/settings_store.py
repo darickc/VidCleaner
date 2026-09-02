@@ -56,6 +56,19 @@ class AppSettings(BaseModel):
     mute_censored_tokens: bool = True
     preferred_language: str = "eng"
 
+    # --- subtitle drift (§6 step 3) ---
+    drift_check: bool = True
+    """Measure the subtitle offset before choosing STT windows. ~10 s per job."""
+    drift_window_pad_s: float = Field(
+        default=6.0,
+        ge=0.0,
+        le=30.0,
+        description=(
+            "Cue padding used when drift says the timing is unreliable. §6 step 3's "
+            "+-6 s; the reliable case keeps subtitles.WINDOW_PAD_S."
+        ),
+    )
+
     # --- detection & muting (§7) ---
     pad_pre_ms: int = Field(default=80, ge=0, le=2000)
     pad_post_ms: int = Field(default=120, ge=0, le=2000)

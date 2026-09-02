@@ -387,13 +387,41 @@ def run(ctx) -> None:
         cues = parse_cues(extracted)
 
     hits = find_hits(cues, matcher)
-    windows = cue_windows(cues, hits, duration=probe.duration or None)
+
+    # cues -> hits -> drift -> windows. §6 step 3 lists the windows first, but
+    # the drift verdict chooses both the padding and the offset they are built
+    # with, so it has to run before them. The check runs even when there are no
+    # hits: zero hits means either "a clean episode" or "the wrong subtitle
+    # file", and drift is the only thing that can tell those apart.
+    drift_result = _measure_drift(ctx, cues, probe)
+    drift_result.write(ctx.ws.drift_json)
+
+    pad_s = WINDOW_PAD_S
+    offset_s = drift_result.offset_s
+    usable = True
+    if drift_result.action == "discard":
+        # Timing only. The cues stay -- they are the evidence for this verdict --
+        # and so does `redactable`: redaction is text-local and correct whatever
+        # the sync is.
+        hits, offset_s, usable = [], 0.0, False
+    elif drift_result.action == "unreliable":
+        pad_s = ctx.settings.drift_window_pad_s
+
+    windows = (
+        cue_windows(cues, hits, pad_s=pad_s, duration=probe.duration or None, offset_s=offset_s)
+        if usable
+        else []
+    )
 
     result = SubtitlesResult(
         source=source,
         cues=cues,
         hits=hits,
         windows=windows,
+        offset_s=offset_s,
+        reliable=drift_result.action != "unreliable",
+        usable=usable,
+        window_pad_s=pad_s,
         redactable=redactable_streams(probe),
         sidecars=[str(s) for s in sidecars],
     )
@@ -407,8 +435,29 @@ def run(ctx) -> None:
         windows=len(windows),
         window_seconds=round(sum(w.duration for w in windows), 1),
         redactable=len(result.redactable),
+        drift=drift_result.action,
+        drift_reason=drift_result.reason,
+        offset_s=round(offset_s, 3),
+        coverage=drift_result.coverage,
+        pad_s=pad_s,
     )
     result.write(ctx.ws.subs_json)
+
+
+def _measure_drift(ctx, cues, probe):
+    """Run the drift check, or explain in the artifact why it did not run."""
+    from vidcleaner.pipeline.artifacts import DriftResult  # noqa: PLC0415
+
+    if not cues:
+        return DriftResult(action="skipped", reason="no_cues")
+    if not ctx.settings.drift_check:
+        return DriftResult(action="skipped", reason="disabled")
+
+    # Imported here, not at module scope: `drift` reaches a transcriber, and
+    # `tests/unit/test_no_stt_import.py` asserts this module stays torch-free.
+    from vidcleaner.pipeline import drift  # noqa: PLC0415
+
+    return drift.measure_drift(ctx, cues, probe)
 
 
 def load(ws: Workspace) -> SubtitlesResult:

@@ -14,6 +14,7 @@ from rapidfuzz import fuzz
 from vidcleaner.pipeline.artifacts import SubtitleCue, TranscriptWord
 from vidcleaner.pipeline.drift import (
     MIN_ANCHOR_LEN,
+    Measurement,
     Observation,
     align_probe,
     build_result,
@@ -180,55 +181,73 @@ def obs(cue_index: int, deltas, coverage: float = 1.0) -> Observation:
 
 
 def test_a_constant_offset_has_no_spread():
-    offset, spread, coverage, probes = measure(
-        [obs(0, [0.5, 0.52]), obs(1, [0.49, 0.51]), obs(2, [0.5, 0.5])]
-    )
-    assert offset == pytest.approx(0.5, abs=0.02)
-    assert spread < 0.05
-    assert (coverage, probes) == (1.0, 3)
+    m = measure([obs(0, [0.5, 0.52]), obs(1, [0.49, 0.51]), obs(2, [0.5, 0.5])])
+    assert m.offset_s == pytest.approx(0.5, abs=0.02)
+    assert m.spread_s < 0.05
+    assert (m.coverage, m.probes, m.timed) == (1.0, 3, 3)
 
 
 def test_a_growing_offset_shows_up_as_spread():
     """Subtitles for another cut: no single correction fixes them."""
-    _, spread, _, _ = measure([obs(0, [0.1]), obs(1, [1.4]), obs(2, [2.9])])
-    assert spread == pytest.approx(2.8, abs=0.01)
+    m = measure([obs(0, [0.1]), obs(1, [1.4]), obs(2, [2.9])])
+    assert m.spread_s == pytest.approx(2.8, abs=0.01)
 
 
 def test_no_observations_measure_to_zero():
-    assert measure([]) == (0.0, 0.0, 0.0, 0)
+    assert measure([]) == Measurement()
+
+
+def test_a_track_that_pairs_nothing_still_counts_as_probed():
+    """Otherwise the wrong-episode case reports "not checked" and is trusted."""
+    m = measure([obs(0, [], coverage=0.0), obs(1, [], coverage=0.0)])
+    assert (m.probes, m.timed) == (2, 0)
 
 
 # ------------------------------------------------------------------ verdicts
 
 
 def test_well_timed_subtitles_are_ok():
-    assert decide(offset_s=0.05, spread_s=0.02, coverage=0.9, probes=3)[0] == "ok"
+    assert (
+        decide(Measurement(offset_s=0.05, spread_s=0.02, coverage=0.9, probes=3, timed=3))[0]
+        == "ok"
+    )
 
 
 def test_a_large_offset_is_unreliable_not_discarded():
     """A measurable offset is correctable; widened windows beat a full pass."""
-    action, reason = decide(offset_s=2.4, spread_s=0.1, coverage=0.9, probes=3)
+    action, reason = decide(
+        Measurement(offset_s=2.4, spread_s=0.1, coverage=0.9, probes=3, timed=3)
+    )
     assert (action, reason) == ("unreliable", "offset_above_threshold")
 
 
 def test_a_large_spread_is_unreliable():
-    action, reason = decide(offset_s=0.1, spread_s=1.9, coverage=0.9, probes=3)
+    action, reason = decide(
+        Measurement(offset_s=0.1, spread_s=1.9, coverage=0.9, probes=3, timed=3)
+    )
     assert (action, reason) == ("unreliable", "spread_above_threshold")
 
 
 def test_low_coverage_discards_the_subtitles():
     """Wrong language or wrong episode: the cues do not describe this audio."""
-    action, reason = decide(offset_s=0.0, spread_s=0.0, coverage=0.05, probes=3)
+    action, reason = decide(
+        Measurement(offset_s=0.0, spread_s=0.0, coverage=0.05, probes=3, timed=3)
+    )
     assert (action, reason) == ("discard", "coverage_below_threshold")
 
 
 def test_coverage_is_checked_before_offset():
     """An offset computed from two lucky pairings is not evidence of anything."""
-    assert decide(offset_s=9.0, spread_s=0.0, coverage=0.1, probes=3)[0] == "discard"
+    assert (
+        decide(Measurement(offset_s=9.0, spread_s=0.0, coverage=0.1, probes=3, timed=3))[0]
+        == "discard"
+    )
 
 
 def test_too_few_probes_is_skipped_not_a_verdict():
-    action, reason = decide(offset_s=5.0, spread_s=0.0, coverage=0.0, probes=1)
+    action, reason = decide(
+        Measurement(offset_s=5.0, spread_s=0.0, coverage=0.0, probes=1, timed=1)
+    )
     assert (action, reason) == ("skipped", "too_few_probes")
 
 

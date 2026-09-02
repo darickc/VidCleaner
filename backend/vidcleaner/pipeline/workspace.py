@@ -106,6 +106,12 @@ class Workspace:
         return self.root / "subs.json"
 
     @property
+    def drift_json(self) -> Path:
+        """Evidence for the subtitle timing verdict. A secondary artifact of the
+        ``subtitles`` stage, which is why there is no ``drift`` stage marker."""
+        return self.root / "drift.json"
+
+    @property
     def transcript_json(self) -> Path:
         return self.root / "transcript.json"
 

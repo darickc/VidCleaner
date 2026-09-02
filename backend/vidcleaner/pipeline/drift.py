@@ -70,10 +70,12 @@ __all__ = [
     "PROBE_PAD_S",
     "ProbePlan",
     "SubWord",
+    "Measurement",
     "align_probe",
     "cue_word_spans",
     "decide",
     "measure",
+    "measure_drift",
     "plan_probes",
 ]
 
@@ -251,8 +253,23 @@ def align_probe(plan: ProbePlan, stt_words: Sequence[TranscriptWord]) -> Observa
     )
 
 
-def measure(observations: Iterable[Observation]) -> tuple[float, float, float, int]:
-    """Aggregate probes into ``(offset_s, spread_s, coverage, usable_probes)``.
+@dataclass(frozen=True, slots=True)
+class Measurement:
+    offset_s: float = 0.0
+    spread_s: float = 0.0
+    coverage: float = 0.0
+    probes: int = 0
+    """Probes actually transcribed. Distinct from ``timed``, and the distinction
+    matters: a subtitle track for the wrong episode pairs *nothing*, so it has
+    three probes and zero timings. Counting only timed probes reported that as
+    "not checked" -- and therefore trustworthy -- which is exactly backwards for
+    the case §6's similarity rule exists to catch."""
+    timed: int = 0
+    """Probes that yielded at least one anchor, i.e. that have an offset."""
+
+
+def measure(observations: Iterable[Observation]) -> Measurement:
+    """Aggregate probes into a :class:`Measurement`.
 
     ``spread`` is over the *per-probe* medians, not over every pair: a constant
     offset means the subs are merely shifted, whereas an offset that grows across
@@ -260,23 +277,22 @@ def measure(observations: Iterable[Observation]) -> tuple[float, float, float, i
     """
     observations = list(observations)
     if not observations:
-        return 0.0, 0.0, 0.0, 0
+        return Measurement()
 
     medians = [o.median for o in observations if o.median is not None]
     all_deltas = [d for o in observations for d in o.deltas]
-    coverage = statistics.fmean(o.coverage for o in observations)
-
-    offset = statistics.median(all_deltas) if all_deltas else 0.0
-    spread = (max(medians) - min(medians)) if len(medians) > 1 else 0.0
-    return offset, spread, coverage, len(medians)
+    return Measurement(
+        offset_s=statistics.median(all_deltas) if all_deltas else 0.0,
+        spread_s=(max(medians) - min(medians)) if len(medians) > 1 else 0.0,
+        coverage=statistics.fmean(o.coverage for o in observations),
+        probes=len(observations),
+        timed=len(medians),
+    )
 
 
 def decide(
+    measurement: Measurement,
     *,
-    offset_s: float,
-    spread_s: float,
-    coverage: float,
-    probes: int,
     max_offset_s: float = MAX_OFFSET_S,
     max_spread_s: float = MAX_SPREAD_S,
     min_coverage: float = MIN_COVERAGE,
@@ -289,13 +305,17 @@ def decide(
     still worth using, just imprecisely, and widened windows cost a fraction of a
     full pass. Only cues that do not describe this audio at all are discarded.
     """
-    if probes < MIN_PROBES:
+    if measurement.probes < MIN_PROBES:
         return "skipped", "too_few_probes"
-    if coverage < min_coverage:
+    # Coverage first, and against *attempted* probes: a track that pairs nothing
+    # is the strongest possible evidence that it does not belong to this audio.
+    if measurement.coverage < min_coverage:
         return "discard", "coverage_below_threshold"
-    if abs(offset_s) > max_offset_s:
+    if measurement.timed < MIN_PROBES:
+        return "skipped", "too_few_anchors"
+    if abs(measurement.offset_s) > max_offset_s:
         return "unreliable", "offset_above_threshold"
-    if spread_s > max_spread_s:
+    if measurement.spread_s > max_spread_s:
         return "unreliable", "spread_above_threshold"
     return "ok", "within_thresholds"
 
@@ -309,19 +329,17 @@ def build_result(
     **thresholds,
 ) -> DriftResult:
     """Assemble the artifact from the pure pieces."""
-    offset_s, spread_s, coverage, probes = measure(observations)
-    action, reason = decide(
-        offset_s=offset_s, spread_s=spread_s, coverage=coverage, probes=probes, **thresholds
-    )
+    measurement = measure(observations)
+    action, reason = decide(measurement, **thresholds)
     by_index = {p.cue_index: p for p in plans}
     return DriftResult(
         checked=action != "skipped",
         model=model,
         action=action,  # type: ignore[arg-type]
         reason=reason,
-        offset_s=round(offset_s, 4),
-        spread_s=round(spread_s, 4),
-        coverage=round(coverage, 4),
+        offset_s=round(measurement.offset_s, 4),
+        spread_s=round(measurement.spread_s, 4),
+        coverage=round(measurement.coverage, 4),
         elapsed_s=round(elapsed_s, 3),
         probes=[
             DriftProbe(
@@ -337,3 +355,70 @@ def build_result(
             for o in observations
         ],
     )
+
+
+# ----------------------------------------------------------------- the shell
+
+
+def measure_drift(ctx, cues: Sequence[SubtitleCue], probe) -> DriftResult:
+    """The only impure function here: transcribe the probes and measure.
+
+    All probes go into a **single** transcriber call -- ``clip_timestamps``
+    already takes a list of windows -- so the cost is one model load and a few
+    tens of seconds of audio, not one pass per probe.
+
+    Any failure downgrades to "not checked" rather than failing the job. The
+    measurement is an optimisation of the timing: losing it costs precision,
+    which the detector's guards already absorb, while failing the job costs the
+    whole episode.
+    """
+    import time  # noqa: PLC0415
+
+    from vidcleaner.pipeline import lang  # noqa: PLC0415
+    from vidcleaner.pipeline.stt import TranscribeRequest, model_for_mode  # noqa: PLC0415
+
+    model = model_for_mode(ctx.settings, "drift")
+    plans = plan_probes(cues, duration=probe.duration or None)
+    if len(plans) < MIN_PROBES:
+        return DriftResult(checked=False, model=model, action="skipped", reason="too_few_probes")
+    if not ctx.ws.audio_wav.is_file():
+        return DriftResult(checked=False, model=model, action="skipped", reason="no_audio")
+
+    transcriber = ctx.transcriber
+    if transcriber is None:
+        from vidcleaner.pipeline.stt import get_transcriber  # noqa: PLC0415
+
+        transcriber = get_transcriber(ctx.settings, mode="drift")
+
+    request = TranscribeRequest(
+        audio_path=ctx.ws.audio_wav,
+        windows=[p.span for p in plans],
+        model=model,
+        language=lang.to_iso639_1(ctx.settings.preferred_language),
+        beam_size=ctx.settings.beam_size,
+        vad_filter=ctx.settings.vad_filter,
+        cpu_threads=ctx.settings.cpu_threads,
+        # Same clock discipline as the main pass: probe spans are container time
+        # and whisper_backend shifts them onto audio.wav's clock.
+        time_offset_s=probe.source_audio.start_time,
+        model_cache_dir=ctx.deploy.config_dir / "models",
+        duration_s=probe.duration,
+        # Alignment buys nothing here. A median over many anchors is already
+        # robust to the 100-400 ms late bias whisperX exists to remove, and
+        # aligning would roughly double the cost of a check that runs every job.
+        align=False,
+    )
+
+    started = time.monotonic()
+    try:
+        transcript = transcriber.transcribe(request)
+    except Exception as exc:  # noqa: BLE001 - never fail a job over a measurement
+        ctx.log.warning("drift.failed", error=str(exc), model=model)
+        return DriftResult(checked=False, model=model, action="skipped", reason="stt_failed")
+
+    words = list(transcript.words)
+    observations = [
+        align_probe(plan, [w for w in words if plan.span.start <= w.start <= plan.span.end])
+        for plan in plans
+    ]
+    return build_result(observations, plans, model=model, elapsed_s=time.monotonic() - started)

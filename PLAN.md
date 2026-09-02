@@ -746,6 +746,36 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   cues → hits → drift → windows. Planning never refuses on probe *count*; whether two probes
   is enough to believe is `decide`'s call, which reports `skipped/too_few_probes`.
 
+- 2026-09-02 — **M2 step 5 (drift wired into the subtitles stage) complete.** Drift is a call
+  inside `subtitles.run`, **not a new stage**: §6 puts it in step 3, `extract` has already
+  produced `audio.wav` by then, and a stage would mean editing `JOB_STAGES` — simultaneously
+  the marker whitelist, `clear_from`'s ordering authority and `run_pipeline`'s validation
+  list — plus `JOB_STATES` for M3's worker, all for a measurement with no independent resume
+  value. `JOB_STAGES` and `JOB_STATES` are **untouched by M2**. The evidence goes to
+  `drift.json` as a secondary artifact of the stage, the way extracted `.srt` files already
+  do; `subtitles.done` covers both.
+- 2026-09-02 — **The drift verdict is decided on *attempted* probes, not timed ones.** First
+  implementation counted only probes that produced at least one anchor pair, so a subtitle
+  track for the wrong episode — which pairs *nothing* — came back as `skipped`/"not checked"
+  and was therefore trusted. That is exactly backwards for the case §6's similarity rule
+  exists to catch. Coverage is now evaluated against attempted probes and before any timing
+  check, so "paired nothing" reads as the strongest possible evidence of a mismatch. Caught
+  by a test, not by review.
+- 2026-09-02 — Drift runs with `align=False`. whisperX alignment exists to remove
+  faster-whisper's 100–400 ms late bias, but a median over many anchors is already robust to
+  a constant bias, and aligning would roughly double the cost of a check that runs on every
+  job. New settings: `drift_check` (default on) and `drift_window_pad_s` (6.0, §6's ±6 s).
+  The integration tests that are *not* about drift now pass `drift_check=False` — a real
+  `small` pass on a sine-tone fixture was costing ~1 s per render test and took the tier from
+  33 s to 96 s.
+- 2026-09-02 — **Drift verified on the real test episode.** PLURIBUS S01E01, 540 cues: probes
+  landed on cues **53 / 271 / 485** (10/50/90%), and the measurement was
+  **`ok`, offset −0.164 s, spread 0.211 s, coverage 0.95**, in 17.1 s with `small`. The
+  resulting windows are **28 covering 186.1 s — identical to the M1 run**, so the check
+  changes nothing on a well-timed file, which is the regression guard that matters. The probe
+  transcripts also show the ±5 s pad concretely: each is two to three times the length of its
+  cue, which is why a whole-string similarity could never have worked.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

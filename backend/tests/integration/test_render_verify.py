@@ -53,10 +53,12 @@ def rendered(settings, sample_mkv):
 
     def go(source: Path = None, *, ranges=(MUTE_A, MUTE_B), **settings_kw):
         src = source or sample_mkv
+        # Drift is measured in its own tests; running a real `small` pass on a
+        # sine-tone fixture in every render test cost ~1 s each for nothing.
         spec = build_spec(
             src,
             profile=ProfileSnapshot(profile_hash="v1:test"),
-            settings=AppSettings(**settings_kw),
+            settings=AppSettings(**{"drift_check": False, **settings_kw}),
         )
         ctx = build_context(spec, deploy=settings)
         ctx.matcher = build_matcher()

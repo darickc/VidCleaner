@@ -19,11 +19,13 @@ from vidcleaner.settings_store import AppSettings
 
 @pytest.fixture
 def ctx_for(settings):
-    def make(source: Path, **spec_kw):
+    def make(source: Path, *, settings_kw=None, **spec_kw):
         spec = build_spec(
             source,
             profile=ProfileSnapshot(profile_hash="v1:test"),
-            settings=AppSettings(),
+            # Off by default here too: these tests are about extraction and
+            # matching, and drift has its own.
+            settings=AppSettings(**{"drift_check": False, **(settings_kw or {})}),
             **spec_kw,
         )
         context = build_context(spec, deploy=settings)
