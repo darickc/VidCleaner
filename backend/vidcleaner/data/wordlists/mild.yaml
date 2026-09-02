@@ -1,0 +1,88 @@
+# Mild profanity. NOT enabled in the default profile (decided 2026-09-01):
+# muting damn/hell/crap roughly triples the number of cuts in a typical film for
+# words most viewers do not object to.
+version: 1
+category: mild
+entries:
+  - canonical: damn
+    forms: [damn, damns, damned, damning, damnation, dammit, damnit]
+    note: "The `god damn` / `goddamn` variants are separate entries in religious/strong."
+
+  - canonical: hell
+    forms: [hell, hells]
+    note: "Boundary-anchored, so `hello`, `shell`, `hellenic`, `Michelle` never match."
+    compounds:
+      - canonical: hellhole
+        forms: [hellhole, hellholes]
+
+  - canonical: crap
+    forms: [crap, craps, crapped, crapping, crappy]
+    compounds:
+      - canonical: crapper
+        forms: [crapper, crappers]
+      - canonical: craphole
+        forms: [craphole, crapholes]
+
+  - canonical: fart
+    forms: [fart, farts, farted, farting]
+
+  - canonical: frigging
+    forms: [frigging, friggin, "friggin'", frig, frigs, frigged]
+
+  - canonical: fricking
+    forms: [fricking, frickin, "frickin'", frick, fricks]
+
+  - canonical: freaking
+    forms: [freaking, freakin, "freakin'"]
+    enabled: false
+    note: "`freaking` is also an ordinary verb ('freaking out')."
+
+  - canonical: bloody
+    forms: [bloody, bloodier, bloodiest]
+    enabled: false
+    note: "Literal sense ('bloody nose') is far more common outside British dialogue."
+
+  - canonical: butt
+    forms: [butt, butts]
+    enabled: false
+    note: "Also 'butt of a rifle', 'butt in', 'water butt'."
+    compounds:
+      - canonical: butthead
+        forms: [butthead, buttheads]
+      - canonical: butthole
+        forms: [butthole, buttholes]
+
+  - canonical: jerk
+    forms: [jerk, jerks]
+    enabled: false
+    note: "Ordinary verb ('jerk the wheel'). The `jerk off` sense is in sexual.yaml."
+
+  - canonical: screw
+    forms: [screw, screws, screwed, screwing]
+    enabled: false
+    note: "Hardware and ordinary verb use dominate."
+
+  - canonical: suck
+    forms: [suck, sucks, sucked, sucking]
+    enabled: false
+    note: "Ordinary verb; 'this sucks' is idiomatic rather than profane."
+
+  - canonical: heck
+    forms: [heck]
+    enabled: false
+    note: "Minced oath."
+
+  - canonical: darn
+    forms: [darn, darns, darned, darning]
+    enabled: false
+    note: "Minced oath, and also 'darn a sock'."
+
+  - canonical: dang
+    forms: [dang, danged]
+    enabled: false
+    note: "Minced oath."
+
+  - canonical: wuss
+    forms: [wuss, wusses, wussy]
+    enabled: false
+    note: "Insult rather than profanity."

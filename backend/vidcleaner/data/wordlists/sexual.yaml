@@ -1,0 +1,212 @@
+# Sexual/crude terms.
+#
+# Clinical anatomy (`penis`, `vagina`, `anus`) and words with a dominant
+# innocent meaning (`cock` = rooster, `hoe` = garden tool, `nuts`, `balls`,
+# `beaver`, `johnson`) ship `enabled: false`. Multi-word entries carry both the
+# spaced and the solid spelling so `blow job` and `blowjob` both match.
+version: 1
+category: sexual
+entries:
+  - canonical: tit
+    forms: [tit, tits]
+    note: "Boundary-anchored, so `title`, `titanium`, `titmouse` never match. Whitelist ships `tit for tat`."
+    compounds:
+      - canonical: titty
+        forms: [titty, titties, tittie]
+
+  - canonical: boob
+    forms: [boob, boobs, boobies]
+
+  - canonical: blow job
+    is_phrase: true
+    forms: ["blow job", "blow jobs", blowjob, blowjobs]
+
+  - canonical: hand job
+    is_phrase: true
+    forms: ["hand job", "hand jobs", handjob, handjobs]
+
+  - canonical: rimjob
+    forms: [rimjob, rimjobs, rimming]
+
+  - canonical: cum
+    forms: [cum, cums, cumming]
+    note: "Whitelist ships a `cum laude` context exception. Boundary-anchored, so `cumulative` never matches."
+    compounds:
+      - canonical: cumshot
+        forms: [cumshot, cumshots]
+
+  - canonical: jizz
+    forms: [jizz, jizzed, jizzing]
+
+  - canonical: jerk off
+    is_phrase: true
+    forms: ["jerk off", "jerks off", "jerked off", "jerking off", jerkoff]
+
+  - canonical: jack off
+    is_phrase: true
+    forms: ["jack off", "jacks off", "jacked off", "jacking off"]
+
+  - canonical: horny
+    forms: [horny, hornier, horniest]
+
+  - canonical: boner
+    forms: [boner, boners]
+
+  - canonical: hard-on
+    forms: [hard-on, hard-ons]
+    note: "Non-phrase on purpose: the spaced 'hard on' is ambiguous ('hard on him')."
+
+  - canonical: pussy
+    forms: [pussy, pussies]
+    note: "Boundary-anchored, so `pussycat` and `pussyfoot` never match."
+
+  - canonical: cooch
+    forms: [cooch, coochie, coochies]
+
+  - canonical: dildo
+    forms: [dildo, dildos, dildoes]
+
+  - canonical: masturbate
+    forms: [masturbate, masturbates, masturbated, masturbating, masturbation]
+
+  - canonical: nympho
+    forms: [nympho, nymphos]
+
+  - canonical: porn
+    forms: [porn, porns]
+    compounds:
+      - canonical: porno
+        forms: [porno, pornos]
+      - canonical: pornography
+        forms: [pornography, pornographic]
+        enabled: false
+        note: "Clinical/legal register; common in news and courtroom dialogue."
+
+  - canonical: get laid
+    is_phrase: true
+    forms: ["get laid", "gets laid", "got laid", "getting laid"]
+
+  - canonical: threesome
+    forms: [threesome, threesomes]
+
+  - canonical: schlong
+    forms: [schlong, schlongs]
+
+  - canonical: hooker
+    forms: [hooker, hookers]
+    note: "Also a rugby position and a surname; rare enough on film to keep enabled."
+
+  - canonical: prostitute
+    forms: [prostitute, prostitutes, prostitution]
+    enabled: false
+    note: "Clinical/legal register; common in news and procedural dialogue."
+
+  - canonical: penis
+    forms: [penis, penises]
+    enabled: false
+    note: "Clinical anatomy."
+
+  - canonical: vagina
+    forms: [vagina, vaginas, vaginal]
+    enabled: false
+    note: "Clinical anatomy."
+
+  - canonical: anus
+    forms: [anus, anuses]
+    enabled: false
+    note: "Clinical anatomy. Boundary-anchored, so `Uranus` never matches."
+
+  - canonical: testicle
+    forms: [testicle, testicles, testicular]
+    enabled: false
+    note: "Clinical anatomy."
+
+  - canonical: scrotum
+    forms: [scrotum, scrotums]
+    enabled: false
+    note: "Clinical anatomy."
+
+  - canonical: nipple
+    forms: [nipple, nipples]
+    enabled: false
+    note: "Clinical anatomy, and a bottle part."
+
+  - canonical: erection
+    forms: [erection, erections]
+    enabled: false
+    note: "Also 'the erection of a building'."
+
+  - canonical: orgasm
+    forms: [orgasm, orgasms, orgasmic]
+    enabled: false
+    note: "Clinical register."
+
+  - canonical: cock
+    forms: [cock, cocks]
+    enabled: false
+    note: "Rooster, and 'cock the hammer'. The `cocksucker` entry in strong.yaml stays enabled."
+
+  - canonical: snatch
+    forms: [snatch, snatches, snatched, snatching]
+    enabled: false
+    note: "Ordinary verb, and a weightlifting movement."
+
+  - canonical: muff
+    forms: [muff, muffs, muffed]
+    enabled: false
+    note: "Hand muff, and 'muffed the catch'."
+
+  - canonical: beaver
+    forms: [beaver, beavers]
+    enabled: false
+    note: "The animal."
+
+  - canonical: dong
+    forms: [dong, dongs]
+    enabled: false
+    note: "A sound, and the Vietnamese currency."
+
+  - canonical: pecker
+    forms: [pecker, peckers]
+    enabled: false
+    note: "Also 'keep your pecker up' and woodpecker-adjacent use."
+
+  - canonical: willy
+    forms: [willy, willies]
+    enabled: false
+    note: "Also a common given name."
+
+  - canonical: johnson
+    forms: [johnson, johnsons]
+    enabled: false
+    note: "Overwhelmingly a surname."
+
+  - canonical: balls
+    forms: [balls]
+    enabled: false
+    note: "Sports equipment."
+
+  - canonical: nuts
+    forms: [nuts]
+    enabled: false
+    note: "Food, hardware, and 'that's nuts'."
+
+  - canonical: hoe
+    forms: [hoe, hoes]
+    enabled: false
+    note: "Garden tool."
+
+  - canonical: bang
+    forms: [bang, bangs, banged, banging]
+    enabled: false
+    note: "A noise, and an ordinary verb."
+
+  - canonical: stripper
+    forms: [stripper, strippers]
+    enabled: false
+    note: "Also paint stripper and wire stripper."
+
+  - canonical: sixty-nine
+    forms: [sixty-nine]
+    enabled: false
+    note: "Also just the number."

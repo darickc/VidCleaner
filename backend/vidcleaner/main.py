@@ -15,6 +15,7 @@ from vidcleaner.api import settings as settings_api
 from vidcleaner.config import get_settings
 from vidcleaner.db.migrate import upgrade_to_head
 from vidcleaner.logging import configure_logging, get_logger
+from vidcleaner.matching.profile import ensure_seed_data
 
 MISSING_SPA_HTML = """<!doctype html>
 <html><head><title>VidCleaner</title></head>
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings.ensure_dirs()
     if settings.auto_migrate:
         upgrade_to_head(settings)
+        ensure_seed_data()
     log.info(
         "api.startup",
         version=__version__,

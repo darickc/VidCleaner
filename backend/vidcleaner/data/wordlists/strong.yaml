@@ -1,0 +1,197 @@
+# Strong profanity: the words most users want removed first.
+#
+# Authoring rules (see PLAN.md §7 and the loader in matching/wordlists.py):
+#   * `forms` are EXPLICIT inflections of the same canonical. No generic suffix
+#     rules -- they produce junk and real false positives (`shitake`).
+#   * `compounds` are DISTINCT words that happen to contain the canonical. The
+#     loader flattens each into its own top-level entry, so `motherfucker` rolls
+#     up separately from `fuck` and can be whitelisted on its own.
+#   * A form may appear in exactly ONE entry across all five files. That is what
+#     makes match -> entry attribution unambiguous.
+#   * Prefer the hyphenated/spaced spelling of a form: the compiler makes the
+#     internal separator optional, so `fuck-up` also matches `fuckup`, but
+#     `fuckup` does NOT match `fuck-up`.
+#   * A word with a common innocent meaning ships `enabled: false` plus a `note`.
+version: 1
+category: strong
+entries:
+  - canonical: fuck
+    forms: [fuck, fucks, fucked, fucking, fuckin, "fuckin'", fucker, fuckers, fuckery]
+    compounds:
+      - canonical: motherfucker
+        forms: [motherfucker, motherfuckers, motherfucking, motherfuckin, "motherfuckin'"]
+      - canonical: clusterfuck
+        forms: [clusterfuck, clusterfucks]
+      - canonical: fuckhead
+        forms: [fuckhead, fuckheads]
+      - canonical: fuckwit
+        forms: [fuckwit, fuckwits]
+      - canonical: fuckface
+        forms: [fuckface, fuckfaces]
+      - canonical: fuck-up
+        forms: [fuck-up, fuck-ups]
+      - canonical: fuckboy
+        forms: [fuckboy, fuckboys]
+
+  - canonical: shit
+    forms: [shit, shits, shitted, shitting, shittin, "shittin'", shitty, shitter, shitters]
+    compounds:
+      - canonical: bullshit
+        forms: [bullshit, bullshits, bullshitted, bullshitting, bullshitter, bullshitters]
+      - canonical: horseshit
+        forms: [horseshit]
+      - canonical: dogshit
+        forms: [dogshit]
+      - canonical: batshit
+        forms: [batshit]
+      - canonical: apeshit
+        forms: [apeshit]
+      - canonical: dipshit
+        forms: [dipshit, dipshits]
+      - canonical: chickenshit
+        forms: [chickenshit, chickenshits]
+      - canonical: shithead
+        forms: [shithead, shitheads]
+      - canonical: shithole
+        forms: [shithole, shitholes]
+      - canonical: shitbag
+        forms: [shitbag, shitbags]
+      - canonical: shitstorm
+        forms: [shitstorm, shitstorms]
+      - canonical: shitshow
+        forms: [shitshow, shitshows]
+      - canonical: shitfaced
+        forms: [shitfaced]
+      - canonical: shitload
+        forms: [shitload, shitloads]
+
+  - canonical: shite
+    forms: [shite, shites]
+    note: "British variant of `shit`."
+
+  - canonical: cunt
+    forms: [cunt, cunts, cunty]
+
+  - canonical: bitch
+    forms: [bitch, bitches, bitched, bitching, bitchin, "bitchin'", bitchy]
+    compounds:
+      - canonical: son of a bitch
+        is_phrase: true
+        forms: ["son of a bitch", "son of a bitches", "sons of bitches"]
+        focus: [bitch]
+      - canonical: sonofabitch
+        forms: [sonofabitch, sonofabitches, sonuvabitch, sumbitch]
+
+  - canonical: bastard
+    forms: [bastard, bastards]
+
+  - canonical: ass
+    forms: [ass, asses]
+    note: "Boundary-anchored, so `class`, `bass`, `assassin`, `passage` never match."
+    compounds:
+      - canonical: asshole
+        forms: [asshole, assholes]
+      - canonical: asshat
+        forms: [asshat, asshats]
+      - canonical: asswipe
+        forms: [asswipe, asswipes]
+      - canonical: jackass
+        forms: [jackass, jackasses]
+      - canonical: dumbass
+        forms: [dumbass, dumbasses]
+      - canonical: badass
+        forms: [badass, badasses]
+      - canonical: smartass
+        forms: [smartass, smartasses]
+      - canonical: wiseass
+        forms: [wiseass, wiseasses]
+      - canonical: hardass
+        forms: [hardass, hardasses]
+      - canonical: kiss-ass
+        forms: [kiss-ass, kiss-asses]
+      - canonical: kick-ass
+        forms: [kick-ass, kick-asses]
+
+  - canonical: arse
+    forms: [arse, arses, arsed]
+    compounds:
+      - canonical: arsehole
+        forms: [arsehole, arseholes]
+
+  - canonical: piss
+    forms: [piss, pisses, pissed, pissing, pissin, "pissin'"]
+    compounds:
+      - canonical: pisshead
+        forms: [pisshead, pissheads]
+
+  - canonical: prick
+    forms: [prick, pricks]
+    note: "Also `to prick`. Boundary-anchored; verb use is rare in dialogue."
+
+  - canonical: twat
+    forms: [twat, twats]
+
+  - canonical: wank
+    forms: [wank, wanks, wanked, wanking, wankin, "wankin'"]
+    compounds:
+      - canonical: wanker
+        forms: [wanker, wankers]
+
+  - canonical: bollocks
+    forms: [bollocks, bollock, bollocking]
+
+  - canonical: bugger
+    forms: [bugger, buggers, buggered, buggering]
+    enabled: false
+    note: "Mild-to-strong depending on dialect; `bugger off` is near-harmless in BrE."
+
+  - canonical: douche
+    forms: [douche, douches]
+    compounds:
+      - canonical: douchebag
+        forms: [douchebag, douchebags]
+
+  - canonical: whore
+    forms: [whore, whores, whoring, whorish]
+    compounds:
+      - canonical: whorehouse
+        forms: [whorehouse, whorehouses]
+      - canonical: whoreson
+        forms: [whoreson, whoresons]
+
+  - canonical: slut
+    forms: [slut, sluts, slutty]
+
+  - canonical: dick
+    forms: [dick, dicks]
+    enabled: false
+    note: "Also a given name (Dick, Dickens, Dickinson). Compounds below stay enabled."
+    compounds:
+      - canonical: dickhead
+        forms: [dickhead, dickheads]
+      - canonical: dickwad
+        forms: [dickwad, dickwads]
+      - canonical: dickface
+        forms: [dickface, dickfaces]
+      - canonical: dickbag
+        forms: [dickbag, dickbags]
+
+  - canonical: cocksucker
+    forms: [cocksucker, cocksuckers, cocksucking]
+
+  - canonical: goddamn
+    forms: [goddamn, goddamned, goddamning, goddamnit, goddammit, godamn, godammit]
+    note: >
+      Spelled-solid variants live here in `strong` rather than `religious` so a
+      user who enables only `strong` still gets them. The spaced form `god damn`
+      is the `religious` entry.
+
+  - canonical: sod
+    forms: [sod, sods, sodding]
+    enabled: false
+    note: "`sod` is also turf. High false-positive rate outside British dialogue."
+
+  - canonical: git
+    forms: [git, gits]
+    enabled: false
+    note: "Collides with the version control tool and is mild even in BrE."

@@ -259,6 +259,62 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   missing and `error` (HTTP 503) only when the database is unreachable.
 - 2026-09-01 — The `vidcleaner` CLI ships only `health` in M0, on stdlib `argparse` (no typer). The
   `clean`/`detect` subcommands from §11 arrive with the M1 pipeline.
+- 2026-09-01 — **M1 step 1 (word lists + matcher) complete.** Adds `vidcleaner/matching/`
+  (`normalize.py`, `wordlists.py`, `compiler.py`, `profile.py`) and
+  `vidcleaner/data/{wordlists/*.yaml,never_match.yaml}`. §4 named only `compiler.py` and
+  `normalize.py`; `wordlists.py` (YAML loading/validation) and `profile.py` (the DB bridge) are
+  additions. 180 entries / 472 forms; 120 entries active in the default profile. Verified:
+  `uv run pytest` 469 passed, `uv run ruff check` and `ruff format --check` clean,
+  `uv run vidcleaner words` reports the false-positive gate green.
+- 2026-09-01 — **§7's `\b(?:…)\b` is wrong and is replaced by `(?<!\w)(?:…)(?!\w)`.** `\b` after an
+  apostrophe requires a following word character, so `re.compile(r"\b(?:fuckin')\b")` does **not**
+  match `"he was fuckin' tired"` — and the M1 test media (PLURIBUS S01E01) contains `friggin'`.
+  The asymmetric lookarounds still reject every classic substring case.
+  `test_pattern_uses_no_word_boundary_escape` guards against reintroducing `\b`.
+- 2026-09-01 — **§7's phrase separator `[\s\-']+` is replaced by `[ \t\xa0\-'’]{1,3}`.** `\s`
+  includes `\n`, so `god damn` matched across a subtitle line break in
+  `"oh my god\ndamn that hurt"`. No newline, and bounded length.
+- 2026-09-01 — **`never_match.yaml` re-scoped.** §7 attributes it to the Scunthorpe problem, but §7's
+  own compound argument is sufficient and verified: with the corrected boundaries plus explicit
+  `compounds` entries, an 84-word innocent corpus (Scunthorpe, assassin, class, bass, cassette,
+  shell, cocktail, hello, Uranus, shiitake, …) produces zero matches against the widest possible
+  matcher with **no** help from the file. Its actual jobs are (a) the censored-token hyphen branch,
+  where `x-ray`/`e-mail`/`t-shirt` have exactly the shape of `f-ing` and no regex can separate them,
+  (b) the rapidfuzz timing selector, where `ratio("shit","shirt")=88.9` clears the ≥85 bar, and
+  (c) that corpus, as a CI build gate.
+- 2026-09-01 — **`.` is not treated as a mask character** in censored-token detection. Doing so
+  classified the ubiquitous subtitle ellipsis ("That...", "I...", both in the test episode) as
+  censored. Masking is recognised only from `* _ # @ $` and runs of two or more hyphens.
+- 2026-09-01 — **Whitelisted canonicals stay compiled into the pattern**; hits are recorded with
+  `whitelisted=1, muted=0` rather than being omitted. §5's own rollup query filters
+  `WHERE whitelisted=0`, which only makes sense if such rows exist, and §9.4's review UI needs them
+  to offer un-whitelisting. Whitelist scopes are a **union**, not the override chain §7's
+  "global → title → item" implies: the schema has no negative form, so a narrower scope can only add
+  suppression. A `mode` column in M5 would be needed for true override semantics.
+- 2026-09-01 — **`compounds:` in the YAML is authoring sugar**; the loader flattens each into its own
+  top-level entry (same category, `parent` kept in memory for the Words UI). Required so
+  `motherfucker` rolls up separately from `fuck` in §5's per-word counts and can be whitelisted
+  independently. Also a new optional phrase field **`focus:`** — `son of a bitch` matches as a
+  phrase but mutes only the `bitch` token instead of ~1.2 s of dialogue.
+- 2026-09-01 — **Precision lives in per-entry `enabled: false` + a mandatory `note`, not in category
+  toggles** (validation rejects a disabled entry with no note). 50 of 180 entries ship off,
+  including `cock`, `queer`, `nip`, `cracker`, `balls`, `snatch`, `hoe`, `bloody` and the clinical
+  anatomy terms. The default profile is **`strong` + `slurs` + `sexual` + `religious`; `mild` is
+  off** (damn/hell/crap roughly triple the cuts for words most viewers accept). Bare `god`, `jesus`
+  and `christ` ship **enabled** — user decision, because the episode's standalone "Jesus." and
+  "Christ, no." are the reason to enable `religious` at all, and leaving them off made the category
+  nearly inert. The cost is reverent false positives ("thank God"), to be handled by a per-title
+  whitelist in M4.
+- 2026-09-01 — **`VIDCLEANER_PROFILE_HASH` is per media item, not per profile.** Item- and
+  title-scoped whitelist rules feed it, so that adding an item whitelist and hitting Reprocess is
+  not short-circuited to `already_clean`. Format `v<algo>:<sha1[:16]>`; the STT model and codec
+  policy are deliberately excluded (including the model would invalidate every cleaned file the
+  first time someone compared `medium` against `turbo`, and §4 calls this a *profile* hash).
+  `ALGO_VERSION` is the escape hatch for "the matcher changed but the data did not".
+- 2026-09-01 — Word-list seeding runs at startup after `upgrade_to_head`, not from an Alembic
+  migration (data seeding inside migrations ages badly). `sync_builtin_word_entries` never writes
+  `enabled` back to an existing row, so a user's choice survives upgrades; the api owns seeding
+  whenever it runs and a worker-only role does it instead, which keeps the two processes from racing.
 
 ## 15. Working agreement for future sessions
 

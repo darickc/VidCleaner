@@ -17,6 +17,12 @@ def main() -> int:
     settings.ensure_dirs()
     if settings.auto_migrate:
         upgrade_to_head(settings)
+        # The api seeds when it runs; only a worker-only role has to do it here,
+        # which keeps the two processes from racing on the same upserts.
+        if not settings.runs_api:
+            from vidcleaner.matching.profile import ensure_seed_data  # noqa: PLC0415
+
+            ensure_seed_data()
 
     worker = Worker(settings)
     for sig in (signal.SIGINT, signal.SIGTERM):

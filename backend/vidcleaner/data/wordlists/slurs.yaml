@@ -1,0 +1,146 @@
+# Ethnic, sexual-orientation and disability slurs.
+#
+# Bias here is deliberately toward over-muting: missing a slur is worse than
+# muting one extra line. Entries that are ALSO ordinary English words ship
+# `enabled: false`, and two that need context rather than exclusion
+# (`spic and span`, `chink in the armour`) are seeded into the global whitelist
+# from never_match.yaml.
+version: 1
+category: slurs
+entries:
+  - canonical: nigger
+    forms: [nigger, niggers]
+    compounds:
+      - canonical: nigga
+        forms: [nigga, niggas, niggaz]
+
+  - canonical: faggot
+    forms: [faggot, faggots, faggy]
+    compounds:
+      - canonical: fag
+        forms: [fag, fags]
+        note: "Also British slang for a cigarette; kept enabled because the slur sense dominates on film."
+
+  - canonical: dyke
+    forms: [dyke, dykes]
+    note: "The levee spelling `dike` is deliberately absent."
+
+  - canonical: kike
+    forms: [kike, kikes]
+
+  - canonical: spic
+    forms: [spic, spics, spick]
+    note: "Global whitelist ships a `spic and span` context exception."
+
+  - canonical: wop
+    forms: [wop, wops]
+
+  - canonical: chink
+    forms: [chink, chinks]
+    note: "Global whitelist ships a `chink in` context exception."
+
+  - canonical: gook
+    forms: [gook, gooks]
+
+  - canonical: jap
+    forms: [jap, japs]
+    note: "Boundary-anchored, so `Japan`, `Japanese` never match."
+
+  - canonical: paki
+    forms: [paki, pakis]
+    note: "Boundary-anchored, so `Pakistan`, `Pakistani` never match."
+
+  - canonical: wetback
+    forms: [wetback, wetbacks]
+
+  - canonical: beaner
+    forms: [beaner, beaners]
+
+  - canonical: coon
+    forms: [coon, coons]
+    note: "Boundary-anchored, so `raccoon` and `cocoon` never match."
+
+  - canonical: darkie
+    forms: [darkie, darkies, darky]
+
+  - canonical: honky
+    forms: [honky, honkies, honkey]
+
+  - canonical: towelhead
+    forms: [towelhead, towelheads]
+
+  - canonical: raghead
+    forms: [raghead, ragheads]
+
+  - canonical: half-breed
+    forms: [half-breed, half-breeds]
+
+  - canonical: kraut
+    forms: [kraut, krauts]
+    note: "Boundary-anchored, so `sauerkraut` never matches."
+
+  - canonical: tranny
+    forms: [tranny, trannies]
+
+  - canonical: shemale
+    forms: [shemale, shemales]
+
+  - canonical: retard
+    forms: [retard, retards]
+    note: "Boundary-anchored, so `retardant` and `retardation` never match."
+    compounds:
+      - canonical: retarded
+        forms: [retarded]
+      - canonical: retardo
+        forms: [retardo, retardos]
+
+  - canonical: spaz
+    forms: [spaz, spazzes, spazzing, spazzed]
+    compounds:
+      - canonical: spastic
+        forms: [spastic, spastics]
+        enabled: false
+        note: "Clinical term for spasticity; medical use is common."
+
+  - canonical: mongoloid
+    forms: [mongoloid, mongoloids]
+
+  - canonical: queer
+    forms: [queer, queers]
+    enabled: false
+    note: "Reclaimed and now largely neutral; also the ordinary adjective 'strange'."
+
+  - canonical: nip
+    forms: [nip, nips]
+    enabled: false
+    note: "Ordinary verb/noun ('nip out', 'a nip of whisky') far outweighs the slur sense."
+
+  - canonical: cracker
+    forms: [cracker, crackers]
+    enabled: false
+    note: "Food, and 'crackers' = mad."
+
+  - canonical: mick
+    forms: [mick, micks]
+    enabled: false
+    note: "Also a common given name."
+
+  - canonical: gypsy
+    forms: [gypsy, gypsies, gipsy]
+    enabled: false
+    note: "Contested ethnonym rather than an unambiguous slur; also a moth and a musical."
+
+  - canonical: redskin
+    forms: [redskin, redskins]
+    enabled: false
+    note: "Also a sports team name and a peanut variety."
+
+  - canonical: cripple
+    forms: [cripple, cripples, crippled, crippling]
+    enabled: false
+    note: "Ordinary verb ('crippling debt') dominates."
+
+  - canonical: midget
+    forms: [midget, midgets]
+    enabled: false
+    note: "Also 'midget submarine', and common non-pejoratively in older films."

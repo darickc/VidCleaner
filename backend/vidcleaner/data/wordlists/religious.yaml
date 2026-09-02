@@ -1,0 +1,54 @@
+# Religious profanity and minced oaths.
+#
+# Bare `god`, `jesus` and `christ` ship ENABLED (decided 2026-09-01): the whole
+# reason to turn this category on is the standalone exclamation ("Jesus.",
+# "Christ, no."), and leaving them off made the category nearly inert. The cost
+# is real -- they also fire on reverent use ("thank God", "God bless", "God's
+# plan") -- and the intended remedy is a per-title whitelist in the review UI.
+#
+# The solid spellings `goddamn`/`goddammit` live in strong.yaml so that a user
+# who enables only `strong` still gets them; the spaced `god damn` is here.
+version: 1
+category: religious
+entries:
+  - canonical: god
+    forms: [god, gods]
+    note: >
+      Also fires on reverent use. Matches inside "God's" because the trailing
+      apostrophe is not a word character. Whitelist per title for religious films.
+
+  - canonical: jesus
+    forms: [jesus]
+    note: "Almost always exclamatory in dialogue; also a given name in Spanish (Jesús)."
+
+  - canonical: christ
+    forms: [christ]
+    note: "Boundary-anchored, so `Christmas`, `Christian`, `Christina` never match."
+
+  - canonical: jesus christ
+    is_phrase: true
+    forms: ["jesus christ"]
+    note: >
+      Kept as a phrase purely so the pair reports as one detection instead of
+      two. Leftmost-longest matching means it wins over the bare entries.
+
+  - canonical: god damn
+    is_phrase: true
+    forms: ["god damn", "god dammit", "god damned"]
+    note: "Both words form the offence here, so the whole phrase is muted."
+
+  - canonical: lord
+    forms: [lord, lords]
+    enabled: false
+    note: "Titles and period dialogue ('my lord', 'House of Lords') make this unusable by default."
+
+  - canonical: jeez
+    forms: [jeez, jeeze, geez, geeze, jeezus]
+    enabled: false
+    note: "Minced oath; most users consider it already clean."
+
+  - canonical: holy moly
+    is_phrase: true
+    forms: ["holy moly", "holy cow", "holy smokes"]
+    enabled: false
+    note: "Minced exclamations, included only for completeness."

@@ -1,0 +1,195 @@
+# What this file is actually for.
+#
+# PLAN.md §7 attributes it to the Scunthorpe problem, but that turns out to be
+# handled entirely by the compiler: `(?<!\w)(?:...)(?!\w)` boundaries plus
+# explicit `compounds` entries already reject Scunthorpe, assassin, class,
+# classic, bass, cassette, shell, cocktail, hello, Uranus and shiitake with zero
+# help from this file. (Verified; see test_never_match.py, which asserts it.)
+#
+# It is load-bearing for the two paths that are NOT boundary-anchored:
+#
+#   1. normalize.detect_censored()'s hyphen branch. `f-ing` is a shape
+#      heuristic -- one letter, a hyphen, a short tail -- and `x-ray`, `e-mail`,
+#      `t-shirt`, `a-list`, `u-turn` have exactly that shape. No regex trick
+#      fixes this; only a list does.
+#   2. detect.py's rapidfuzz timing selector. ratio("shit","shirt") = 88.9 and
+#      ratio("damn","dam") = 85.7 both clear the >= 85 bar, so a never_match
+#      token must never be chosen as the timing token for a subtitle hit.
+version: 1
+
+# Runtime, load-bearing. Compared against the FOLDED token (lowercased,
+# apostrophes and hyphens removed), so list entries are folded on load too.
+never_match:
+  # Letter-hyphen compounds that look like `f-ing` to the censored detector.
+  - x-ray
+  - e-mail
+  - t-shirt
+  - a-list
+  - b-side
+  - u-turn
+  - d-day
+  - v-neck
+  - x-men
+  - g-string
+  - h-bomb
+  - e-book
+  - t-bone
+  - k-pop
+  - j-pop
+  - u-boat
+  - x-axis
+  - y-axis
+  - z-axis
+  - a-frame
+  - t-rex
+  - e-cig
+  - i-beam
+  - x-wing
+  - g-force
+  - c-section
+  - q-tip
+  - v-sign
+  - o-ring
+  - co-op
+  - re-elect
+  - wi-fi
+  - hi-fi
+  - sci-fi
+  # Words the letters-and-length censored rule could otherwise reach for, and
+  # near-misses the fuzzy timing selector must never pick.
+  - f-bomb
+  - f-word
+  - s-word
+  - c-word
+  - n-word
+  - shirt
+  - shirts
+  - sheet
+  - sheets
+  - dam
+  - dams
+  - duck
+  - ducks
+  - luck
+  - puck
+  - buck
+  - shut
+  - shot
+  - chit
+  - spit
+  - slit
+  - sit
+  - bit
+  - fit
+  - kit
+  - hit
+  - bass
+  - class
+  - grass
+  - glass
+  - pass
+  - mass
+  - gas
+  - as
+  - is
+
+# CI only -- zero runtime cost. test_never_match.py asserts that the
+# all-categories matcher, with every entry force-enabled, finds NOTHING in any
+# of these. This turns "the boundaries are correct" from an argument into a
+# build gate: the day someone adds a bare `ass` form or a generic plural rule,
+# this fails.
+regression_corpus:
+  - Scunthorpe
+  - Penistone
+  - Lightwater
+  - class
+  - classic
+  - classify
+  - classical
+  - assassin
+  - assassinate
+  - assess
+  - assessment
+  - assign
+  - assignment
+  - assume
+  - assumption
+  - assist
+  - assistant
+  - passage
+  - passages
+  - harassment
+  - massive
+  - embarrass
+  - bassoon
+  - bassinet
+  - compass
+  - amass
+  - bass
+  - cassette
+  - canasta
+  - shell
+  - shellfish
+  - hellenic
+  - hellcat
+  - Michelle
+  - cocktail
+  - Hancock
+  - peacock
+  - shuttlecock
+  - Cockburn
+  - cockpit
+  - cockroach
+  - hello
+  - Uranus
+  - shiitake
+  - shitake
+  - therapist
+  - analysis
+  - analyst
+  - titanium
+  - titmouse
+  - title
+  - titles
+  - cumulative
+  - accumulate
+  - circumstance
+  - document
+  - documents
+  - butterscotch
+  - grape
+  - Middlesex
+  - Essex
+  - dickens
+  - Dickinson
+  - Fagin
+  - raccoon
+  - cocoon
+  - sauerkraut
+  - retardant
+  - retardation
+  - dike
+  - spectacle
+  - Japan
+  - Japanese
+  - Pakistan
+  - Pakistani
+  - Christmas
+  - Christian
+  - Christina
+  - christening
+  - pussycat
+  - pussyfoot
+  - landlord
+  - hellhound
+  - assemble
+
+# Shipped default GLOBAL whitelist seeds. Unlike never_match these words DO
+# match; they are recorded as detections with whitelisted=1, muted=0 when the
+# context is present, so the review UI can show and undo them.
+default_whitelist:
+  - {canonical: spic, context_text: "spic and span"}
+  - {canonical: chink, context_text: "chink in"}
+  - {canonical: cum, context_text: "cum laude"}
+  - {canonical: tit, context_text: "tit for tat"}
+  - {canonical: hooker, context_text: "hooker and"}

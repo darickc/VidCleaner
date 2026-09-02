@@ -13,6 +13,9 @@ frontend/dist/
 # Build output copied into the image
 backend/static/
 
+# Local test media (real library files; large and not ours to distribute)
+video/
+
 # Local runtime data (container mounts these; dev falls back to ./.local)
 .local/
 *.db
