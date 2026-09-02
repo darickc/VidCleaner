@@ -35,6 +35,7 @@ from vidcleaner.matching.compiler import (
     build_matcher,
 )
 from vidcleaner.matching.wordlists import WordEntry, load_builtin_entries, load_never_match
+from vidcleaner.pipeline.artifacts import ProfileSnapshot
 from vidcleaner.settings_store import AppSettings, load_settings
 
 __all__ = [
@@ -44,6 +45,7 @@ __all__ = [
     "matcher_for",
     "profile_spec",
     "seed_defaults",
+    "snapshot_for",
     "sync_builtin_word_entries",
 ]
 
@@ -318,6 +320,26 @@ def matcher_for(
         profile_spec(session, profile_id=profile_id, settings=settings),
         effective_entries(session),
         load_whitelist(session, title_id=title_id, item_id=item_id),
+    )
+
+
+def snapshot_for(matcher: Matcher, settings: AppSettings) -> ProfileSnapshot:
+    """The ``job.json`` record of everything that determines the mute set.
+
+    Lives here rather than in the CLI because the worker needs exactly the same
+    mapping: two copies would eventually produce two different ``profile_hash``
+    values for one profile, and the hash is what decides whether a file is
+    ``already_clean``.
+    """
+    return ProfileSnapshot(
+        name=matcher.profile.name,
+        categories=sorted(matcher.profile.categories),
+        extra_canonicals=sorted(matcher.profile.extra_canonicals),
+        pad_pre_ms=settings.pad_pre_ms,
+        pad_post_ms=settings.pad_post_ms,
+        merge_gap_ms=settings.merge_gap_ms,
+        mute_censored_tokens=settings.mute_censored_tokens,
+        profile_hash=matcher.profile_hash,
     )
 
 

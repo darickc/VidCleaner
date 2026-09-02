@@ -238,6 +238,7 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
         ProfileSpec,
         build_matcher,
     )
+    from vidcleaner.matching.profile import snapshot_for  # noqa: PLC0415
     from vidcleaner.pipeline import (  # noqa: PLC0415
         detect as detect_stage,
     )
@@ -256,7 +257,7 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
     from vidcleaner.pipeline import (
         verify as verify_stage,
     )
-    from vidcleaner.pipeline.artifacts import DetectionResult, ProfileSnapshot  # noqa: PLC0415
+    from vidcleaner.pipeline.artifacts import DetectionResult  # noqa: PLC0415
     from vidcleaner.pipeline.stages import (  # noqa: PLC0415
         DRY_RUN_STAGES,
         M1_STAGES,
@@ -310,16 +311,7 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
         categories = frozenset(c.strip() for c in args.categories.split(",") if c.strip())
     matcher = build_matcher(profile=ProfileSpec(categories=categories))
 
-    profile = ProfileSnapshot(
-        name=matcher.profile.name,
-        categories=sorted(matcher.profile.categories),
-        extra_canonicals=sorted(matcher.profile.extra_canonicals),
-        pad_pre_ms=settings.pad_pre_ms,
-        pad_post_ms=settings.pad_post_ms,
-        merge_gap_ms=settings.merge_gap_ms,
-        mute_censored_tokens=settings.mute_censored_tokens,
-        profile_hash=matcher.profile_hash,
-    )
+    profile = snapshot_for(matcher, settings)
     spec = build_spec(
         source,
         profile=profile,

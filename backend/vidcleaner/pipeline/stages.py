@@ -31,6 +31,7 @@ from vidcleaner.logging import get_logger
 from vidcleaner.pipeline.artifacts import (
     DetectionResult,
     JobSpec,
+    JobTarget,
     ProbeResult,
     ProfileSnapshot,
     RenderResult,
@@ -47,10 +48,13 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = [
     "DRY_RUN_STAGES",
     "M1_STAGES",
+    "M3_STAGES",
     "PipelineResult",
     "StageContext",
     "StageError",
     "StageOutcome",
+    "StaleSourceError",
+    "SwapBrokenError",
     "build_context",
     "build_spec",
     "deterministic_job_id",
@@ -71,6 +75,9 @@ M1_STAGES: Final[tuple[str, ...]] = (
     "render",
     "verify",
 )
+#: What a worker job runs: M1's stages plus the two that touch the library and the
+#: outside world. ``snippets`` joins in M4.
+M3_STAGES: Final[tuple[str, ...]] = (*M1_STAGES, "swap", "refresh")
 #: PLAN.md §6: "dry_run jobs stop after detecting".
 DRY_RUN_STAGES: Final[tuple[str, ...]] = M1_STAGES[: M1_STAGES.index("detect") + 1]
 
@@ -84,6 +91,8 @@ _STAGE_MODULES: Final[dict[str, str]] = {
         ("detect", "detect"),
         ("render", "render"),
         ("verify", "verify"),
+        ("swap", "swap"),
+        ("refresh", "refresh"),
     )
 }
 
@@ -96,6 +105,24 @@ class StageError(RuntimeError):
         self.stage = stage
         self.message = message
         self.cause = cause
+
+
+class StaleSourceError(StageError):
+    """The source file changed or vanished under us.
+
+    Distinct from a plain failure because §6's "path vanished" path is *recovery*, not
+    defeat: the worker re-resolves the path through the arr and requeues once before
+    giving up as ``stale``. Raised by ``probe`` and again by ``swap``, which re-checks
+    immediately before the first rename -- minutes of rendering separate the two.
+    """
+
+
+class SwapBrokenError(StageError):
+    """A library rename failed *and* so did its rollback.
+
+    The one genuinely unrecoverable state in the pipeline. Never auto-retried: a
+    human has to look at the two paths named in the message.
+    """
 
 
 class StageModule(Protocol):
@@ -126,6 +153,13 @@ class StageContext:
     """``None`` means "build one from settings" -- the DI seam for tests."""
     matcher: Matcher | None = None
     """Cached across subtitles/detect/render so the pattern compiles once."""
+    integrations: Any = None
+    """Live arr/Jellyfin clients for ``refresh``, injected by the worker.
+
+    They cannot come from ``ctx.settings``: ``build_spec`` strips ``SECRET_FIELDS``
+    from the snapshot precisely because ``/work`` ends up in bug reports, so
+    ``job.json`` has no API keys and a stage cannot rebuild a client from it.
+    ``None`` means "no integrations configured" and ``refresh`` skips."""
     on_progress: Callable[[str, float], None] = _noop_progress
     stage_registry: dict[str, str] = field(default_factory=lambda: dict(_STAGE_MODULES))
 
@@ -214,6 +248,9 @@ def build_spec(
     force: bool = False,
     stt_mode: str = "windowed",
     job_id: str | None = None,
+    in_place: bool = False,
+    trigger: str = "manual",
+    target: JobTarget | None = None,
 ) -> JobSpec:
     """Build ``job.json``, with secrets stripped from the settings snapshot."""
     snapshot = {
@@ -227,6 +264,9 @@ def build_spec(
         dry_run=dry_run,
         force=force,
         stt_mode=stt_mode,  # type: ignore[arg-type]
+        in_place=in_place,
+        trigger=trigger,
+        target=target,
         settings=snapshot,
         profile=profile,
         created_at=datetime.now(UTC),

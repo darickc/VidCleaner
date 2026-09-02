@@ -552,6 +552,29 @@ class ProfileSnapshot(BaseModel):
     profile_hash: str = ""
 
 
+class JobTarget(BaseModel):
+    """Which library item a worker job is for -- ids only, never credentials.
+
+    ``refresh`` needs to know which series to rescan and which paths to tell
+    Jellyfin about, but ``job.json`` deliberately carries no API keys (see
+    ``JobSpec.settings``). Putting the *identity* on disk keeps the work dir
+    self-describing, per CLAUDE.md, while the keys stay in the database and reach the
+    stage through ``StageContext.integrations``.
+    """
+
+    media_item_id: int
+    title_id: int
+    kind: Literal["movie", "episode"] = "episode"
+    arr_app: Literal["sonarr", "radarr"] | None = None
+    arr_id: int | None = None
+    """The series or movie id, not the file id."""
+    arr_file_id: int | None = None
+    season: int | None = None
+    episode: int | None = None
+    tvdb_id: int | None = None
+    tmdb_id: int | None = None
+
+
 class JobSpec(Artifact):
     """``job.json`` -- artifact zero, so resume never needs the database."""
 
@@ -562,6 +585,13 @@ class JobSpec(Artifact):
     dry_run: bool = False
     force: bool = False
     stt_mode: Literal["windowed", "full", "audit"] = "windowed"
+    in_place: bool = False
+    """Replace the library file (``swap``). Opt-in: inferring it from an absent
+    ``out_path`` would make a bare ``vidcleaner clean file.mkv`` rewrite the library."""
+    trigger: str = "manual"
+    """§6.1's stability wait costs 10 s and only matters for ``webhook`` jobs, where
+    the import may still be in flight; the trigger is what tells the runner which."""
+    target: JobTarget | None = None
     settings: dict[str, Any] = Field(default_factory=dict)
     """``AppSettings`` minus ``SECRET_FIELDS``: /work ends up in bug reports."""
     profile: ProfileSnapshot = Field(default_factory=ProfileSnapshot)

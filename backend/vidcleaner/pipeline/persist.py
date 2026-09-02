@@ -113,13 +113,24 @@ def persist_run(
     subtitle_source: str | None = None,
     timings: dict[str, float] | None = None,
     work_dir: Path | None = None,
+    media_item: MediaItem | None = None,
+    count_attempt: bool = True,
 ) -> PersistResult:
-    """Write the ``jobs`` row and its ``detections``, replacing any earlier run."""
-    item = ensure_media_item(session, probe)
+    """Write the ``jobs`` row and its ``detections``, replacing any earlier run.
+
+    ``media_item`` short-circuits the path lookup: a worker job already knows which
+    row it is for (it came from the queue), and looking it up by path again would
+    resolve the *post-swap* path to nothing.
+
+    ``count_attempt=False`` is the worker path. ``jobs.attempts`` counts **claims**,
+    and the queue already incremented it when it claimed the job; incrementing again
+    here would retire every job after 1.5 real attempts.
+    """
+    item = media_item if media_item is not None else ensure_media_item(session, probe)
 
     job = session.get(Job, spec.job_id)
     if job is None:
-        job = Job(id=spec.job_id, media_item_id=item.id, trigger="manual")
+        job = Job(id=spec.job_id, media_item_id=item.id, trigger=spec.trigger)
         session.add(job)
     else:
         # A re-run of the same deterministic job id replaces its detections
@@ -131,7 +142,8 @@ def persist_run(
     job.state = state
     job.stage = stage
     job.progress_pct = 100.0 if state in {"done", "already_clean"} else job.progress_pct
-    job.attempts = (job.attempts or 0) + 1
+    if count_attempt:
+        job.attempts = (job.attempts or 0) + 1
     job.work_dir = str(work_dir) if work_dir else None
     job.source_fingerprint = probe.fingerprint
     job.stt_mode = spec.stt_mode

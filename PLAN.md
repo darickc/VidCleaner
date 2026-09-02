@@ -1048,6 +1048,92 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   `ruff format --check .` are now clean across the whole backend, which is what future
   milestones should run.
 
+- 2026-09-02 — **M3 step 3 (the worker's supporting machinery) complete.** `worker/spec.py`,
+  `heartbeat.py`, `progress.py`, `joblog.py`, `policy.py`; `M3_STAGES`,
+  `StaleSourceError`/`SwapBrokenError` and `StageContext.integrations` in `pipeline/stages.py`;
+  `JobTarget` plus `JobSpec.in_place`/`.trigger`/`.target` in `artifacts.py`;
+  `matching/profile.py::snapshot_for`. Verified: 1283 passed, 88 of them against real media.
+- 2026-09-02 — **Worker jobs lose the resume protection the CLI gets for free, and it had to be
+  rebuilt explicitly.** `deterministic_job_id` folds the profile hash and a non-default
+  `stt_mode` into the work directory's *name*, so the CLI physically cannot resume onto
+  artifacts computed under different rules. Worker jobs are named by the `jobs` uuid, and
+  `build_context` overwrites `job.json` unconditionally — so a reprocess after a whitelist edit
+  would have replaced artifact zero while the old stage markers survived, and `transcribe` and
+  `detect` (the two stages that would have noticed) would both have been skipped. This is the
+  same defect M2 step 1 found for `--stt-mode`, arriving by a different route.
+  `worker/spec.py::plan_job` compares the on-disk spec's `profile_hash`, `stt_mode`,
+  `source_path` and `version` against the fresh one and calls `ws.clear_all()` on any
+  difference. `force` and `dry_run` are deliberately *not* in that list: they change what we do
+  next, not what the existing artifacts mean, and `run_stage` already honours `spec.force`.
+- 2026-09-02 — **The settings and profile snapshots are taken at *claim* time, not at enqueue.**
+  Enabling a series can queue hundreds of backfill jobs; if the snapshot were frozen at enqueue,
+  a word-list edit made while the queue drained would not reach them.
+- 2026-09-02 — **`snapshot_for` is extracted from `cli_clean.py` into `matching/profile.py`**
+  because the worker needs exactly the same mapping and two copies would eventually produce two
+  different `profile_hash` values for one profile — and the hash is what decides whether a file
+  is `already_clean`. The worker also goes through `matcher_for`, not the CLI's plain
+  `build_matcher`: only `matcher_for` folds the title- and item-scoped whitelist into the hash,
+  which is precisely what makes "whitelist a false positive, then reprocess" not short-circuit.
+  A test asserts an item whitelist changes the hash.
+- 2026-09-02 — **`JobTarget` carries ids, never credentials.** `refresh` needs to know which
+  series to rescan and which paths to tell Jellyfin about, but `build_spec` strips
+  `SECRET_FIELDS` from the settings snapshot precisely because `/work` ends up in bug reports,
+  so a stage cannot rebuild an API client from `job.json`. Splitting it — identity on disk (the
+  work dir stays self-describing, per CLAUDE.md), keys injected through
+  `StageContext.integrations` — is the only arrangement that satisfies both. A test asserts
+  `job.json` contains no `api_key`.
+- 2026-09-02 — **`JobSpec.in_place` makes the swap opt-in.** Inferring it from `out_path is
+  None` would mean today's `vidcleaner clean file.mkv`, which writes to `/work`, silently
+  started rewriting the library. `JobSpec.trigger` exists for a smaller reason: §6.1's stability
+  wait costs at least 10 s and only matters for `webhook` jobs, where the import may still be in
+  flight, so the runner needs to know which kind of job it is holding.
+- 2026-09-02 — **The heartbeat is a thread, and the three reasons are all in the existing
+  code.** `verify` emits no progress and runs a full decode of the output — minutes on a feature
+  film; §6.1's `wait_for_stable` blocks up to 300 s inside `time.sleep`; and `probe`,
+  `subtitles` and `detect` emit nothing at all. So piggybacking §4's 30 s heartbeat on
+  `on_progress` would let a perfectly healthy job be declared stale and stolen. Making
+  `JobMonitor` the **only** writer of the job row while a job runs pays for itself twice:
+  `report()` becomes a lock-free store, so ffmpeg's roughly-per-second callbacks need no
+  throttling code; and the tick that writes the heartbeat also reads the state back, which is
+  the only cross-process channel available for "someone cancelled this". §4's 30 s is kept as
+  the staleness *contract* (`STALE_AFTER_S` is four of them) while the thread ticks at 5 s so
+  the UI is smooth — writing more often than promised is always safe.
+- 2026-09-02 — A `heartbeat()` that fails with `OperationalError` returns **True**, not False.
+  The return value means "do you still own this job", and a momentarily busy database is not
+  evidence that you lost it; `STALE_AFTER_S` being four missed heartbeats is what makes that
+  safe. Getting this backwards would abandon jobs under exactly the load that causes lock
+  contention.
+- 2026-09-02 — **`progress_pct` is undefined in PLAN.md**, so `ProgressTracker` defines it:
+  fixed per-stage weights taken from the M1/M2 demo timings, normalised over the *planned*
+  stage list — a dry run has five stages, not ten, and must still read 100% when it finishes.
+  Two weight tables, because M2 measured 1173 s of full-file STT against 67 s windowed on the
+  same episode: with one table a full pass would sit at 6% for two hours. `reweight()` exists
+  because the promotion to a full pass is decided *inside* the transcribe stage, so the runner
+  cannot know at claim time which table applies. The tracker also takes its floor from
+  `ws.completed_stages()`, because `run_stage` returns early on a marker hit and deliberately
+  does **not** call `ctx.progress` — without that, a job resuming at `render` would report 0%
+  until render finished.
+- 2026-09-02 — **`job_logs` is the UI's timeline, not a second copy of the ffmpeg log.** Raw
+  ffmpeg stderr and argv already go to `/work/<job_id>/ffmpeg.log`; the table gets the few dozen
+  lines §9.1's log tail and §9.4's job log would show. Rows are **buffered and flushed at stage
+  boundaries**: one transaction per log line would take SQLite's write lock dozens of times per
+  job, and step 2 already established that holding it too long makes the other process's claim
+  fail. `Timeline.flush` swallows its own errors — bookkeeping must never fail a good render —
+  and a test asserts that by flushing a row whose foreign key cannot resolve.
+- 2026-09-02 — **§6's "render/verify failures are terminal until reprocess" needed a third
+  category, not just two.** Once `swap` has committed, the library file is correct; a failure in
+  `refresh` (or M4's `snippets`) after that must leave the job `done` with a warning, because
+  marking it failed would invite a retry that re-runs the swap. §6 step 9 already says "warn"
+  for the mapping check — `BEST_EFFORT_STAGES` generalises it. `policy.classify` is the whole
+  table: `SwapBrokenError` is terminal and never retried; `StaleSourceError` is §6's "path
+  vanished" and gets exactly one requeue before `stale`; `render`/`verify`/`swap` are terminal;
+  anything earlier retries on a 60/300/900 s backoff until `MAX_ATTEMPTS` claims.
+- 2026-09-02 — **`persist_run` gains `count_attempt=False` and an explicit `media_item`.** It
+  increments `attempts` at the *end* of a run, which double-counts now that the queue
+  increments at claim — every job would retire after 1.5 real attempts. And its
+  `ensure_media_item` lookup is by path, which for a worker job would resolve the *post-swap*
+  path and create a duplicate row; the worker already knows which row it holds.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
