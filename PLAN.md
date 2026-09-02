@@ -315,6 +315,32 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   migration (data seeding inside migrations ages badly). `sync_builtin_word_entries` never writes
   `enabled` back to an existing row, so a user's choice survives upgrades; the api owns seeding
   whenever it runs and a worker-only role does it instead, which keeps the two processes from racing.
+- 2026-09-01 — **M1 step 2 (work dir, artifacts, stage driver) complete.** `pipeline/` gains
+  `workspace.py` and `artifacts.py` beyond §4's file list, plus `stages.py`. Three conventions the
+  §4/§6 text implies but does not state: (a) **`job.json` is artifact zero** — CLAUDE.md's "pure
+  function of its on-disk inputs" requires the job's own parameters to be on disk too, so resume
+  never needs the database; (b) **stage markers carry `vidcleaner.__version__`** and `is_done()`
+  returns False on a mismatch, so a code upgrade cannot resume onto artifacts written by different
+  code; (c) artifacts are written atomically (temp file + `os.replace`), because a half-written
+  artifact beside a completed marker would be read back as if it were whole. Secrets are stripped
+  from the settings snapshot in `job.json` — `/work` ends up in bug reports.
+- 2026-09-01 — Artifacts are **pydantic models**, not dataclasses: they are read back after a crash,
+  possibly by code of a different version, so validation at the deserialization boundary is the
+  point, and they become M4 FastAPI `response_model`s with no adapter. Plain dataclasses are kept
+  for values that are never serialized (`StageContext`, `Workspace`). `artifacts.Detection` mirrors
+  `db.models.Detection` field-for-field minus `job_id`/`media_item_id`, asserted by
+  `test_detection_mirrors_the_database_columns`, so M3's `persist.py` is a mechanical copy.
+- 2026-09-01 — **The "one clock" invariant**, documented at the top of `artifacts.py`: every time in
+  `probe.json`/`subs.json`/`transcript.json`/`detections.json` is in *source container time*;
+  `audio.wav` is 0-based; `stt` is the only module that applies the audio stream's `start_time`
+  (recording it in `Transcript.audio_start_offset_s`) and `render` the only one that converts back.
+  §3 says only "correct STT times by the audio stream's `start_time`"; naming the invariant matters
+  because a sign error here mutes the wrong second of every file and no unit test catches it — the
+  runtime tripwire is verification's mute-window and control-window `volumedetect` checks.
+- 2026-09-01 — `stages.py` resolves stage modules through `importlib` and takes the ffmpeg runner by
+  injection rather than importing `pipeline.ffmpeg`/`pipeline.stt` at module scope, so the package
+  (and M4's API through it) imports on a checkout with no torch. `tests/unit/test_no_stt_import.py`
+  asserts that boundary for `pipeline`, `stages`, `artifacts`, `matching.compiler`, `main` and `cli`.
 
 ## 15. Working agreement for future sessions
 
