@@ -557,6 +557,18 @@ class SwapResult(Artifact):
     warnings: list[str] = Field(default_factory=list)
 
 
+class RefreshResult(Artifact):
+    arr: Literal["sonarr", "radarr"] | None = None
+    arr_command_id: int | None = None
+    arr_command_name: str | None = None
+    jellyfin_updates: list[dict[str, str]] = Field(default_factory=list)
+    """Exactly what was sent, so a mismatch is diagnosable without re-deriving it."""
+    warnings: list[str] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+    """e.g. ``sonarr_not_configured``. Distinct from a warning: nothing went wrong."""
+    elapsed_s: float = 0.0
+
+
 class RenderResult(Artifact):
     out_path: str
     size: int = 0

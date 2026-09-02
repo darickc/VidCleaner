@@ -1360,6 +1360,102 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   opened**, so "not configured" is distinguishable from "not reachable" — `refresh` skips on
   the former and warns on the latter.
 
+- 2026-09-02 — **M3 step 8 (refresh, sync, backfill and the CLI) complete.**
+  `pipeline/refresh.py`, `integrations/sync.py`, `api/integrations.py`, `vidcleaner/cli_arrs.py`
+  (`integrations test`, `sync`, `titles list|enable|disable`, `queue list|show|cancel|retry`).
+  Verified: 1475 passed, 89 of them contract.
+- 2026-09-02 — **§6 step 9's "after 90 s, confirm the arr's path" cannot be a sleep in a
+  stage.** It idles the single worker 90 s per job — half an hour for a twenty-episode season
+  pack — and it is unresumable in either marker order: write the marker before the sleep and a
+  restart skips the check, write it after and a restart re-does the whole refresh. Folded into
+  the sync pass instead, which already fetches exactly this data, gated on `media_items.cleaned_at`
+  being older than `mapping_check_delay_s` (default 90 — §6's number, now a scheduling
+  parameter) and younger than a day. **No new column**, and unlike a sleep the window survives
+  a restart. `vidcleaner sync --confirm` forces it for the demo.
+- 2026-09-02 — **§3/§6's Jellyfin update type is wrong for the new name.** §6 remembers the
+  `Deleted` for an old `.mp4` but leaves the new name as `Modified` — and after an MP4→MKV swap
+  the `.mkv` is a path Jellyfin has never seen, so it is **`Created`**. Both updates go in one
+  `/Library/Media/Updated` call, which is also cheaper given §3's ~60 s debounce.
+- 2026-09-02 — **`refresh` is non-fatal by design.** By the time it runs the swap has committed
+  and the library file is correct, so a failed rescan costs a stale Jellyfin entry until the
+  hourly sync and nothing more. Every client error is a `warnings` entry on `refresh.json`,
+  never a `StageError` — which is also what makes re-running the stage safe, the only way a
+  resumed job can reach it. "Not configured" is recorded in `skipped`, deliberately distinct
+  from a warning: a library with no Jellyfin is a perfectly good deployment.
+- 2026-09-02 — **Adoption, the reconciliation M1's log said M3 owes, is implemented and
+  tested.** Items resolve by natural key `(title_id, season, episode)` and then **by path**; a
+  path hit on a row under the CLI sentinel is *re-parented*, keeping `status`, `last_job_id`,
+  `cleaned_at` and `source_fingerprint`. Preserving `last_job_id` is the whole point:
+  `detections.media_item_id` points at that row, so inserting a duplicate would silently orphan
+  the M1 run's 49 detections from the episode M4 is going to show. When both lookups hit
+  *different* rows the unique constraint forces a **merge**: the natural-key row wins and
+  `detections`, `backups` and `jobs` are all re-pointed at it.
+- 2026-09-02 — **SQLite reuses a deleted rowid, which can fool a test.** The merge test first
+  asserted "the loser's id is gone" and failed — because episode 2's brand-new row was assigned
+  the id the merge had just freed. Rewritten to assert observable facts (exactly one row owns
+  the path, the natural-key row won, the history moved). Worth recording because the same trap
+  applies to any code that identifies a row by id across a delete.
+- 2026-09-02 — **§5's `uq_media_items_title_s_e` does not constrain movies**: SQLite treats
+  NULLs as distinct, so `(title_id, NULL, NULL)` repeats indefinitely and repeated syncs would
+  accumulate duplicate movie rows. Guarded in code (a movie resolves by `title_id` alone), with
+  a test that syncs three times and asserts one row. A partial unique index would need a
+  migration and is an M5 option.
+- 2026-09-02 — **§5 cannot represent a multi-episode file.** One `episodeFile` maps to several
+  `episodes[]` under scalar `season`/`episode`. M3 keys on the **lowest** `(season, episode)`
+  sharing the file — stable across syncs — joins nothing, and treats `arr_file_id` as the real
+  identity. A `media_item_episodes` join table is an M5 item.
+- 2026-09-02 — **A title that vanishes from an arr's listing is counted, never deleted.** An
+  arr that is restarting or half-migrated can return a short list, and deleting on that basis
+  would erase every selection the user has made. Only a `SeriesDelete`/`MovieDelete` webhook
+  disables a title. `sync_titles` also never writes `enabled` or `profile_id`, with a test that
+  both survive a re-sync.
+- 2026-09-02 — **`arr_path` is stored mapped to a local path, in `sync_titles` itself.** The
+  first implementation mapped it in a second pass over the table, which double-applies on the
+  next sync because the stored value is already local by then. Caught by writing the test.
+- 2026-09-02 — **The M1 sentinel title is excluded from every sync and backfill query**
+  (`arr_id >= 0`). Nothing in §8 says so, and without it the CLI's own scratch files appear as a
+  Radarr movie called "Local files (CLI)" — and become eligible for backfill.
+- 2026-09-02 — **§6.0's "`*FileDelete` marks item `pending`" is the wrong status**, and the
+  same applies to a file the arr stops listing. `pending` means "we intend to clean it"; the
+  file is gone. `stale` is the word §5/§6 already use for a vanished path, and its `kept`
+  backups become `orphaned` at the same time (§13's retention path).
+- 2026-09-02 — **§8's backfill gate is evaluated with no file I/O**, cheap→expensive: status
+  first, then the last job's recorded `profile_hash` against the item's *current* one from
+  `matcher_for`. Over-enqueueing is deliberately fine — `probe` re-reads the
+  `VIDCLEANER_PROFILE_HASH` tag and returns `already_clean` in about 0.1 s (measured in the M1
+  demo), so the queue is the cheap filter and the tag is the definitive one. A test asserts that
+  adding an *item* whitelist puts a cleaned episode back in the queue, which is the entire
+  reason the hash is per item.
+- 2026-09-02 — **`sync_all` opens its own short transactions rather than taking a `Session`.**
+  A single transaction spanning a large library's HTTP calls would hold SQLite's write lock for
+  far longer than the worker's 5 s busy timeout allows, and the worker's claim would start
+  failing with "database is locked" — the coupling step 2 recorded, now respected in the one
+  place that could trip it. One arr failing does not stop the other, and one title failing does
+  not stop the rest.
+- 2026-09-02 — **§8's hourly sync is owned by the api, and queue/disk maintenance by the
+  worker.** Split by resource, one owner each: sync and the mapping check are HTTP-and-database
+  only, and the worker is blocked inside ffmpeg or STT for minutes at a time so a timer there
+  fires late by however long the current stage takes; stale recovery, `/work` GC and the
+  idle-gated audit enqueue need queue idleness and the volumes, which only the worker has. The
+  recorded cost is that a `role=worker`-only deployment never syncs and a `role=api`-only one
+  never processes — both are half a system by construction, and `role=all` is the shipped
+  default. This follows the precedent already in the log for word-list seeding.
+- 2026-09-02 — **M3 ships only the REST endpoints whose contract is already fully
+  determined**: `POST /api/integrations/{app}/test`, `GET`/`PUT /api/path-mappings`, and
+  `POST /api/library/sync`. `library`, `items` and `jobs` are listing/filter/pagination
+  surfaces and belong to M4, designed around the actual screens rather than inherited from
+  whatever was convenient now. Everything else the milestone demo needs is a CLI subcommand.
+  `PUT /api/path-mappings` validates every app's rules *before* deleting anything, so a
+  duplicate prefix cannot leave half a mapping table behind.
+- 2026-09-02 — `POST /api/integrations/{app}/test` reads the **stored** key when the body's is
+  `***`, mirroring `save_settings`: the API masks secrets, so the form may never have seen the
+  real value and posting it back must not be read as "test with the literal `***`".
+- 2026-09-02 — **The CLI now migrates before touching the database.** The api and worker both
+  do it at startup, so only the CLI could meet an old schema — and it did: after migration 0002
+  every `queue`/`titles` command on a dev checkout failed with "no such column: jobs.retry_at".
+  `Settings.auto_migrate` already existed for exactly this ("mainly smooths dev runs"); a
+  failure warns rather than showing a traceback.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

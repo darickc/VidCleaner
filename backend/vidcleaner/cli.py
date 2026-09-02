@@ -14,6 +14,27 @@ import sys
 from vidcleaner import __version__
 
 
+def _ensure_schema() -> None:
+    """Migrate before a command that reads the database.
+
+    The api and the worker both do this at startup, so only the CLI could meet an
+    old schema -- and it did: after migration 0002 every `queue`/`titles` command on
+    a dev checkout failed with "no such column: jobs.retry_at". `Settings.auto_migrate`
+    already exists for exactly this ("mainly smooths dev runs").
+    """
+    from vidcleaner.config import get_settings  # noqa: PLC0415
+
+    settings = get_settings()
+    if not settings.auto_migrate:
+        return
+    from vidcleaner.db.migrate import upgrade_to_head  # noqa: PLC0415
+
+    try:
+        upgrade_to_head(settings)
+    except Exception as exc:  # noqa: BLE001 - report it, do not traceback at the user
+        print(f"warning: could not migrate the database: {exc}", file=sys.stderr)
+
+
 def _health() -> int:
     from vidcleaner.api.health import _database, ffmpeg_info  # noqa: PLC0415
     from vidcleaner.config import get_settings  # noqa: PLC0415
@@ -103,6 +124,7 @@ def _words(action: str, categories: str | None) -> int:
 
 
 def _restore(item: int | None, path: str | None) -> int:
+    _ensure_schema()
     from vidcleaner.db.models import MediaItem  # noqa: PLC0415
     from vidcleaner.db.session import session_scope  # noqa: PLC0415
     from vidcleaner.logging import configure_logging  # noqa: PLC0415
@@ -135,6 +157,7 @@ def _restore(item: int | None, path: str | None) -> int:
 
 
 def _backups(action: str) -> int:
+    _ensure_schema()
     from sqlalchemy import select  # noqa: PLC0415
 
     from vidcleaner.config import get_settings  # noqa: PLC0415
@@ -210,6 +233,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    from vidcleaner.cli_arrs import add_parsers  # noqa: PLC0415
+
+    add_parsers(subparsers)
+
     words = subparsers.add_parser("words", help="inspect the built-in word lists")
     words.add_argument(
         "action",
@@ -237,6 +264,11 @@ def main(argv: list[str] | None = None) -> int:
         return _restore(args.item, args.path)
     if args.command == "backups":
         return _backups(args.action)
+    if args.command in {"integrations", "sync", "titles", "queue"}:
+        _ensure_schema()
+        from vidcleaner.cli_arrs import dispatch  # noqa: PLC0415
+
+        return dispatch(args)
     if args.command in {"clean", "detect"}:
         from vidcleaner.cli_clean import run_clean  # noqa: PLC0415
 
