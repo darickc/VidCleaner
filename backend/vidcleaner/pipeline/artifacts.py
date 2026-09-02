@@ -52,6 +52,8 @@ __all__ = [
     "Check",
     "CodecPlan",
     "Detection",
+    "DriftProbe",
+    "DriftResult",
     "DetectionResult",
     "JobSpec",
     "ProbeResult",
@@ -334,6 +336,42 @@ class SubtitlesResult(Artifact):
     redactable: list[int] = Field(default_factory=list)
     """Typed indexes of text subtitle streams whose language we can redact."""
     sidecars: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------- drift
+
+
+class DriftProbe(BaseModel):
+    """One sampled cue and what was actually heard there. Evidence, not control
+    flow: when a job mutes the wrong second, this is the record that says why."""
+
+    cue_index: int
+    span: TimeRange | None = None
+    cue_text: str = ""
+    stt_text: str = ""
+    pair_count: int = 0
+    coverage: float = 0.0
+    median_offset_s: float | None = None
+    deltas: list[float] = Field(default_factory=list)
+    """Capped; the full list is unbounded and nobody reads past the first few."""
+
+
+class DriftResult(Artifact):
+    """``drift.json`` -- the subtitle timing measurement (PLAN.md §6 step 3)."""
+
+    checked: bool = False
+    """False when the check was disabled, or too few cues were long enough."""
+    model: str = ""
+    action: Literal["ok", "unreliable", "discard", "skipped"] = "skipped"
+    reason: str = ""
+    offset_s: float = 0.0
+    spread_s: float = 0.0
+    """Spread of the *per-probe* medians: a growing offset means another cut."""
+    coverage: float = 0.0
+    """Fraction of cue words found in the audio. Replaces §6's text similarity,
+    which a ±5 s probe pad makes unusable -- see the Decision Log."""
+    elapsed_s: float = 0.0
+    probes: list[DriftProbe] = Field(default_factory=list)
 
 
 # ----------------------------------------------------------------- transcript

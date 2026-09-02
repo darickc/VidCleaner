@@ -39,6 +39,16 @@ def test_pipeline_package_is_light():
     _assert_clean("vidcleaner.pipeline")
 
 
+def test_drift_is_light():
+    """The drift check *uses* a transcriber but must not import one: it runs
+    inside the subtitles stage, which the API imports through the registry."""
+    _assert_clean("vidcleaner.pipeline.drift")
+
+
+def test_subtitles_is_light():
+    _assert_clean("vidcleaner.pipeline.subtitles")
+
+
 def test_stage_driver_is_light():
     _assert_clean("vidcleaner.pipeline.stages")
 

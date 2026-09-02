@@ -706,6 +706,46 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   `_build_transcript` exists to state and a test to pin. Drift (step 4) makes this urgent
   rather than theoretical: it places ±5 s probes by container time.
 
+- 2026-09-02 — **M2 step 4 (drift measurement core) complete.** `pipeline/drift.py`, pure
+  apart from one shell function, so the arithmetic that decides whether a library's
+  subtitles can be trusted is testable with no torch, no ffmpeg and no speech — which it has
+  to be, since every generated fixture is a sine tone.
+- 2026-09-02 — **§6's "text similarity < 0.4" is unimplementable as written, and would have
+  discarded every subtitle track in the library.** A probe transcribes its cue plus a ±5 s
+  pad, so the window text is several times longer than the cue and any whole-string ratio is
+  dominated by the pad. Measured with `rapidfuzz`: a *perfect* match scores
+  **`fuzz.ratio` = 28.7** against **22.6** for completely unrelated dialogue — both below
+  §6's own 0.4 threshold, and only 6 points apart. Replaced by **alignment coverage**, the
+  fraction of the cue's words actually found in the audio: pad-invariant, in [0, 1], and
+  free from the alignment already computed (1.00 vs 0.00 on the same pair). A test pins both
+  halves, so the correction is demonstrable rather than asserted.
+- 2026-09-02 — **§6's "spread > 0.5 s" is defined as the spread of the *per-probe medians*.**
+  That is what sampling at 10/50/90% is for: a constant offset is correctable with one
+  number, whereas an offset that grows across the file means the subtitles belong to another
+  cut and no single correction fixes them.
+- 2026-09-02 — **§6 step 3 and step 4 contradict each other on unreliable subtitles** — step 3
+  widens the windows to ±6 s (still windowed), step 4 sends them to a full pass. Resolved by
+  cause, with **three verdicts instead of two**: `ok` (apply the offset, normal windows),
+  `unreliable` (offset measurable — apply it, widen the windows) and `discard` (coverage
+  collapsed, so the cues do not describe this audio at all — fall back to a full pass). A
+  measurable offset is worth correcting, and widened windows cost a fraction of a full pass.
+  `discard` applies to *timing* only: redaction is text-local and correct regardless of sync.
+- 2026-09-02 — Pairing is a **monotone sequence alignment** (`Levenshtein.opcodes` over folded
+  token lists), not nearest-time or greedy fuzzy matching. Neither of those is
+  order-preserving, so both mis-pair a cue that repeats a word — and "Bullshit. Bull. Shit."
+  is already in the project's own fixtures. The `equal` blocks of an edit script are exactly
+  a monotone one-to-one pairing and the `insert` blocks absorb the pad. Anchors shorter than
+  3 characters are excluded from the median: "a", "of", "is" align by luck as often as by
+  content and, being the commonest words, would dominate it.
+- 2026-09-02 — The drift comparison key is **`fold(strip_wrappers(word))`, not `fold(word)`**.
+  `normalize`'s pipeline is `strip_wrappers → normalize → fold`, so `fold` alone leaves outer
+  punctuation attached and a cue's `"hurt."` would never pair with a spoken `"hurt"` —
+  silently dropping every sentence-final word, which are the ones whose timing matters most.
+  Caught by a test, not by review. §6 also lists window building *before* the drift check,
+  but the verdict chooses the window padding and offset: the real order is
+  cues → hits → drift → windows. Planning never refuses on probe *count*; whether two probes
+  is enough to believe is `decide`'s call, which reports `skipped/too_few_probes`.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
