@@ -69,6 +69,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "ffmpeg: needs a working ffmpeg/ffprobe >= 7.0 (auto-applied to tests/integration/)",
+    "contract: mocked Sonarr/Radarr/Jellyfin (auto-applied to tests/contract/); no ffmpeg",
 ]
 
 [tool.ruff]

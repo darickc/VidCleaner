@@ -1,0 +1,11 @@
+[
+  {"id": 501, "seriesId": 42, "seasonNumber": 1,
+   "relativePath": "Season 01/Pluribus - S01E01 - We is Us.mkv",
+   "path": "/tv/Pluribus/Season 01/Pluribus - S01E01 - We is Us.mkv",
+   "size": 4573448192,
+   "mediaInfo": {"audioCodec": "EAC3", "audioChannels": 5.1}},
+  {"id": 502, "seriesId": 42, "seasonNumber": 1,
+   "relativePath": "Season 01/Pluribus - S01E02 - Pilgrimage.mkv",
+   "path": "/tv/Pluribus/Season 01/Pluribus - S01E02 - Pilgrimage.mkv",
+   "size": 3998244864}
+]

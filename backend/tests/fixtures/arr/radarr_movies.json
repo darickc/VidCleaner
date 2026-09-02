@@ -1,0 +1,22 @@
+[
+  {
+    "id": 7,
+    "title": "Arrival",
+    "year": 2016,
+    "path": "/movies/Arrival (2016)",
+    "folderPath": "/movies/Arrival (2016)",
+    "tmdbId": 329865,
+    "imdbId": "tt2543164",
+    "hasFile": true,
+    "movieFile": {
+      "id": 901,
+      "movieId": 7,
+      "relativePath": "Arrival (2016) Bluray-1080p.mkv",
+      "path": "/movies/Arrival (2016)/Arrival (2016) Bluray-1080p.mkv",
+      "size": 12884901888
+    },
+    "images": [{"coverType": "poster", "remoteUrl": "https://artworks.example/arrival.jpg"}]
+  },
+  {"id": 8, "title": "No File Yet", "year": 2024, "folderPath": "/movies/No File Yet (2024)",
+   "tmdbId": 1, "hasFile": false, "images": []}
+]

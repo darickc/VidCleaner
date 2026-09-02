@@ -1,0 +1,24 @@
+[
+  {
+    "id": 42,
+    "title": "Pluribus",
+    "year": 2025,
+    "path": "/tv/Pluribus",
+    "tvdbId": 445598,
+    "imdbId": "tt29089576",
+    "monitored": true,
+    "images": [
+      {"coverType": "banner", "url": "/MediaCover/42/banner.jpg"},
+      {"coverType": "poster", "url": "/MediaCover/42/poster.jpg",
+       "remoteUrl": "https://artworks.example/poster.jpg"}
+    ]
+  },
+  {
+    "id": 43,
+    "title": "Another Show",
+    "year": 2019,
+    "path": "/tv/Another Show",
+    "tvdbId": 111111,
+    "images": []
+  }
+]

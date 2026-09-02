@@ -1298,6 +1298,68 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   `already_clean`, which closes §4's idempotency loop across a real library swap for the first
   time.
 
+- 2026-09-02 — **M3 step 7 (integration clients and path mapping) complete.**
+  `integrations/{__init__,base,models,pathmap,sonarr,radarr,jellyfin}.py`,
+  `tests/support/fake_arr.py`, `tests/fixtures/arr/*.json`, and a new **`tests/contract/`
+  tier** with its own `contract` marker. `base.py`, `models.py` and the `Integrations` bundle
+  are beyond §4's file list; Sonarr and Radarr share ~90% of their surface, so it lives in
+  `ArrClient` and the two named modules stay thin. Verified: 1429 passed, 42 of them contract.
+- 2026-09-02 — **§12's `respx` is replaced by `httpx.MockTransport`.** It does the same job
+  with no new dependency and nothing pinned to httpx internals: the handler is a plain
+  function, so a test routes by `(method, path)`, returns a committed JSON fixture, **and**
+  asserts on the recorded call sequence — which is how "a 401 is not retried" and "a rescan
+  posts exactly this body" get pinned. It also matches the injection idiom already in the
+  project (`FFmpegRunner`, `ScriptedTranscriber`, `FsOps`). `respx` would only earn its place
+  if the clients were async, which they are not.
+- 2026-09-02 — **The clients are synchronous, deliberately.** The worker is a sync process and
+  `refresh` is a sync stage; every existing FastAPI handler is a sync `def` over a sync
+  `Session`, which FastAPI runs in a threadpool; and the webhook receivers make no outbound
+  calls at all. Async would buy nothing anywhere while costing either an event loop inside the
+  worker or a split session layer in the api. `httpx.Client` is documented thread-safe.
+- 2026-09-02 — **§8's path mapping has no defined direction, and now does: `from_prefix` is
+  the *app's* path, `to_prefix` is *ours*.** The arrs hand us paths (`to_local`), we hand
+  Jellyfin paths (`to_remote`). Plus two constraints §5 omits — **longest prefix wins**, and
+  **component-aware matching**, because a naive `startswith` makes a rule for `/media/tv`
+  rewrite `/media/tvshows`, a silent wrong-path bug whose *best* case is a refused swap. Also:
+  a duplicate `to_prefix` is rejected as well as a duplicate `from_prefix`, since it would make
+  `to_remote` ambiguous; and everything is string manipulation, never `pathlib`, because a
+  Sonarr on Windows reports `C:\media\TV\...` and `Path` on Linux would collapse it to one
+  component. A broken mapping table degrades to identity with an error log rather than taking
+  the integration down.
+- 2026-09-02 — **The invariant that makes mapping checkable: the database stores local paths
+  exclusively.** Mapping happens only at the boundary, and never on a `/work` or `/backups`
+  path. Stated in `integrations/__init__.py` because it is the kind of rule that decays the
+  first time someone maps a path "just here".
+- 2026-09-02 — **§3 names a Test endpoint only for Jellyfin; the arr equivalent is
+  `GET /api/v3/system/status`.** It validates the key *and* returns `version`/`appName`, so
+  §9.6 can show "Sonarr 4.0.10" rather than a bare green tick. For Jellyfin the authenticated
+  `/System/Info` is used rather than `/System/Info/Public`, which answers without a key and
+  would therefore report success for a wrong one. `test()` catches `IntegrationError`
+  (including auth) and returns `TestResult(ok=False, detail=...)` at HTTP 200 — a wrong key is
+  the likeliest reason anyone clicks Test, so it must be a red row with a reason rather than a
+  stack trace. Every *other* call still raises on 401, because a refresh that silently did
+  nothing would be worse.
+- 2026-09-02 — **Retries are scoped to what is safe to repeat.** All GETs, plus the two POSTs
+  that are idempotent by construction (`/api/v3/command` for a rescan, `/Library/...` for a
+  path notification): three attempts on a timeout, a connection error or a 429/5xx, with a
+  0.5/1/2 s backoff plus jitter. 401/403 is never retried (the key is wrong and will stay
+  wrong) and neither is any other 4xx. **`POST /notification` is never retried either** — a
+  duplicate webhook would double every future event, which is worse than a visible failure the
+  user can retry deliberately. `sleep` is injected, so the retry tests take zero wall time and
+  assert the actual backoff sequence.
+- 2026-09-02 — **The API key must never appear in a log record or an exception message**, and
+  a test asserts it over `caplog` at DEBUG plus `str()`/`repr()` of the raised error. It
+  travels through every single request, so it is the one secret with that exposure.
+- 2026-09-02 — A `204 No Content` is decoded as success, not an error: Jellyfin answers 204 to
+  `/Library/Media/Updated`. And `MediaUpdate` is aliased to Jellyfin's PascalCase body with a
+  test pinning the exact JSON, because getting that shape wrong fails **silently** — the call
+  still returns 204 and nothing refreshes.
+- 2026-09-02 — A base URL keeps any sub-path (`http://host/sonarr`, common behind a reverse
+  proxy), gains `http://` when the scheme is missing, and is refused outright for a non-HTTP
+  scheme. An unset URL or key raises `IntegrationNotConfigured` **before any socket is
+  opened**, so "not configured" is distinguishable from "not reachable" — `refresh` skips on
+  the former and warns on the latter.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

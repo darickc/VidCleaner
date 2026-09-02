@@ -77,3 +77,8 @@ def test_the_queue_is_light():
 
 def test_the_worker_is_light():
     _assert_clean("vidcleaner.worker.runner")
+
+
+def test_the_integrations_are_light():
+    """The api imports these for the Settings page's Test buttons."""
+    _assert_clean("vidcleaner.integrations")

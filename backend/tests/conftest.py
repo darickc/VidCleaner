@@ -105,8 +105,13 @@ def pytest_collection_modifyitems(config, items):
     ok, why = ffmpeg_status()
     required = os.environ.get("VIDCLEANER_TEST_REQUIRE_FFMPEG") == "1"
     for item in items:
-        if "integration" in Path(str(item.fspath)).parts:
+        parts = Path(str(item.fspath)).parts
+        if "integration" in parts:
             item.add_marker(pytest.mark.ffmpeg)
+        if "contract" in parts:
+            # Marked by directory so `-m contract` selects the tier; it needs no
+            # ffmpeg and no network, so it is never skipped.
+            item.add_marker(pytest.mark.contract)
         if "ffmpeg" in item.keywords and not ok:
             if required:
                 item.add_marker(pytest.mark.fail(reason=why))

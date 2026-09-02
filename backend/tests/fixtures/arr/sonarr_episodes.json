@@ -1,0 +1,8 @@
+[
+  {"id": 1001, "seriesId": 42, "seasonNumber": 1, "episodeNumber": 1,
+   "title": "We is Us", "episodeFileId": 501, "hasFile": true},
+  {"id": 1002, "seriesId": 42, "seasonNumber": 1, "episodeNumber": 2,
+   "title": "Pilgrimage", "episodeFileId": 502, "hasFile": true},
+  {"id": 1003, "seriesId": 42, "seasonNumber": 1, "episodeNumber": 3,
+   "title": "Grenade", "episodeFileId": 0, "hasFile": false}
+]
