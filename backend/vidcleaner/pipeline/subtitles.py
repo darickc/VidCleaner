@@ -43,6 +43,8 @@ NAME = "subtitles"
 
 __all__ = [
     "REDACTABLE_LANGUAGES",
+    "no_subtitles",
+    "subtitle_candidates",
     "RedactionStats",
     "choose_subtitle_source",
     "cue_windows",
@@ -111,14 +113,21 @@ def _sidecar_language(sidecar: Path, source_stem: str) -> str | None:
     return None
 
 
-def choose_subtitle_source(
+def subtitle_candidates(
     probe: ProbeResult,
     *,
     preferred_language: str | None,
     sidecars: Sequence[Path] = (),
-) -> SubtitleSource:
-    """§6 step 3's precedence: preferred sidecar, sidecar, embedded, none."""
+) -> list[SubtitleSource]:
+    """§6 step 3's precedence, as a list rather than a single answer.
+
+    Every candidate, best first, so the stage can move on when one turns out to be
+    unparseable. A corrupt ``Movie.srt`` beside a file with perfectly good embedded
+    English subtitles used to fail the entire job, because §6's precedence prefers
+    the sidecar and nothing looked past it.
+    """
     source_stem = Path(probe.path).stem
+    out: list[SubtitleSource] = []
 
     preferred_sidecars = [
         s for s in sidecars if lang.matches(_sidecar_language(s, source_stem), preferred_language)
@@ -126,29 +135,58 @@ def choose_subtitle_source(
     for sidecar in preferred_sidecars or list(sidecars):
         detected = _sidecar_language(sidecar, source_stem)
         if preferred_sidecars or detected is None:
-            return SubtitleSource(
-                kind="sidecar",
-                path=str(sidecar),
-                codec_name=sidecar.suffix.lstrip(".").lower(),
-                language=detected or preferred_language,
-                reason="sidecar_preferred_language" if preferred_sidecars else "sidecar_untagged",
+            out.append(
+                SubtitleSource(
+                    kind="sidecar",
+                    path=str(sidecar),
+                    codec_name=sidecar.suffix.lstrip(".").lower(),
+                    language=detected or preferred_language,
+                    reason=(
+                        "sidecar_preferred_language" if preferred_sidecars else "sidecar_untagged"
+                    ),
+                )
             )
 
     text_streams = probe.text_subtitles
+    seen: set[int] = set()
+
+    def add(stream: SubtitleStreamInfo, reason: str) -> None:
+        if stream.typed_index in seen:
+            return
+        seen.add(stream.typed_index)
+        out.append(_embedded(stream, reason))
+
     for stream in text_streams:
         if lang.matches(stream.language, preferred_language) and not stream.is_forced:
-            return _embedded(stream, "embedded_preferred_language")
+            add(stream, "embedded_preferred_language")
     for stream in text_streams:
         if lang.matches(stream.language, preferred_language):
-            return _embedded(stream, "embedded_preferred_language_forced")
+            add(stream, "embedded_preferred_language_forced")
     for stream in text_streams:
         if not stream.is_forced:
-            return _embedded(stream, "embedded_any_text")
-    if text_streams:
-        return _embedded(text_streams[0], "embedded_forced_only")
+            add(stream, "embedded_any_text")
+    for stream in text_streams:
+        add(stream, "embedded_forced_only")
 
+    return out
+
+
+def no_subtitles(probe: ProbeResult) -> SubtitleSource:
     reason = "no_text_subtitles_only_bitmap" if probe.subtitles else "no_subtitles"
     return SubtitleSource(kind="none", reason=reason)
+
+
+def choose_subtitle_source(
+    probe: ProbeResult,
+    *,
+    preferred_language: str | None,
+    sidecars: Sequence[Path] = (),
+) -> SubtitleSource:
+    """The best candidate, or ``kind="none"``. See :func:`subtitle_candidates`."""
+    candidates = subtitle_candidates(
+        probe, preferred_language=preferred_language, sidecars=sidecars
+    )
+    return candidates[0] if candidates else no_subtitles(probe)
 
 
 def _embedded(stream: SubtitleStreamInfo, reason: str) -> SubtitleSource:
@@ -176,6 +214,32 @@ def redactable_streams(probe: ProbeResult) -> list[int]:
 
 
 # ------------------------------------------------------------------ parsing
+
+
+def redactable_sidecars(
+    source: Path, sidecars: Sequence[Path], *, preferred_language: str | None = None
+) -> list[Path]:
+    """Sidecar files we should mask, given the word lists we ship.
+
+    Deliberately asymmetric with :func:`redactable_streams`, which skips a stream
+    with no ``language`` tag: there, guessing is unnecessary (the M1 media has 61
+    text streams, one of them English) and wrong guesses are cheap to avoid. A
+    sidecar is the opposite case -- ``Movie.srt`` with no language in its name is
+    the *usual* shape, and it is almost always the primary language, so skipping
+    untagged files would mean the commonest sidecar layout never got redacted.
+    The asymmetry is safe because redaction only masks what the matcher matches:
+    running an English word list over a Spanish subtitle finds nothing.
+
+    A sidecar tagged with a language we have no list for is excluded, since
+    nothing could match it and rewriting it would be pure risk.
+    """
+    known = {*REDACTABLE_LANGUAGES, *([preferred_language] if preferred_language else [])}
+    out: list[Path] = []
+    for sidecar in sidecars:
+        tag = _sidecar_language(sidecar, source.stem)
+        if tag is None or any(lang.matches(tag, other) for other in known):
+            out.append(sidecar)
+    return out
 
 
 def parse_cues(path: Path) -> list[SubtitleCue]:
@@ -321,6 +385,37 @@ def redact_line(raw: str, matcher: Matcher, *, mask_char: str = "*") -> tuple[st
     return out, len(matches), dropped
 
 
+def _load_best_candidate(
+    ctx, probe: ProbeResult, sidecars: Sequence[Path]
+) -> tuple[SubtitleSource, list[SubtitleCue]]:
+    """The first candidate that actually parses, with its cues.
+
+    A candidate that cannot be read is a warning, not a failure: the file may have
+    four other subtitle tracks, and having no cues at all merely means the job
+    falls back to a full-file pass. Failing the job would be a strictly worse
+    outcome than either.
+    """
+    candidates = subtitle_candidates(
+        probe, preferred_language=ctx.settings.preferred_language, sidecars=sidecars
+    )
+    for candidate in candidates:
+        try:
+            if candidate.kind == "sidecar" and candidate.path:
+                return candidate, parse_cues(Path(candidate.path))
+            if candidate.kind == "embedded" and candidate.stream_typed_index is not None:
+                extracted = _extract_stream(ctx, probe, candidate.stream_typed_index)
+                return candidate.model_copy(update={"path": str(extracted)}), parse_cues(extracted)
+        except Exception as exc:  # noqa: BLE001 - any unreadable candidate is skippable
+            ctx.log.warning(
+                "subtitles.candidate_unusable",
+                kind=candidate.kind,
+                path=candidate.path,
+                stream=candidate.stream_typed_index,
+                error=str(exc)[:200],
+            )
+    return no_subtitles(probe), []
+
+
 def redact_file(
     source: Path, dest: Path, matcher: Matcher, *, mask_char: str = "*"
 ) -> RedactionStats:
@@ -374,17 +469,7 @@ def run(ctx) -> None:
         ctx.matcher = matcher
 
     sidecars = find_sidecars(Path(probe.path))
-    source = choose_subtitle_source(
-        probe, preferred_language=ctx.settings.preferred_language, sidecars=sidecars
-    )
-
-    cues: list[SubtitleCue] = []
-    if source.kind == "sidecar" and source.path:
-        cues = parse_cues(Path(source.path))
-    elif source.kind == "embedded" and source.stream_typed_index is not None:
-        extracted = _extract_stream(ctx, probe, source.stream_typed_index)
-        source = source.model_copy(update={"path": str(extracted)})
-        cues = parse_cues(extracted)
+    source, cues = _load_best_candidate(ctx, probe, sidecars)
 
     hits = find_hits(cues, matcher)
 
@@ -423,6 +508,12 @@ def run(ctx) -> None:
         usable=usable,
         window_pad_s=pad_s,
         redactable=redactable_streams(probe),
+        redactable_sidecars=[
+            str(s)
+            for s in redactable_sidecars(
+                Path(probe.path), sidecars, preferred_language=ctx.settings.preferred_language
+            )
+        ],
         sidecars=[str(s) for s in sidecars],
     )
     ctx.log.info(

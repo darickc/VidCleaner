@@ -314,6 +314,53 @@ def _redact_subtitles(ctx, probe: ProbeResult, subs) -> dict[int, RedactedSubtit
     return out
 
 
+def _redact_sidecars(ctx, subs) -> list[RedactedSubtitle]:
+    """Redact sidecar subtitle files into ``/work/redacted/``.
+
+    Kept apart from the embedded pass because the results go to different places:
+    an embedded stream is muxed back into the output by ffmpeg, whereas a sidecar is
+    a separate file in the library that only ``swap`` may replace (M1's Decision Log:
+    "sidecar subtitles are written to /work only, never the library"). So these end
+    up in ``RenderResult.redacted`` -- as the record swap acts on -- and never in the
+    render plan.
+
+    Redaction is pure Python and runs before ffmpeg, so a broken sidecar downgrades
+    to a warning and can never fail an otherwise good render.
+    """
+    from vidcleaner.pipeline.subtitles import redact_file  # noqa: PLC0415
+
+    if not ctx.settings.redact_subtitles:
+        return []
+
+    out: list[RedactedSubtitle] = []
+    for index, raw in enumerate(subs.redactable_sidecars):
+        source_path = Path(raw)
+        if not source_path.is_file():
+            ctx.log.warning("render.sidecar_missing", sidecar=raw)
+            continue
+        target = ctx.ws.redacted_dir / f"side_{index}_{source_path.name}"
+        try:
+            stats = redact_file(source_path, target, ctx.matcher)
+        except Exception as exc:
+            ctx.log.warning("render.sidecar_redaction_failed", sidecar=raw, error=str(exc))
+            continue
+        if stats.hits == 0:
+            # Nothing to install: leaving the library file alone is strictly better
+            # than replacing it with a byte-different copy of itself.
+            target.unlink(missing_ok=True)
+            continue
+        out.append(
+            RedactedSubtitle(
+                sidecar_source=str(source_path),
+                output_path=str(target),
+                replacements=stats.hits,
+                tags_dropped=stats.tags_dropped,
+            )
+        )
+        ctx.log.info("render.sidecar_redacted", sidecar=raw, replacements=stats.hits)
+    return out
+
+
 def _extracted_path(ctx, subs, probe: ProbeResult, stream: SubtitleStreamInfo) -> Path | None:
     """Reuse the subtitles stage's extraction, or pull the stream now."""
     if (
@@ -360,6 +407,7 @@ def run(ctx) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
 
     redacted = _redact_subtitles(ctx, probe, subs)
+    sidecars = _redact_sidecars(ctx, subs)
     plan = plan_render(
         probe,
         detections,
@@ -390,7 +438,7 @@ def run(ctx) -> None:
         bit_rate=plan.clean_codec.bit_rate,
         mute_range_count=plan.graph.n_ranges,
         filter_count=plan.graph.n_chunks + plan.graph.n_fades,
-        redacted=list(redacted.values()),
+        redacted=[*redacted.values(), *sidecars],
         tags=plan.tags,
         warnings=list(plan.graph.warnings),
     ).write(ctx.ws.render_json)
@@ -403,6 +451,7 @@ def run(ctx) -> None:
         ranges=plan.graph.n_ranges,
         chunks=plan.graph.n_chunks,
         redacted=len(redacted),
+        redacted_sidecars=len(sidecars),
         elapsed_s=round(result.elapsed_s, 1),
     )
 

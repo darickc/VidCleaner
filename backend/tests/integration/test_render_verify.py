@@ -369,6 +369,70 @@ def test_redaction_can_be_disabled(rendered):
     assert render_stage.load(ctx.ws).redacted == []
 
 
+# --------------------------------------------------------- sidecar redaction
+
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
+
+
+def test_a_sidecar_is_redacted_into_work_and_not_the_library(rendered, sample_mkv):
+    """M1's log deferred installing redacted sidecars to swap.py, but nothing
+    ever *produced* them: `subs.redactable` is built from embedded streams only."""
+    sidecar = sample_mkv.with_suffix(".srt")
+    sidecar.write_text((FIXTURES / "marked.srt").read_text())
+    original = sidecar.read_text()
+
+    ctx = rendered(sample_mkv)
+    result = render_stage.load(ctx.ws)
+    produced = [r for r in result.redacted if r.sidecar_source]
+    assert len(produced) == 1
+    assert produced[0].sidecar_source == str(sidecar)
+    assert produced[0].replacements > 0
+
+    staged = Path(produced[0].output_path)
+    assert staged.is_dir() is False and staged.is_file()
+    assert ctx.ws.redacted_dir in staged.parents
+    assert "****" in staged.read_text()
+    assert "fucking" not in staged.read_text().lower()
+    # The library file is untouched: only swap.py may write there.
+    assert sidecar.read_text() == original
+
+
+def test_a_sidecar_in_another_language_is_left_alone(rendered, sample_mkv):
+    sidecar = sample_mkv.parent / f"{sample_mkv.stem}.es.srt"
+    sidecar.write_text((FIXTURES / "marked.es.srt").read_text())
+    ctx = rendered(sample_mkv)
+    assert [r for r in render_stage.load(ctx.ws).redacted if r.sidecar_source] == []
+
+
+def test_a_sidecar_with_no_hits_produces_nothing_to_install(rendered, sample_mkv):
+    """Replacing a library file with a byte-different copy of itself is worse
+    than leaving it alone."""
+    sidecar = sample_mkv.with_suffix(".srt")
+    sidecar.write_text("1\n00:00:01,000 --> 00:00:02,000\nNothing to see here.\n\n")
+    ctx = rendered(sample_mkv)
+    assert [r for r in render_stage.load(ctx.ws).redacted if r.sidecar_source] == []
+    assert list(ctx.ws.redacted_dir.glob("side_*")) == []
+
+
+def test_an_unparseable_sidecar_falls_back_to_the_embedded_stream(rendered, sample_mkv):
+    """§6 step 3 prefers a sidecar, and nothing used to look past a broken one:
+    one corrupt `.srt` failed the whole job on a file with good embedded subs."""
+    from vidcleaner.pipeline import subtitles as subs_stage
+
+    sidecar = sample_mkv.with_suffix(".srt")
+    sidecar.write_bytes(b"\x00\x01 not a subtitle file at all")
+
+    ctx = rendered(sample_mkv)
+    subs = subs_stage.load(ctx.ws)
+    assert subs.source.kind == "embedded"
+    assert subs.cues, "the embedded English stream should have been used instead"
+
+    result = render_stage.load(ctx.ws)
+    assert result is not None and Path(result.out_path).is_file()
+    assert [r for r in result.redacted if r.sidecar_source] == []
+
+
 # ------------------------------------------------------------- mp4 -> mkv
 
 

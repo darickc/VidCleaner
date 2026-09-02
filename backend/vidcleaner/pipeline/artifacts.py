@@ -336,6 +336,10 @@ class SubtitlesResult(Artifact):
     redactable: list[int] = Field(default_factory=list)
     """Typed indexes of text subtitle streams whose language we can redact."""
     sidecars: list[str] = Field(default_factory=list)
+    redactable_sidecars: list[str] = Field(default_factory=list)
+    """Sidecar files to redact. A subset of ``sidecars``: see
+    ``subtitles.redactable_sidecars`` for why an *untagged* sidecar is included
+    here while an untagged embedded stream is not."""
 
 
 # ---------------------------------------------------------------------- drift

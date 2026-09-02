@@ -20,7 +20,9 @@ from vidcleaner.pipeline.subtitles import (
     parse_cues,
     redact_file,
     redact_line,
+    redactable_sidecars,
     redactable_streams,
+    subtitle_candidates,
 )
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
@@ -349,3 +351,85 @@ def test_redact_file_leaves_clean_files_untouched(tmp_path, matcher):
     )
     stats = redact_file(source, tmp_path / "out.srt", matcher)
     assert (stats.cues_changed, stats.hits) == (0, 0)
+
+
+# ------------------------------------------------------- sidecar redaction (M3)
+
+
+def sidecar_set(tmp_path: Path, *names: str) -> tuple[Path, list[Path]]:
+    source = tmp_path / "Movie (2020).mkv"
+    source.write_bytes(b"")
+    made = []
+    for name in names:
+        path = tmp_path / name
+        path.write_text("1\n00:00:01,000 --> 00:00:02,000\nOh shit.\n\n")
+        made.append(path)
+    return source, made
+
+
+def test_an_untagged_sidecar_is_redactable(tmp_path: Path) -> None:
+    """The commonest layout is a bare `Movie.srt`, and it is nearly always the
+    primary language -- skipping it (as we do for untagged embedded streams) would
+    mean the usual case never got masked."""
+    source, sidecars = sidecar_set(tmp_path, "Movie (2020).srt")
+    assert redactable_sidecars(source, sidecars) == sidecars
+
+
+def test_a_sidecar_in_a_language_we_have_no_list_for_is_skipped(tmp_path: Path) -> None:
+    source, sidecars = sidecar_set(tmp_path, "Movie (2020).es.srt", "Movie (2020).en.srt")
+    chosen = redactable_sidecars(source, sidecars)
+    assert [p.name for p in chosen] == ["Movie (2020).en.srt"]
+
+
+def test_the_preferred_language_widens_the_selection(tmp_path: Path) -> None:
+    source, sidecars = sidecar_set(tmp_path, "Movie (2020).es.srt")
+    assert redactable_sidecars(source, sidecars, preferred_language="spa") == sidecars
+
+
+def test_the_untagged_rule_is_the_opposite_of_the_embedded_rule(tmp_path: Path) -> None:
+    """Both halves of the asymmetry in one place, so it reads as deliberate.
+
+    The M1 test episode has three untagged embedded text streams (Chinese, titled
+    but untagged) among 61, which is why guessing there is wrong. A sidecar has no
+    such crowd to be confused with.
+    """
+    probe = probe_fixture("eac3_atmos_many_subs")
+    untagged = {s.typed_index for s in probe.text_subtitles if s.language is None}
+    assert untagged, "this fixture is supposed to carry untagged text streams"
+    assert not untagged & set(redactable_streams(probe))
+
+    source, sidecars = sidecar_set(tmp_path, "Movie (2020).srt")
+    assert redactable_sidecars(source, sidecars) == sidecars
+
+
+def test_a_sidecar_is_masked_in_place_of_the_original(tmp_path: Path, matcher) -> None:
+    source, sidecars = sidecar_set(tmp_path, "Movie (2020).srt")
+    dest = tmp_path / "out" / "red.srt"
+    stats = redact_file(sidecars[0], dest, matcher)
+    assert stats.hits == 1
+    assert "shit" not in dest.read_text().lower()
+    assert "****" in dest.read_text()
+    # The library copy is untouched: only swap.py may write there.
+    assert "shit" in sidecars[0].read_text().lower()
+
+
+def test_candidates_are_every_source_best_first(tmp_path: Path) -> None:
+    probe = probe_fixture("eac3_atmos_many_subs")
+    sidecar = tmp_path / "x.srt"
+    sidecar.write_text("1\n00:00:01,000 --> 00:00:02,000\nhi\n\n")
+    candidates = subtitle_candidates(probe, preferred_language="eng", sidecars=[sidecar])
+
+    assert candidates[0].kind == "sidecar"
+    assert [c.kind for c in candidates[1:]] == ["embedded"] * (len(candidates) - 1)
+    # Every text stream appears exactly once, despite four overlapping passes.
+    indexes = [c.stream_typed_index for c in candidates[1:]]
+    assert len(indexes) == len(set(indexes)) == len(probe.text_subtitles)
+    assert candidates[0] == choose_subtitle_source(
+        probe, preferred_language="eng", sidecars=[sidecar]
+    )
+
+
+def test_a_file_with_no_text_subtitles_has_no_candidates() -> None:
+    probe = probe_fixture("aac_mkv_no_bitrate")
+    assert subtitle_candidates(probe, preferred_language="eng") == []
+    assert choose_subtitle_source(probe, preferred_language="eng").kind == "none"

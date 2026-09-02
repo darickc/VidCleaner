@@ -1134,6 +1134,43 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   `ensure_media_item` lookup is by path, which for a worker job would resolve the *post-swap*
   path and create a duplicate row; the worker already knows which row it holds.
 
+- 2026-09-02 — **M3 step 4 (sidecar redaction) complete.** `subtitles.redactable_sidecars`,
+  `subtitle_candidates`, `_load_best_candidate`; `render._redact_sidecars`;
+  `SubtitlesResult.redactable_sidecars`. Verified: 1294 passed.
+- 2026-09-02 — **§6 step 6's sidecar rewriting had no producer at all, so a file whose only
+  subtitles are a sidecar was redacted nowhere.** M1's Decision Log deferred *installing*
+  redacted sidecars to `swap.py`, which presumed something was making them —
+  `RedactedSubtitle.sidecar_source` has been a field with no writer since M1, and
+  `SubtitlesResult.sidecars` a list with no consumer. The reason is one line in
+  `render._redact_subtitles`: it iterates `subs.redactable`, which `redactable_streams()`
+  builds from `probe.text_subtitles`, i.e. **embedded streams only**. `render._redact_sidecars`
+  now produces them, and they land in `RenderResult.redacted` (the record swap acts on) but
+  never in the render plan — a sidecar is a separate library file, not something ffmpeg muxes.
+- 2026-09-02 — **An *untagged* sidecar is redacted, while an untagged embedded stream is
+  skipped, and the asymmetry is deliberate.** For embedded streams, guessing is unnecessary and
+  avoidable: the M1 episode has 61 text streams, exactly one English, and three untagged
+  Chinese ones. A sidecar is the opposite shape — a bare `Movie.srt` with no language in its
+  name is the *usual* layout and is nearly always the primary language, so applying the embedded
+  rule would mean the commonest sidecar layout never got masked. It is safe because redaction
+  only masks what the matcher matches: an English word list over a Spanish subtitle finds
+  nothing. A sidecar *tagged* with a language we ship no list for is still excluded — nothing
+  could match it, so rewriting it would be pure risk. Both halves are asserted in one test so
+  the asymmetry reads as a decision rather than an oversight.
+- 2026-09-02 — **A sidecar with zero hits produces nothing to install.** Replacing a library
+  file with a byte-different copy of itself is strictly worse than leaving it alone: it changes
+  the mtime, invites a Jellyfin rescan, and puts a pointless entry in `/backups`.
+- 2026-09-02 — **A defect found by the new test, not by review: one corrupt sidecar failed the
+  entire job.** §6 step 3's precedence *prefers* a sidecar over an embedded stream, and nothing
+  looked past the one it chose — so a `Movie.srt` that `pysubs2` cannot parse (a truncated
+  download, a stray binary file with the wrong extension) raised out of the `subtitles` stage
+  on a file with four perfectly good embedded English tracks. `choose_subtitle_source` is now a
+  thin wrapper over **`subtitle_candidates`**, which returns every source best-first, and the
+  stage walks them until one parses. An unusable candidate is a warning; running out of
+  candidates yields `kind="none"`, which merely promotes the job to a full-file pass. Both are
+  better outcomes than failing. The refactor is behaviour-preserving for the happy path —
+  `choose_subtitle_source` returns `candidates[0]` — and the four overlapping precedence passes
+  now de-duplicate, so each text stream appears exactly once in the list.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
