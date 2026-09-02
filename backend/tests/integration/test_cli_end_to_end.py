@@ -526,9 +526,7 @@ def test_a_second_in_place_run_reports_already_clean(
     assert "Already clean" in capsys.readouterr().out
 
 
-def test_a_sidecar_is_swapped_alongside_the_video(
-    migrated, in_library, transcript_file, tmp_path
-):
+def test_a_sidecar_is_swapped_alongside_the_video(migrated, in_library, transcript_file, tmp_path):
     sidecar = in_library.with_suffix(".srt")
     sidecar.write_text((FIXTURES / "marked.srt").read_text())
     original_subs = sidecar.read_text()

@@ -44,4 +44,16 @@ Sonarr/Radarr, with a review UI. Python (FastAPI + worker) backend, React/TypeSc
   faster-whisper and whisperX imports inside functions.
 - Persistence lives in `pipeline/persist.py` and is called *after* the pipeline, never threaded
   through `StageContext`.
-- Library files are only ever changed by `pipeline/swap.py` (rename-based, never unlink).
+- Library files are only ever changed by `pipeline/swap.py` (rename-based, never unlink). Two
+  renames cannot be atomic, so `swap` writes an **fsynced intent journal** (`swap.plan.json`)
+  before the first one and `swap.recover()` resolves every crash state from it. `swap` and
+  `refresh` are therefore *not* pure functions of their on-disk inputs: `swap` gets resume
+  safety from the journal and `refresh` from idempotence.
+- **The database stores local paths exclusively.** Arr and Jellyfin paths are translated only at
+  the integration boundary, through `integrations/pathmap.py` (`from_prefix` = the app's path,
+  `to_prefix` = ours). Never map a `/work` or `/backups` path.
+- **Periodic work is split by resource.** The worker owns anything needing queue idleness or the
+  volumes (stale recovery, `/work` collection, the audit pass); the api owns the hourly arr sync,
+  because a timer in the worker fires however late the current ffmpeg or STT stage happens to be.
+- `jobs.priority` is **lower-runs-sooner** and `jobs.attempts` counts **claims, not failures**
+  (a crash must burn an attempt). See `db/constants.py`.

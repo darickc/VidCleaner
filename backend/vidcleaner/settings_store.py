@@ -98,6 +98,15 @@ class AppSettings(BaseModel):
 
     # --- scheduling & retention (§6) ---
     audit_pass: Literal["off", "idle", "always"] = "idle"
+    mapping_check_delay_s: float = Field(
+        default=90.0,
+        ge=0.0,
+        description=(
+            "§6 step 9's 90 s, as a scheduling parameter rather than a sleep: the "
+            "sync pass re-checks the arr's path for items cleaned longer ago than "
+            "this. A sleep inside the stage would idle the worker per job."
+        ),
+    )
     render_parallel: int = Field(default=1, ge=1, le=4)
     backup_retention_days: int = Field(default=30, ge=0)
 

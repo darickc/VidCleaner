@@ -23,9 +23,7 @@ def test_a_masked_key_in_the_body_falls_through_to_the_stored_one(client: TestCl
     """The API returns `***` for secrets, so the form may never have seen the real
     value -- posting it back must not be read as "test with the literal ***"."""
     client.patch("/api/settings", json={"sonarr_url": "http://127.0.0.1:1", "sonarr_api_key": "k"})
-    body = client.post(
-        "/api/integrations/sonarr/test", json={"api_key": "***"}
-    ).json()
+    body = client.post("/api/integrations/sonarr/test", json={"api_key": "***"}).json()
     # 127.0.0.1:1 refuses, so this is a reachability failure, not "not configured".
     assert body["ok"] is False
     assert "no URL or API key" not in body["detail"]

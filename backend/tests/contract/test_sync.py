@@ -238,9 +238,7 @@ def test_a_cli_row_is_adopted_and_keeps_its_history(sonarr) -> None:
         assert item.status == "clean"
         assert session.scalars(select(Detection)).one().media_item_id == item_id
         # The sentinel title stays, with nothing hanging off it.
-        sentinel = session.scalars(
-            select(Title).where(Title.arr_id == LOCAL_TITLE_ARR_ID)
-        ).one()
+        sentinel = session.scalars(select(Title).where(Title.arr_id == LOCAL_TITLE_ARR_ID)).one()
         assert sentinel.items == []
 
 
@@ -305,9 +303,7 @@ def test_a_vanished_file_makes_the_item_stale_and_orphans_its_backup(sonarr) -> 
         session.add(Backup(media_item_id=item.id, original_path="x", backup_path="/b/x.mkv"))
         item_id = item.id
 
-    service.routes[("GET", "/api/v3/episodefile")] = [
-        fake_arr.fixture("sonarr_episodefiles")[0]
-    ]
+    service.routes[("GET", "/api/v3/episodefile")] = [fake_arr.fixture("sonarr_episodefiles")[0]]
     with session_scope() as session:
         report = sync_title_items(
             session, session.get(Title, title_id), client=client, pathmap=TV_MAP
@@ -367,9 +363,10 @@ def test_a_disabled_title_is_not_backfilled(sonarr) -> None:
     with session_scope() as session:
         session.get(Title, title_id).enabled = False
     with session_scope() as session:
-        assert backfill_title(
-            session, session.get(Title, title_id), client=client, pathmap=TV_MAP
-        ) == []
+        assert (
+            backfill_title(session, session.get(Title, title_id), client=client, pathmap=TV_MAP)
+            == []
+        )
 
 
 def test_the_sentinel_title_is_never_backfilled(sonarr) -> None:
@@ -417,9 +414,7 @@ def _mark_clean(title_id: int, *, episode: int) -> int:
 
     with session_scope() as session:
         item = session.scalars(
-            select(MediaItem).where(
-                MediaItem.title_id == title_id, MediaItem.episode == episode
-            )
+            select(MediaItem).where(MediaItem.title_id == title_id, MediaItem.episode == episode)
         ).one()
         settings = load_settings(session)
         matcher = matcher_for(session, title_id=title_id, item_id=item.id, settings=settings)
@@ -443,9 +438,10 @@ def test_a_stale_item_is_never_enqueued(sonarr) -> None:
         for item in session.scalars(select(MediaItem)):
             item.status = "stale"
     with session_scope() as session:
-        assert backfill_title(
-            session, session.get(Title, title_id), client=client, pathmap=TV_MAP
-        ) == []
+        assert (
+            backfill_title(session, session.get(Title, title_id), client=client, pathmap=TV_MAP)
+            == []
+        )
 
 
 # ------------------------------------------------------------------- sync_all

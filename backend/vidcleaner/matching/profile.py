@@ -44,6 +44,7 @@ __all__ = [
     "load_whitelist",
     "matcher_for",
     "profile_spec",
+    "ensure_webhook_token",
     "seed_defaults",
     "snapshot_for",
     "sync_builtin_word_entries",
@@ -348,8 +349,31 @@ def clear_matcher_cache() -> None:
     _build_cached.cache_clear()
 
 
+def ensure_webhook_token(session: Session) -> str:
+    """Generate the webhook shared secret if it is unset.
+
+    §8 has the user paste it into the arr's notification headers, and the receiver
+    compares it on every delivery. Generating it here means the receiver can
+    **always** require it -- the alternative, accepting deliveries while it is empty,
+    is an unauthenticated job-enqueue endpoint on first boot. The app has no user
+    authentication of any kind (PLAN.md never says so), which makes this secret the
+    entire perimeter.
+    """
+    from vidcleaner.settings_store import load_settings, save_settings  # noqa: PLC0415
+
+    current = load_settings(session).webhook_token
+    if current:
+        return current
+    import secrets  # noqa: PLC0415
+
+    token = secrets.token_urlsafe(32)
+    save_settings(session, {"webhook_token": token})
+    log.info("webhook.token_generated")
+    return token
+
+
 def ensure_seed_data() -> SyncReport:
-    """Sync the word lists and seed the default profile/whitelist.
+    """Sync the word lists, seed the default profile/whitelist, mint the webhook token.
 
     Called at startup, after migrations. Ownership avoids a race between the two
     processes: the api does it whenever it runs, and a worker-only deployment
@@ -360,5 +384,6 @@ def ensure_seed_data() -> SyncReport:
     with session_scope() as session:
         report = sync_builtin_word_entries(session)
         seed_defaults(session)
+        ensure_webhook_token(session)
     clear_matcher_cache()
     return report

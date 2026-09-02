@@ -201,7 +201,7 @@ VidCleaner/
 - [x] **M0 — Skeleton & plan in repo**: copy this plan to `PLAN.md`, `CLAUDE.md`, `git init`, backend/frontend scaffolds, Dockerfile builds, `/api/health`, SQLite + Alembic baseline, settings load/save, api+worker entrypoint. *Demo: container runs on unraid, UI shell loads.*
 - [x] **M1 — Core clean via CLI**: word lists + matcher (tests), probe/extract/subtitles/windowed STT (faster-whisper + whisperX)/detect/render/verify on a local file; `vidcleaner clean <file> --dry-run|--out`; codec policy; subtitle redaction. *Demo: before/after MKV with Clean/Original tracks plays in Infuse; word counts printed.*
 - [x] **M2 — Full-file STT + drift + robustness**: full mode (**VAD removed — see the Decision Log; it was inert in windowed mode and cost 5.5x the recall in full mode**), drift check, censored-token handling, suspicious guards, resumable stage markers, eval set with precision/recall in `docs/eval.md`. *Demo: movie with no subs processed overnight; timing error report.*
-- [ ] **M3 — Worker, swap, integrations**: job queue/claiming, backup/swap/rollback, Sonarr/Radarr clients + sync + backfill, webhook receivers with dedupe/upgrade handling, arr rescan + Jellyfin refresh + mapping check. *Demo: enable a series → existing episodes cleaned; Sonarr imports a new episode → auto-cleaned → Jellyfin shows Clean default.*
+- [x] **M3 — Worker, swap, integrations**: job queue/claiming, backup/swap/rollback, Sonarr/Radarr clients + sync + backfill, webhook receivers with dedupe/upgrade handling, arr rescan + Jellyfin refresh + mapping check. *Demo: enable a series → existing episodes cleaned; Sonarr imports a new episode → auto-cleaned → Jellyfin shows Clean default.*
 - [ ] **M4 — UI**: Queue, Library (toggle/profile), Title, Item (counts, detections, snippet players, whitelist + reprocess, restore original), Settings with Test buttons and webhook setup. *Demo: mark a false positive, reprocess, word audible again.*
 - [ ] **M5 — Profiles, audit pass, retention, hardening**: Words & Profiles page, per-title override, audit jobs, backup retention/purge, disk guards, stale-path handling, PUID/PGID, unraid template, README, thread/model tuning. *Demo: fresh unraid install from template to first cleaned episode in < 15 min of setup.*
 
@@ -1535,6 +1535,91 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   between tests, so `tests/unit/test_claim.py` resets it around each test — the *unset*
   behaviour is itself under test there, since defaulting an interrupted swap to `failed` is the
   safe direction.
+
+- 2026-09-02 — **M3 step 10 (webhook receivers) complete.** `integrations/payloads.py`,
+  `api/webhooks.py` (`/sonarr`, `/radarr`, `/setup`, `/install`), `ensure_webhook_token`, and
+  the api-owned hourly sync task in `main.lifespan`.
+- 2026-09-02 — **`webhook_token` is generated at seed time**, so the receiver can *always*
+  require it. The alternative — accept deliveries while it is unset — is an unauthenticated
+  job-enqueue endpoint on first boot. A bad or missing token gets `401` and **nothing is
+  stored**: writing unauthenticated bodies to the database is a denial-of-service vector on an
+  endpoint anyone can reach.
+- 2026-09-02 — **The application has no user authentication of any kind, and PLAN.md never says
+  so**, which makes the webhook secret the entire security perimeter and `GET
+  /api/webhooks/setup` (which hands the token out in plaintext) only acceptable behind a reverse
+  proxy. Recorded here because it is a property of the whole design, not of this endpoint; M5's
+  README work should say it out loud.
+- 2026-09-02 — **`Test` is dispatched before any title resolution**, and an unknown `eventType`
+  before it too. Test payloads carry dummy ids (`series.id = 1`), so resolving first would let
+  a Test click enqueue a real job against a fake path on any install whose series 1 exists — a
+  test asserts exactly that, with a real series 1 present. Answering an unrecognised event
+  early also makes the recorded note say `unhandled:<type>` rather than the less useful
+  `unknown_title`.
+- 2026-09-02 — **Webhook dispatch is pure database — no outbound HTTP at all.** That is what
+  makes §6.0's "respond 200 immediately" true with no BackgroundTask: an unknown title records
+  `unknown_title` and the hourly sync adopts it, rather than blocking the receiver on a
+  possibly-hung Sonarr. Receivers always answer `200` except `401`/`400`, because Sonarr
+  disables a notification after repeated failures — and a dispatch exception is caught, recorded
+  on the event row with `handled=False`, and still answered `200`.
+- 2026-09-02 — **A `Download` goes through the same `resolve_item` the sync uses**, so a webhook
+  can never create a row the sync would then have to merge. A disabled title still gets its
+  `media_items` row upserted (§12's "recorded but not queued") so §9.2's "12/24 clean" is right
+  the moment the user enables it.
+- 2026-09-02 — **§6.0's dedupe window is pinned by two tests that show what it does and does
+  not do.** A ten-event season pack produces **ten** jobs and ten distinct paths — every event
+  names a different file, so the window collapses nothing there. A multi-episode file (several
+  `Download` events sharing one `episodeFile`) produces **one**, which is what the window
+  actually protects against, along with a duplicate delivery.
+- 2026-09-02 — `Rename` is keyed on `arr_file_id`, which is authoritative, with `previousPath`
+  as the fallback — and it never enqueues. This is the same fact that forces a restore to
+  target the item's *current* path rather than `backups.original_path`.
+- 2026-09-02 — **`event=` cannot be passed as a keyword to structlog**, which reserves it for
+  the message itself; doing so raises `TypeError` from inside the logger. It cost twenty test
+  failures whose tracebacks pointed at an unrelated `except ValueError`. Renamed to
+  `event_type=`; worth remembering for every future log call about arr events.
+- 2026-09-02 — **§8's hourly sync runs in the api's `lifespan`** as an asyncio task that calls
+  the blocking sync through `asyncio.to_thread`, waits its interval *before* the first run (a
+  container restart should not stampede the arrs), and never dies on an exception. The interval
+  is `sync_interval_minutes` in deployment config, since it is read once at process start.
+
+- 2026-09-02 — **M3 COMPLETE. Demo recorded.** §11 asks for "enable a series → existing episodes
+  cleaned; Sonarr imports a new episode → auto-cleaned". Run against a **real HTTP server**
+  standing in for Sonarr (Darick has the real one on unraid), so every layer below that is
+  genuine: the CLI, sync, the queue, the worker, real ffmpeg 9.0, the real rename transaction
+  and the webhook receiver. Three generated fixture episodes in a `/media`-shaped tree, with
+  `/tv → <media>/tv` path mapping configured:
+
+  | step | result |
+  |---|---|
+  | `vidcleaner integrations test` | `sonarr ok 4.0.10.2544`, radarr/jellyfin `not configured` |
+  | `vidcleaner sync` | 1 title added, **disabled**, `arr_path` stored mapped to local |
+  | `vidcleaner titles enable --arr-id 42` | 3 items adopted, **3 backfill jobs queued at priority 200** |
+  | worker | 3 jobs `done`; per-job timings probe 0.03 / render 0.08 / verify 0.23 / swap 0.002 s |
+  | library | 3 files replaced, `a:0 ac3 Clean default=1 eng`, `a:1 Original`, `a:2 Commentary` intact, `VIDCLEANER=1` |
+  | backups | 3 rows `kept`, each byte-identical to its original |
+  | webhook `Download` | `{"ok": true, "note": "created", "job_id": ...}` → worker → S01E04 `clean`, trigger `webhook` |
+  | duplicate delivery | `{"note": "deduped"}`, same job id |
+  | wrong token | **HTTP 401**, no `webhook_events` row |
+  | `vidcleaner sync --confirm` | **4 mapping checks, 0 mismatched** — §6 step 9 without a sleep |
+  | `vidcleaner restore --item 1` | 1785323 → 980401 bytes, backup `restored`, cleaned copy moved to `/backups` as `.cleaned`, **exactly 4 files in the folder** |
+
+  What the fake Sonarr actually received, in order: `system/status`, `series`, `episodefile`,
+  `episode`, **four `RescanSeries` commands** (one per cleaned file), then on the confirm pass
+  `series`/`episodefile`/`episode` and `episodefile/{501..504}`. `/work` held 4 pruned
+  directories totalling **144 KiB** — the `out.mkv` files (1.7 MiB each) were reclaimed.
+
+  The job timeline for one episode reads end to end: `queued (backfill, priority 200)` →
+  `claimed` → each stage with its elapsed time → `subtitles source=… mode=full
+  (subtitles_unusable)` → `transcribed` → `detected detections=3 muted=3` → `swapped final=… backup=…`
+  → `refreshed arr=sonarr command=9 skipped=['jellyfin_not_configured']`.
+
+  **Still owed** (per the session's agreement, the same way "plays in Infuse" is): the live half
+  of the demo on the unraid box — `vidcleaner integrations test` against the real Sonarr, Radarr
+  and Jellyfin, a real import, and confirming **Jellyfin shows Clean as the default track**.
+  Everything up to the HTTP boundary is proven here; only the arrs themselves are simulated.
+  The commands are `vidcleaner integrations test`, `vidcleaner sync`,
+  `vidcleaner titles enable --name "<series>"`, `vidcleaner queue list`, and
+  `vidcleaner restore --path <file>`.
 
 ## 15. Working agreement for future sessions
 

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
 from vidcleaner import __version__
-from vidcleaner.api import health, integrations
+from vidcleaner.api import health, integrations, webhooks
 from vidcleaner.api import settings as settings_api
 from vidcleaner.config import get_settings
 from vidcleaner.db.migrate import upgrade_to_head
@@ -45,8 +46,69 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         static_dir=str(settings.static_dir),
         spa_built=(settings.static_dir / "index.html").is_file(),
     )
-    yield
+    # §8's hourly sync is owned by this process: it is HTTP-and-database only, and a
+    # timer in the worker would fire however late the current ffmpeg or STT stage
+    # happens to be. See the Decision Log for the split.
+    syncer = _start_sync_task(settings) if settings.runs_api else None
+    try:
+        yield
+    finally:
+        if syncer is not None:
+            syncer.cancel()
+            with suppress(asyncio.CancelledError):
+                await syncer
     log.info("api.shutdown")
+
+
+def _start_sync_task(settings) -> asyncio.Task:
+    """Periodic arr sync, in a thread so the blocking client never sees the loop."""
+    log_ = get_logger(__name__)
+
+    async def loop() -> None:
+        interval = max(60.0, settings.sync_interval_minutes * 60.0)
+        # Wait first: a container restart should not stampede the arrs, and nothing
+        # depends on a sync having happened by the time the API answers.
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                report = await asyncio.to_thread(_sync_once)
+            except Exception:  # noqa: BLE001 - a periodic task must never die
+                log_.exception("api.sync_failed")
+                continue
+            if report is not None:
+                log_.info(
+                    "api.sync_done",
+                    titles=report.titles_seen,
+                    items=report.items_seen,
+                    enqueued=len(report.enqueued),
+                    errors=len(report.errors),
+                )
+
+    return asyncio.get_running_loop().create_task(loop(), name="arr-sync")
+
+
+def _sync_once():
+    from vidcleaner.db.session import session_scope
+    from vidcleaner.integrations import from_database
+    from vidcleaner.integrations.sync import sync_all
+    from vidcleaner.settings_store import load_settings
+
+    with session_scope() as session:
+        bundle = from_database(session)
+        app_settings = load_settings(session)
+    if bundle.sonarr is None and bundle.radarr is None:
+        bundle.close()
+        return None
+    try:
+        return sync_all(
+            integrations=bundle,
+            settings=app_settings,
+            enqueue_backfill=True,
+            confirm=True,
+            mapping_check_delay_s=app_settings.mapping_check_delay_s,
+        )
+    finally:
+        bundle.close()
 
 
 def create_app() -> FastAPI:
@@ -62,6 +124,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix="/api")
     app.include_router(settings_api.router, prefix="/api")
     app.include_router(integrations.router, prefix="/api")
+    app.include_router(webhooks.router, prefix="/api")
 
     _mount_spa(app, settings.static_dir)
     return app

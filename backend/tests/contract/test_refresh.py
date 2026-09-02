@@ -37,19 +37,25 @@ def world(settings: Settings, tmp_path: Path):
         def clients(self, *, sonarr=True, radarr=False, jellyfin=True) -> Integrations:
             return Integrations(
                 sonarr=SonarrClient(
-                    "http://sonarr", "k", transport=self.sonarr_svc.transport(),
+                    "http://sonarr",
+                    "k",
+                    transport=self.sonarr_svc.transport(),
                     sleep=lambda _: None,
                 )
                 if sonarr
                 else None,
                 radarr=RadarrClient(
-                    "http://radarr", "k", transport=self.radarr_svc.transport(),
+                    "http://radarr",
+                    "k",
+                    transport=self.radarr_svc.transport(),
                     sleep=lambda _: None,
                 )
                 if radarr
                 else None,
                 jellyfin=JellyfinClient(
-                    "http://jellyfin", "k", transport=self.jelly_svc.transport(),
+                    "http://jellyfin",
+                    "k",
+                    transport=self.jelly_svc.transport(),
                     sleep=lambda _: None,
                 )
                 if jellyfin
@@ -120,9 +126,7 @@ def test_an_mp4_swap_deletes_the_old_name_and_creates_the_new_one(world) -> None
 def test_a_movie_rescans_radarr(world) -> None:
     world.run(
         integrations=world.clients(sonarr=False, radarr=True),
-        target=JobTarget(
-            media_item_id=1, title_id=1, kind="movie", arr_app="radarr", arr_id=7
-        ),
+        target=JobTarget(media_item_id=1, title_id=1, kind="movie", arr_app="radarr", arr_id=7),
     )
     assert world.radarr_svc.last("POST", "/api/v3/command").body == {
         "name": "RescanMovie",

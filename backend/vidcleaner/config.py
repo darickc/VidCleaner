@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8585
     log_level: str = "INFO"
+    sync_interval_minutes: float = 60.0
+    """§8's "hourly". Deployment config rather than an operational setting because it
+    is read once, when the api process starts its periodic task."""
 
     config_dir: Path = Field(default_factory=lambda: _dir_default("/config", "config"))
     media_dir: Path = Field(default_factory=lambda: _dir_default("/media", "media"))
