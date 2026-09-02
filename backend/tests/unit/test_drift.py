@@ -14,6 +14,7 @@ from rapidfuzz import fuzz
 from vidcleaner.pipeline.artifacts import SubtitleCue, TranscriptWord
 from vidcleaner.pipeline.drift import (
     MIN_ANCHOR_LEN,
+    MIN_PROBE_SPEECH_WORDS,
     Measurement,
     Observation,
     align_probe,
@@ -208,7 +209,9 @@ def test_a_track_that_pairs_nothing_still_counts_as_probed():
 
 def test_well_timed_subtitles_are_ok():
     assert (
-        decide(Measurement(offset_s=0.05, spread_s=0.02, coverage=0.9, probes=3, timed=3))[0]
+        decide(
+            Measurement(offset_s=0.05, spread_s=0.02, coverage=0.9, probes=3, timed=3, heard=40)
+        )[0]
         == "ok"
     )
 
@@ -216,14 +219,14 @@ def test_well_timed_subtitles_are_ok():
 def test_a_large_offset_is_unreliable_not_discarded():
     """A measurable offset is correctable; widened windows beat a full pass."""
     action, reason = decide(
-        Measurement(offset_s=2.4, spread_s=0.1, coverage=0.9, probes=3, timed=3)
+        Measurement(offset_s=2.4, spread_s=0.1, coverage=0.9, probes=3, timed=3, heard=40)
     )
     assert (action, reason) == ("unreliable", "offset_above_threshold")
 
 
 def test_a_large_spread_is_unreliable():
     action, reason = decide(
-        Measurement(offset_s=0.1, spread_s=1.9, coverage=0.9, probes=3, timed=3)
+        Measurement(offset_s=0.1, spread_s=1.9, coverage=0.9, probes=3, timed=3, heard=40)
     )
     assert (action, reason) == ("unreliable", "spread_above_threshold")
 
@@ -231,7 +234,7 @@ def test_a_large_spread_is_unreliable():
 def test_low_coverage_discards_the_subtitles():
     """Wrong language or wrong episode: the cues do not describe this audio."""
     action, reason = decide(
-        Measurement(offset_s=0.0, spread_s=0.0, coverage=0.05, probes=3, timed=3)
+        Measurement(offset_s=0.0, spread_s=0.0, coverage=0.05, probes=3, timed=3, heard=40)
     )
     assert (action, reason) == ("discard", "coverage_below_threshold")
 
@@ -239,9 +242,45 @@ def test_low_coverage_discards_the_subtitles():
 def test_coverage_is_checked_before_offset():
     """An offset computed from two lucky pairings is not evidence of anything."""
     assert (
-        decide(Measurement(offset_s=9.0, spread_s=0.0, coverage=0.1, probes=3, timed=3))[0]
+        decide(Measurement(offset_s=9.0, spread_s=0.0, coverage=0.1, probes=3, timed=3, heard=40))[
+            0
+        ]
         == "discard"
     )
+
+
+def test_silence_is_not_evidence_that_the_subtitles_are_wrong():
+    """Probes can land on music, a quiet scene or an unintelligible stretch.
+
+    "Heard nothing" and "heard something unrelated" both score zero coverage and
+    call for opposite responses: discarding a good subtitle track for the former
+    pushes a two-hour film into a full pass on three unlucky samples.
+    """
+    action, reason = decide(
+        Measurement(coverage=0.0, probes=3, timed=0, heard=MIN_PROBE_SPEECH_WORDS - 1)
+    )
+    assert (action, reason) == ("skipped", "no_speech_in_probes")
+
+
+def test_repetitive_hallucination_does_not_count_as_speech():
+    """Whisper emits "you you you" on non-speech even with VAD on -- measured on
+    this project's own sine-tone fixture. Counting raw words would read six
+    repetitions as speech and discard a good subtitle track; distinct words
+    see one."""
+    from vidcleaner.pipeline.artifacts import TranscriptWord
+    from vidcleaner.pipeline.drift import align_probe
+
+    plan = plan_probes([cue(0, 0.0, "the quick brown fox jumps over")])[0]
+    hallucinated = [TranscriptWord(word="you", start=float(i), end=i + 0.3) for i in range(6)]
+    observation = align_probe(plan, hallucinated)
+    m = measure([observation, observation, observation])
+    assert m.heard == 1
+    assert decide(m)[1] == "no_speech_in_probes"
+
+
+def test_audible_speech_that_does_not_match_still_discards():
+    action, reason = decide(Measurement(coverage=0.0, probes=3, timed=0, heard=60))
+    assert (action, reason) == ("discard", "coverage_below_threshold")
 
 
 def test_too_few_probes_is_skipped_not_a_verdict():
@@ -301,7 +340,12 @@ def test_the_artifact_carries_the_evidence():
 def test_the_artifact_round_trips(tmp_path):
     from vidcleaner.pipeline.artifacts import DriftResult
 
-    plans = plan_probes([cue(i, i * 100.0, "the quick brown fox jumps over") for i in range(3)])
+    texts = [
+        "the quick brown fox jumps over",
+        "she sells seashells beside the seashore",
+        "pack my box with five dozen jugs",
+    ]
+    plans = plan_probes([cue(i, i * 100.0, text) for i, text in enumerate(texts)])
     observations = [align_probe(p, shifted(p, 0.9)) for p in plans]
     result = build_result(observations, plans, model="small")
     assert result.action == "unreliable"

@@ -776,6 +776,31 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   transcripts also show the ±5 s pad concretely: each is two to three times the length of its
   cue, which is why a whole-string similarity could never have worked.
 
+- 2026-09-02 — **M2 step 6 (fixtures, integration, CLI reporting) complete.** Two new
+  generated fixtures: `sample_nosubs.mkv` (no subtitle stream — the file that forces a full
+  pass; deliberately separate from `sample_nolang.mkv`, which lacks subtitles for an
+  unrelated reason, so a test that reads `nosubs_mkv` says what it means) and
+  `sample_drift.mkv` (`marked.srt` shifted +2 s via `-itsoffset`, so the shift is one number
+  in one place and the fixture cannot drift out of step with the tests).
+- 2026-09-02 — **A "discard" verdict requires speech we actually heard, and the check counts
+  *distinct* words.** Running the CLI on `sample_drift.mkv` exposed the hole: probes that hear
+  nothing and probes that hear something unrelated both score zero coverage, and the first
+  was being treated as proof the subtitles were wrong. In production three probes landing on
+  music or a quiet scene would have thrown away a good subtitle track and pushed a two-hour
+  film into a full pass. Then the first fix proved too naive — on the sine-tone fixture with
+  `vad_filter=True`, Whisper still hallucinated **"you you you" / "you you" / "you"**: six
+  words, **one distinct**. §3 documents this hallucination; here is where it does damage. So
+  the floor is 8 *distinct* words (`MIN_PROBE_SPEECH_WORDS`), because non-speech
+  hallucination is characteristically repetitive. With it, the fixture keeps its 5 subtitle
+  hits instead of losing all of them.
+- 2026-09-02 — The CLI report now shows a **Drift** line (verdict, offset, window pad) and the
+  STT mode with its reason, and spells out `full_skipped_too_long` in full: that is the one
+  case where "0 detections" must not be read as "this file is clean". None of it was visible
+  before, which is how the discard bug survived a green test suite — it took running the
+  binary to see it.
+- 2026-09-02 — Re-verified on the real episode after all of the above: **unchanged** —
+  `ok`, offset −0.164 s, spread 0.211 s, coverage 0.95, 44 hits, 28 windows / 186.1 s.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

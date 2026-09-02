@@ -87,6 +87,16 @@ MIN_PROBE_WORDS = 6
 FALLBACK_PROBE_WORDS = (4, 2)
 #: Below this many usable probes the measurement is not reported at all.
 MIN_PROBES = 2
+#: **Distinct** words STT must hear across all probes before a verdict means
+#: anything. Below this the probes landed on music, silence or an unintelligible
+#: stretch -- "we could not hear", emphatically not "these subtitles are wrong".
+#:
+#: Distinct, not total, because Whisper's non-speech hallucination is
+#: characteristically *repetitive*. Measured on this project's own sine-tone
+#: fixture with ``vad_filter=True``: the three probes returned "you you you",
+#: "you you" and "you" -- six words, one of them distinct. A raw count would have
+#: read that as speech and discarded a perfectly good subtitle track.
+MIN_PROBE_SPEECH_WORDS = 8
 PROBE_PAD_S = 5.0
 
 #: Anchors shorter than this align by luck as often as by content ("a", "of",
@@ -134,6 +144,8 @@ class Observation:
     deltas: tuple[float, ...]
     coverage: float
     stt_text: str
+    heard_words: frozenset[str] = frozenset()
+    """Distinct words STT returned in this probe's span, matched or not."""
 
     @property
     def median(self) -> float | None:
@@ -250,6 +262,7 @@ def align_probe(plan: ProbePlan, stt_words: Sequence[TranscriptWord]) -> Observa
         deltas=tuple(deltas),
         coverage=coverage,
         stt_text=" ".join(f for f, _ in spoken),
+        heard_words=frozenset(f for f, _ in spoken),
     )
 
 
@@ -266,6 +279,9 @@ class Measurement:
     the case §6's similarity rule exists to catch."""
     timed: int = 0
     """Probes that yielded at least one anchor, i.e. that have an offset."""
+    heard: int = 0
+    """Distinct words heard across all probes. Separates "the subtitles are
+    wrong" from "there was nothing to hear", which are identical in coverage."""
 
 
 def measure(observations: Iterable[Observation]) -> Measurement:
@@ -287,6 +303,7 @@ def measure(observations: Iterable[Observation]) -> Measurement:
         coverage=statistics.fmean(o.coverage for o in observations),
         probes=len(observations),
         timed=len(medians),
+        heard=len(set().union(*(o.heard_words for o in observations))),
     )
 
 
@@ -296,6 +313,7 @@ def decide(
     max_offset_s: float = MAX_OFFSET_S,
     max_spread_s: float = MAX_SPREAD_S,
     min_coverage: float = MIN_COVERAGE,
+    min_heard: int = MIN_PROBE_SPEECH_WORDS,
 ) -> tuple[str, str]:
     """The verdict. Returns ``(action, reason)``.
 
@@ -307,8 +325,15 @@ def decide(
     """
     if measurement.probes < MIN_PROBES:
         return "skipped", "too_few_probes"
-    # Coverage first, and against *attempted* probes: a track that pairs nothing
-    # is the strongest possible evidence that it does not belong to this audio.
+    # "Heard nothing" and "heard something unrelated" both score zero coverage,
+    # and they call for opposite responses. Probes can land on music, a silent
+    # scene or an unintelligible stretch; discarding a perfectly good subtitle
+    # track for that would push a two-hour film into a full pass on the strength
+    # of three unlucky samples. Only speech we *did* hear can convict.
+    if measurement.heard < min_heard:
+        return "skipped", "no_speech_in_probes"
+    # Coverage next, against *attempted* probes: a track that pairs nothing
+    # against audible speech is the strongest evidence it is not this audio.
     if measurement.coverage < min_coverage:
         return "discard", "coverage_below_threshold"
     if measurement.timed < MIN_PROBES:

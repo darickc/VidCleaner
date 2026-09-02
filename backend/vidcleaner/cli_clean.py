@@ -138,14 +138,36 @@ def _report(result: Any, probe, subs, transcript, detections, render, verify) ->
                 f"({subs.source.reason})  {len(subs.cues)} cues, {len(subs.hits)} hits, "
                 f"{len(subs.redactable)} redactable"
             )
-    if transcript is not None and transcript.word_count:
+        if subs.offset_s or not subs.reliable or not subs.usable:
+            verdict = (
+                "discarded" if not subs.usable else "unreliable" if not subs.reliable else "ok"
+            )
+            lines.append(
+                f"Drift      {verdict}, offset {subs.offset_s:+.2f}s, "
+                f"window pad {subs.window_pad_s:.1f}s"
+            )
+    if transcript is not None:
         window_s = sum(w.duration for w in transcript.windows)
-        lines.append(
-            f"STT        {transcript.mode} {transcript.model}"
-            f"{' + ' + transcript.align_model if transcript.align_model else ''}"
-            f"  {len(transcript.windows)} windows / {_clock(window_s)}"
-            f"  {transcript.word_count} words"
-        )
+        if transcript.word_count:
+            lines.append(
+                f"STT        {transcript.mode} {transcript.model}"
+                f"{' + ' + transcript.align_model if transcript.align_model else ''}"
+                f"  {len(transcript.windows)} windows / {_clock(window_s)}"
+                f"  {transcript.word_count} words"
+                f"{'  [' + transcript.mode_reason + ']' if transcript.mode_reason else ''}"
+            )
+        elif transcript.mode_reason == "full_skipped_too_long":
+            # The one case where "no detections" must not read as "clean".
+            lines.append(
+                "STT        SKIPPED -- this file has no usable subtitles and is too long "
+                "for a full pass"
+            )
+            lines.append(
+                "           Nothing was transcribed, so nothing could be detected. Raise "
+                "stt_full_max_hours or pass --stt-mode full."
+            )
+        elif transcript.mode_reason:
+            lines.append(f"STT        none ({transcript.mode_reason})")
 
     if detections is not None:
         stats = detections.stats

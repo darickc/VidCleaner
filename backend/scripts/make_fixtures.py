@@ -62,6 +62,8 @@ class FixtureSet:
     offset_mkv: Path
     surround71_mkv: Path
     nolang_mkv: Path
+    nosubs_mkv: Path
+    drift_mkv: Path
 
     def all(self) -> list[Path]:
         return [
@@ -70,6 +72,8 @@ class FixtureSet:
             self.offset_mkv,
             self.surround71_mkv,
             self.nolang_mkv,
+            self.nosubs_mkv,
+            self.drift_mkv,
         ]
 
 
@@ -321,6 +325,94 @@ def build_nolang_mkv(dest: Path) -> Path:
     return out
 
 
+def build_nosubs_mkv(dest: Path) -> Path:
+    """No subtitle stream at all: the file that forces a full-file STT pass.
+
+    Deliberately separate from ``sample_nolang.mkv``, which also lacks subtitles
+    but exists to test a missing *audio language* tag. A test that reads
+    ``nosubs_mkv`` says what it means.
+    """
+    out = dest / "sample_nosubs.mkv"
+    _run(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            VIDEO,
+            "-f",
+            "lavfi",
+            "-i",
+            TONE,
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            *VIDEO_ARGS,
+            "-c:a",
+            "ac3",
+            "-b:a",
+            "192k",
+            "-ac",
+            "2",
+            "-metadata:s:a:0",
+            "language=eng",
+            str(out),
+        ]
+    )
+    return out
+
+
+#: How far ``sample_drift.mkv``'s subtitles run ahead of its audio.
+DRIFT_SHIFT_S = 2.0
+
+
+def build_drift_mkv(dest: Path) -> Path:
+    """``sample.mkv``'s subtitles, shifted so the cues no longer match the audio.
+
+    ``-itsoffset`` on the subtitle input rather than a second committed SRT, so
+    the shift is one number in one place and the fixture cannot drift out of
+    step with the value the tests assert.
+    """
+    out = dest / "sample_drift.mkv"
+    _run(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            VIDEO,
+            "-f",
+            "lavfi",
+            "-i",
+            TONE,
+            "-itsoffset",
+            str(DRIFT_SHIFT_S),
+            "-i",
+            str(FIXTURE_INPUTS / "marked.srt"),
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "2:s",
+            *VIDEO_ARGS,
+            "-c:a",
+            "ac3",
+            "-b:a",
+            "192k",
+            "-ac",
+            "2",
+            "-c:s",
+            "srt",
+            "-metadata:s:a:0",
+            "language=eng",
+            "-metadata:s:s:0",
+            "language=eng",
+            str(out),
+        ]
+    )
+    return out
+
+
 def build_all(dest: Path) -> FixtureSet:
     dest.mkdir(parents=True, exist_ok=True)
     return FixtureSet(
@@ -330,6 +422,8 @@ def build_all(dest: Path) -> FixtureSet:
         offset_mkv=build_offset_mkv(dest),
         surround71_mkv=build_surround71_mkv(dest),
         nolang_mkv=build_nolang_mkv(dest),
+        nosubs_mkv=build_nosubs_mkv(dest),
+        drift_mkv=build_drift_mkv(dest),
     )
 
 
