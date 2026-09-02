@@ -86,6 +86,16 @@ class AppSettings(BaseModel):
     extra_eac3_downmix: bool = False
     redact_subtitles: bool = True
 
+    # --- library swap (§6 step 8) ---
+    allow_cross_device_backup: bool = False
+    """Permit a backup that cannot be made by ``rename``.
+
+    §10 already *assumes* `/backups` is on the same filesystem as the library ("so
+    swaps are same-filesystem renames"). Where it is not, backing up means copy +
+    verify + **unlink the original**, and CLAUDE.md reserves unlinking library files
+    to nobody at all. Off by default, with an actionable error, rather than silently
+    degrading to a delete."""
+
     # --- scheduling & retention (§6) ---
     audit_pass: Literal["off", "idle", "always"] = "idle"
     render_parallel: int = Field(default=1, ge=1, le=4)

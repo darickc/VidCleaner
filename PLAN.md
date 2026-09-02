@@ -1171,6 +1171,93 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   `choose_subtitle_source` returns `candidates[0]` — and the four overlapping precedence passes
   now de-duplicate, so each text stream appears exactly once in the list.
 
+- 2026-09-02 — **M3 step 5 (the swap transaction) complete.** `pipeline/swap.py`
+  (`FsOps`/`RealFs`, `plan_swap`, `preflight`, `execute`, `recover`, `restore_backup`,
+  `reconcile`, the stage), `SwapPlan`/`SwapResult`/`SidecarSwap` artifacts,
+  `Workspace.swap_plan_json`/`swap_json`/`swap_broken_json`/`refresh_json`,
+  `atomic_write_bytes(fsync=)` and `Artifact.write(fsync=)`, and the
+  `allow_cross_device_backup` setting. Verified: 1349 passed.
+  **The steps after this one are reordered:** integrations clients (was step 8) now come
+  before the worker runner (was step 7), because the runner's stage list includes `refresh`,
+  which needs the clients. Order from here: backup persistence and restore → integrations
+  clients and path mapping → refresh, sync and CLI → the worker runner → webhooks and demo.
+- 2026-09-02 — **§6 step 8's rename sequence has no journal, so its own rollback cannot run
+  after a crash.** "On failure `rename(backup → original)`" covers an *exception*; a power loss
+  between the two renames leaves a library folder with no video file and nothing on disk that
+  says why. Two renames cannot be made atomic, so `swap.plan.json` is written and **fsynced**
+  (the file *and* its parent directory) before the first rename, and `recover` resolves every
+  reachable state from it. `/work` is documented as a writeback-cache SSD, which is exactly why
+  the fsync is not optional here and is not used for any other artifact — everything else is
+  reconstructible from its inputs.
+- 2026-09-02 — **The recovery decision is driven by file *size*, not by existence.** That is
+  the only question that works for both shapes: an MKV is swapped in place, so `source_path`
+  and `final_path` are one path and "does the source exist" cannot distinguish "not started"
+  from "committed"; an MP4 becomes an MKV, so they are two. Comparing against
+  `plan.out_size`/`plan.source_size` also catches a short copy, which is the classic ENOSPC
+  outcome. The resolved states: nothing committed → redo; backup present with a *good* staged
+  file → **roll forward** (those bytes already passed `verify`, so rolling back would discard a
+  good render for nothing); backup present with no usable staged file → roll back and
+  re-render; final path holds the output → committed (with a warning if the backup has since
+  been moved); source *and* backup both present → refuse, since only a rename that behaved as a
+  copy produces that and we cannot tell which file is authoritative; nothing anywhere → `stale`.
+  Fourteen tests construct each state as plain files. Crash timing cannot be tested by luck —
+  you cannot reliably `docker kill` between two renames — but it can be tested exhaustively.
+- 2026-09-02 — **The rename order is load-bearing: original → backup happens first.** §3 warns
+  that a stray sibling video file can be adopted by Sonarr as *the* file, which is a
+  data-loss-shaped outcome, so the folder must never hold two. The cost is a window one rename
+  wide where it holds none — much cheaper, because neither arr deletes anything during a scan
+  and the episode merely reads as missing until the next moment. A test asserts the exact rename
+  order and that only one video file ever exists in the folder.
+- 2026-09-02 — **The staged filename must not end in a video extension.** An arr's disk scan
+  enumerates by extension, so the temp is `.vidcleaner.<name>.mkv.tmp` — dot-prefixed and
+  `.tmp`-suffixed. It is staged in the *destination* directory, so installing it is a rename
+  rather than a copy.
+- 2026-09-02 — **A failed staging step renames the output back to `out.mkv`.** Without it a
+  resumed job finds `render.done` present and `out.mkv` gone, then fails inside `verify` for
+  reasons that look nothing like the actual cause. (The first implementation unlinked the staged
+  file *before* trying to rename it back, which was found by writing the test.)
+- 2026-09-02 — **Same-filesystem detection cannot trust `st_dev`.** unraid's `/mnt/user` is a
+  FUSE shfs mount: two paths in one share report the same `st_dev` while the underlying disks
+  differ. `st_dev` therefore only *plans* which operation to attempt; the real call is always
+  try-`rename`-then-fall-back-on-`EXDEV`, and the fallback is tested.
+- 2026-09-02 — **Cross-device backups are refused by default** (`allow_cross_device_backup`).
+  A backup across devices cannot be a rename, so it would mean copy + verify + `unlink` the
+  original — and CLAUDE.md reserves library writes to this module precisely so that no code
+  path deletes one. §10 already *assumed* one filesystem ("so swaps are same-filesystem
+  renames"); this enforces it with a message that names the fix.
+- 2026-09-02 — **§6 step 8's `copymode` is under-specified and partly impossible.**
+  `shutil.copymode` copies permission bits only; ownership needs `os.chown`, which a `gosu`'d
+  non-root process can only do for files it already owns — so it is best effort, recorded in
+  `SwapResult.owner_applied`, and made right by construction by §10's `PUID/PGID` + `umask
+  0002`. Permissions are applied to the staged file *before* the rename, so the file is never
+  briefly visible under its real name with the wrong mode. And **mtime is deliberately not
+  copied**: Jellyfin's scanner keys on it and the `refresh` stage that runs next depends on the
+  file looking new — a test asserts the mtime moves forward.
+- 2026-09-02 — **Sidecars are installed last, and a sidecar failure can never cost a good video
+  swap.** Each one is backed up and replaced independently, with its own rollback; a missing or
+  unwritable redacted subtitle becomes a warning on an otherwise successful `SwapResult`.
+- 2026-09-02 — **§9.3's "restore originals" cannot restore to `backups.original_path`.** After a
+  `Rename` webhook that path is stale, so restoring there would recreate the old filename *and*
+  leave the cleaned file behind — two video files in one folder, §3's adoption hazard. Restore
+  targets the item's *current* path and **displaces** the cleaned file to `<name>.cleaned`
+  (numbered on collision), never unlinking it. For the MP4 case the `.mkv` must be displaced or
+  the arr adopts the wrong file. Backups are verified against the recorded size and fingerprint
+  before anything moves.
+- 2026-09-02 — **Two guards §6 does not ask for.** The backup path must not already exist (a
+  second clean after a restore gets a `vc-<job>` suffix rather than overwriting the earlier
+  original, and keeps its real extension so the audit pass can probe it); and `backups_dir` must
+  not sit inside a library folder, which would recreate §3's two-files-per-episode hazard with
+  real video extensions. A `.ignore` marker is written into `/backups` on first use, because §10
+  defaults it to a directory *inside* the media share and Jellyfin honours that file.
+- 2026-09-02 — **`swap` and `refresh` are not pure functions of their on-disk inputs, and
+  cannot be.** CLAUDE.md's contract exists to make resume safe; `swap` gets that property from
+  the intent journal instead, and `refresh` from idempotence (a rescan and a path notification
+  are harmless twice). Said in both module docstrings rather than left to rot.
+- 2026-09-02 — **Every OS call goes through the `FsOps` protocol.** Not for purity: it is the
+  only way to reach EXDEV, ENOSPC, a short copy, EACCES on `chown`, a failed install and a
+  failed *rollback* deterministically — and those are precisely the paths that must be correct
+  the first time they happen for real. Waiting for a genuine full disk is not a test strategy.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

@@ -110,8 +110,10 @@ class Artifact(BaseModel):
             )
         return parsed
 
-    def write(self, path: Path) -> Path:
-        atomic_write_bytes(path, self.model_dump_json(indent=2).encode("utf-8"))
+    def write(self, path: Path, *, fsync: bool = False) -> Path:
+        """``fsync=True`` is for ``swap``'s intent journal only -- see
+        ``workspace.atomic_write_bytes``. Every other artifact is reconstructible."""
+        atomic_write_bytes(path, self.model_dump_json(indent=2).encode("utf-8"), fsync=fsync)
         return path
 
 
@@ -499,6 +501,60 @@ class RedactedSubtitle(BaseModel):
     output_path: str = ""
     replacements: int = 0
     tags_dropped: int = 0
+
+
+class SidecarSwap(BaseModel):
+    original_path: str
+    backup_path: str
+    staged_path: str
+    replacements: int = 0
+
+
+class SwapPlan(Artifact):
+    """``swap.plan.json`` -- the intent journal, not a result.
+
+    Two renames cannot be made atomic, so the only way a crash between them can be
+    resolved is to have written down, durably, what they were going to be.
+    """
+
+    job_id: str
+    source_path: str
+    final_path: str
+    """Where the cleaned file ends up. Differs from ``source_path`` only for an
+    MP4 input, which becomes MKV."""
+    backup_path: str
+    staged_path: str
+    source_size: int
+    source_inode: int | None = None
+    out_size: int
+    extension_changed: bool = False
+    stage_via: Literal["rename", "copy"] = "rename"
+    backup_via: Literal["rename", "copy"] = "rename"
+    mode: int | None = None
+    uid: int | None = None
+    gid: int | None = None
+    sidecars: list[SidecarSwap] = Field(default_factory=list)
+    created_at: datetime | None = None
+
+
+class SwapResult(Artifact):
+    original_path: str
+    final_path: str
+    backup_path: str
+    old_path: str | None = None
+    """The pre-swap name when the extension changed, so ``refresh`` can tell
+    Jellyfin the old path is ``Deleted`` and the new one ``Created``."""
+    backup_size: int = 0
+    backup_sha1_prefix: str = ""
+    out_size: int = 0
+    stage_via: str = "rename"
+    backup_via: str = "rename"
+    mode_applied: bool = False
+    owner_applied: bool = False
+    sidecars: list[SidecarSwap] = Field(default_factory=list)
+    recovered_from: str | None = None
+    elapsed_s: float = 0.0
+    warnings: list[str] = Field(default_factory=list)
 
 
 class RenderResult(Artifact):

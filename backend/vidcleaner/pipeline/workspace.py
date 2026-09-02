@@ -37,20 +37,38 @@ class StageMarker(BaseModel):
     detail: dict = Field(default_factory=dict)
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
+def atomic_write_bytes(path: Path, data: bytes, *, fsync: bool = False) -> None:
     """Write via a temp file in the same directory, then ``os.replace``.
 
     Resume correctness depends on this: a half-written artifact next to a
     completed marker would be read back as if it were whole.
+
+    ``fsync=True`` also flushes the file *and its directory* to disk before
+    returning. Only ``swap``'s intent journal needs it, and it needs it for a
+    concrete reason: ``/work`` is documented as a writeback cache SSD, so the same
+    power loss that interrupts the two library renames can lose the record of what
+    they were doing. Everything else is reconstructible from its inputs.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_bytes(data)
+    if fsync:
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    else:
+        tmp.write_bytes(data)
     os.replace(tmp, path)
+    if fsync:
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
-def atomic_write_text(path: Path, text: str) -> None:
-    atomic_write_bytes(path, text.encode("utf-8"))
+def atomic_write_text(path: Path, text: str, *, fsync: bool = False) -> None:
+    atomic_write_bytes(path, text.encode("utf-8"), fsync=fsync)
 
 
 class Workspace:
@@ -134,6 +152,27 @@ class Workspace:
     @property
     def out_mkv(self) -> Path:
         return self.root / "out.mkv"
+
+    @property
+    def swap_plan_json(self) -> Path:
+        """The swap's intent journal, written (and fsynced) *before* the first
+        library rename, so a crash between the two renames leaves a record of what
+        was in flight. Read back by ``swap.recover``."""
+        return self.root / "swap.plan.json"
+
+    @property
+    def swap_json(self) -> Path:
+        return self.root / "swap.json"
+
+    @property
+    def swap_broken_json(self) -> Path:
+        """Breadcrumb for the one unrecoverable case: a rename failed and so did
+        its rollback. Named separately so it is obvious in a bug report."""
+        return self.root / "swap.broken.json"
+
+    @property
+    def refresh_json(self) -> Path:
+        return self.root / "refresh.json"
 
     @property
     def ffmpeg_log(self) -> Path:
