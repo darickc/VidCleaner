@@ -67,3 +67,13 @@ def test_api_app_is_light():
 
 def test_cli_is_light():
     _assert_clean("vidcleaner.cli")
+
+
+def test_the_queue_is_light():
+    """The worker imports the stage driver, so it inherits exactly the boundary
+    this file protects -- and the api imports the queue to enqueue from webhooks."""
+    _assert_clean("vidcleaner.worker.claim")
+
+
+def test_the_worker_is_light():
+    _assert_clean("vidcleaner.worker.runner")

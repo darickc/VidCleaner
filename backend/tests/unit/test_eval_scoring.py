@@ -284,9 +284,9 @@ def test_the_yaml_emitter_round_trips_the_committed_set(tmp_path):
 
     assert [c.id for c in back.clips] == [c.id for c in original.clips]
     assert len(back.all_labels) == len(original.all_labels)
-    for before, after in zip(original.clips, back.clips):
+    for before, after in zip(original.clips, back.clips, strict=True):
         assert (before.start, before.end) == (after.start, after.end)
-        for a, b in zip(before.labels, after.labels):
+        for a, b in zip(before.labels, after.labels, strict=True):
             assert (round(a.start, 2), round(a.end, 2), a.word, a.category) == (
                 b.start,
                 b.end,

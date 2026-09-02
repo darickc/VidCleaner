@@ -142,9 +142,11 @@ def test_a_second_immediate_transaction_waits_then_fails(migrated: Settings) -> 
     holder.start()
     try:
         assert held.wait(5)
-        with pytest.raises(OperationalError, match="locked"):
-            with immediate_connection(migrated, busy_timeout_ms=50):
-                pass
+        with (
+            pytest.raises(OperationalError, match="locked"),
+            immediate_connection(migrated, busy_timeout_ms=50),
+        ):
+            pass
     finally:
         release.set()
         holder.join(5)

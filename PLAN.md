@@ -994,6 +994,60 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   migrated database, since column drift was already guarded but index drift was not — and a
   half-landed `0002` would show up as a missing unique index rather than as an error.
 
+- 2026-09-02 — **M3 step 2 (the queue) complete.** `worker/claim.py`: `claim_next`,
+  `heartbeat`, `should_abort`, `recover_stale`, `enqueue`, `set_state`, `release`, `cancel`,
+  `reprioritize`, `log_event`. Verified: 1130 passed.
+- 2026-09-02 — **§4's claim sets `state='probing'`, which is briefly wrong for a resumed job,
+  and that is the right trade.** A job resuming from a later marker is not probing, and a
+  dry-run job never renders — but resolving the state properly means reading the work dir's
+  stage markers, and doing filesystem I/O while holding SQLite's write lock is precisely how
+  the *other* process's claim starts failing with "database is locked". The runner therefore
+  corrects the state from the markers before it runs anything, so the wrong value is never
+  observable for longer than one poll iteration.
+- 2026-09-02 — **Fencing needs no new column.** A worker whose heartbeat lapsed may still be
+  alive (a suspended container, an NFS stall), so stale recovery can hand its job to a second
+  worker while the first is still working. Every write carries `AND claimed_by = :me` and
+  `heartbeat()` returns `rowcount == 1`; a `False` return means "you no longer own this" and
+  the worker stops. Note the deliberate asymmetry: a `heartbeat` that fails with
+  `OperationalError` returns **True**, because a momentarily busy database must not be read as
+  losing the job — `STALE_AFTER_S` is four missed heartbeats precisely so that is survivable.
+- 2026-09-02 — **`recover_stale` never requeues a `swapping` job blind.** Swap is the only
+  stage that renames library files, so a crash between `rename(original → backup)` and
+  `rename(staged → final)` leaves a state a fresh run can make *worse*. Such a job goes to
+  `failed` with an actionable error unless `claim.SWAP_RECONCILER` — the hook M3 step 5 fills
+  in from `pipeline/swap.py` — can inspect the intent journal and say `requeue`/`done`.
+  Defaulting to `failed` when the hook is unset is the safe direction: refusing to retry costs
+  a manual reprocess, whereas retrying over an unknown half-renamed library can cost the file.
+- 2026-09-02 — **`enqueue` relies on the database for its central invariant, not on its own
+  read.** It checks for a live job first (so it can report `deduped`/`already_active`/
+  `superseded` usefully), but the insert runs inside a `begin_nested()` savepoint and an
+  `IntegrityError` from `ux_jobs_one_active_per_item` is caught and turned into `reason="raced"`
+  with the winner's job id. That is the only correct shape when two processes enqueue: the
+  pre-check is an optimisation, the index is the guarantee.
+- 2026-09-02 — **§6.0's dedupe window only changes the *reason*, never the outcome.** With one
+  live job per item enforced, a second `Download` for the same item always returns the existing
+  job; the 60 s window just distinguishes "duplicate delivery" (`deduped`) from "we are already
+  working on this" (`already_active`), which is what the webhook's `note` should say. Recorded
+  because §6.0 reads as though the window itself prevents the duplicate.
+- 2026-09-02 — `MAX_ATTEMPTS = 3` is enforced in *recovery*, not only on failure: a job that
+  reliably kills the worker is retired to `failed` after three claims rather than crashing the
+  container forever. This is only coherent because `attempts` counts claims (step 1).
+- 2026-09-02 — Queue tests must keep using the **file**-backed `migrated` fixture. SQLAlchemy
+  passes `check_same_thread=False` and uses `QueuePool` only for file SQLite URLs; an in-memory
+  URL flips to `SingletonThreadPool` with `check_same_thread=True`, which would break both the
+  8-thread claim test and (in step 3) the heartbeat thread. Stated in the test module header,
+  because the failure mode if someone "optimises" it is a confusing threading error far from
+  the change.
+- 2026-09-02 — The concurrent-claim test asserts **no job was claimed twice** and then drains
+  the remainder, rather than asserting that all three claimers won. A claimer that loses the
+  write lock past its busy timeout legitimately gets nothing; asserting otherwise would make a
+  correct implementation flaky.
+- 2026-09-02 — `ruff check` had only ever been run over `vidcleaner/`; over `tests/` it found
+  two pre-existing `B905` (`zip()` without `strict=`) in M2's `test_eval_scoring.py`, on loops
+  whose lengths the preceding lines already assert equal. Fixed, and `ruff check .` /
+  `ruff format --check .` are now clean across the whole backend, which is what future
+  milestones should run.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
