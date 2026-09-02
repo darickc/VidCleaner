@@ -59,6 +59,24 @@ _MODEL_CACHE: dict[tuple[str, str, int], Any] = {}
 _ALIGN_CACHE: dict[str, tuple[Any, Any]] = {}
 
 
+def _windows_in_audio_time(request: TranscribeRequest) -> list[TimeRange]:
+    """Shift container-time windows onto ``audio.wav``'s 0-based clock.
+
+    ``subs.windows`` obey the ONE CLOCK rule -- source container time, like every
+    other persisted value -- but faster-whisper reads ``audio.wav``, which has no
+    container timestamps and starts at 0. Everything inside this module that
+    compares against raw model output therefore works in audio time, and the
+    offset is added back exactly once, in ``_to_segments``.
+    """
+    offset = request.time_offset_s
+    if not offset:
+        return list(request.windows)
+    return [
+        TimeRange(start=max(0.0, w.start - offset), end=max(0.0, w.end - offset))
+        for w in request.windows
+    ]
+
+
 def _chunk_segments(
     segments: Sequence[dict],
     *,
@@ -291,6 +309,7 @@ class WhisperTranscriber:
         threads = self._prepare_env(request)
         model = self._load_model(request, threads)
 
+        audio_windows = _windows_in_audio_time(request)
         total = request.progress_total_s
         # A windowed pass accumulates segment durations against the window total.
         # A full pass must use *position* instead: with vad_filter=True the silent
@@ -308,7 +327,7 @@ class WhisperTranscriber:
             vad_parameters={"min_silence_duration_ms": 500},
             condition_on_previous_text=request.condition_on_previous_text,
             initial_prompt=request.initial_prompt,
-            clip_timestamps=self._clip_arg(request.windows),
+            clip_timestamps=self._clip_arg(audio_windows),
         )
 
         consumed = 0.0
@@ -356,6 +375,29 @@ class WhisperTranscriber:
                 hint="clip_timestamps may have changed semantics",
             )
 
+        return self._build_transcript(
+            request,
+            segments=segments,
+            language=language,
+            align_model=align_model,
+            dropped=dropped,
+        )
+
+    @staticmethod
+    def _build_transcript(
+        request: TranscribeRequest,
+        *,
+        segments: list[TranscriptSegment],
+        language: str | None,
+        align_model: str | None,
+        dropped: int,
+    ) -> Transcript:
+        """Assemble the artifact. ``windows`` go back out in **container time**.
+
+        They were only ever converted to audio time for use against the wav
+        inside this module; ``transcript.json`` obeys the same clock as
+        ``probe.json``, ``subs.json`` and ``detections.json``.
+        """
         return Transcript(
             mode=request.mode,
             model=request.model,
@@ -374,7 +416,8 @@ class WhisperTranscriber:
         raw: list[dict], request: TranscribeRequest
     ) -> tuple[list[TranscriptSegment], int]:
         offset = request.time_offset_s
-        windows = request.windows
+        # Audio time: this runs on raw model output, before the offset is added.
+        windows = _windows_in_audio_time(request)
         dropped = 0
         segments: list[TranscriptSegment] = []
 

@@ -693,6 +693,19 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   (one, before), **37/37 words aligned** by real whisperX through the batched path, progress
   reporting `0.32 → 0.63 → 0.80 → 1.00` where full mode previously emitted only `1.0`.
 
+- 2026-09-02 — **M2 step 3: a ONE CLOCK violation in the STT windows, found and fixed.**
+  `subs.windows` are in **source container time** like every other persisted value, but
+  `whisper_backend` used them directly against `audio.wav`, which is 0-based: as
+  `clip_timestamps`, and as the out-of-window filter in `_to_segments`, which runs on raw
+  model output *before* the offset is added back. On any file whose audio stream has a
+  non-zero `start_time` — the TS-derived rips the ONE CLOCK note exists for — every window
+  was displaced by that offset, so STT transcribed the wrong seconds and `dropped_out_of_window`
+  silently climbed. Invisible until now because `start_time` is 0 on everything except
+  `sample_offset.mkv`, which has no subtitle hits. `_windows_in_audio_time()` now does the
+  conversion in one place; `Transcript.windows` are still persisted in container time, which
+  `_build_transcript` exists to state and a test to pin. Drift (step 4) makes this urgent
+  rather than theoretical: it places ±5 s probes by container time.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
