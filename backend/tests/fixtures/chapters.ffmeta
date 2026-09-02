@@ -1,0 +1,12 @@
+;FFMETADATA1
+title=VidCleaner Fixture
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=5000
+title=Opening
+[CHAPTER]
+TIMEBASE=1/1000
+START=5000
+END=10000
+title=Closing

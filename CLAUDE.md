@@ -28,7 +28,9 @@ Sonarr/Radarr, with a review UI. Python (FastAPI + worker) backend, React/TypeSc
 ## Conventions
 
 - ffmpeg/ffprobe are invoked via subprocess only from `vidcleaner/pipeline/`; filter graphs always go
-  through `-filter_complex_script` files, never inline.
+  through a file, never inline — via `-/filter_complex <file>` (ffmpeg >= 7.0). Do **not** use
+  `-filter_complex_script`: it was removed in ffmpeg 9. Use `pipeline/ffmpeg.py::FFmpegRunner`,
+  which picks the right flag for the installed version.
 - Every pipeline stage is a pure function of its on-disk inputs in `/work/<job_id>/` and writes a
   `<stage>.done` marker.
 - Library files are only ever changed by `pipeline/swap.py` (rename-based, never unlink).

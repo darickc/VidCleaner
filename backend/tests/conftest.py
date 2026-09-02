@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import re
+import shutil
+import subprocess
 from collections.abc import Iterator
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -54,3 +59,56 @@ def client(migrated: Settings) -> Iterator[TestClient]:
 
     with TestClient(create_app()) as test_client:
         yield test_client
+
+
+# --------------------------------------------------------------------- ffmpeg
+
+FFMPEG_MIN_VERSION = (7, 0)
+
+
+@lru_cache(maxsize=1)
+def ffmpeg_status() -> tuple[bool, str]:
+    """Is a usable ffmpeg present? Cached; probed at most once per session."""
+    binary = shutil.which("ffmpeg")
+    if binary is None:
+        return False, "ffmpeg is not on PATH"
+    if shutil.which("ffprobe") is None:
+        return False, "ffprobe is not on PATH"
+    try:
+        out = subprocess.run(
+            [binary, "-hide_banner", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"cannot run ffmpeg: {exc}"
+
+    match = re.search(r"version\s+n?(\d+)\.(\d+)", out.splitlines()[0] if out else "")
+    if match is None:
+        return False, "cannot parse the ffmpeg version"
+    version = (int(match.group(1)), int(match.group(2)))
+    if version < FFMPEG_MIN_VERSION:
+        return False, f"ffmpeg {version[0]}.{version[1]} < {FFMPEG_MIN_VERSION[0]}.0"
+    return True, f"ffmpeg {version[0]}.{version[1]}"
+
+
+def pytest_collection_modifyitems(config, items):
+    """Auto-mark everything under tests/integration/ and skip when ffmpeg is absent.
+
+    Marking by directory means nobody has to remember the decorator. Setting
+    VIDCLEANER_TEST_REQUIRE_FFMPEG=1 turns the skips into failures, so CI cannot
+    go green by silently skipping the entire integration tier -- the classic way
+    an arrangement like this rots.
+    """
+    ok, why = ffmpeg_status()
+    required = os.environ.get("VIDCLEANER_TEST_REQUIRE_FFMPEG") == "1"
+    for item in items:
+        if "integration" in Path(str(item.fspath)).parts:
+            item.add_marker(pytest.mark.ffmpeg)
+        if "ffmpeg" in item.keywords and not ok:
+            if required:
+                item.add_marker(pytest.mark.fail(reason=why))
+            else:
+                item.add_marker(pytest.mark.skip(reason=f"ffmpeg unavailable: {why}"))
