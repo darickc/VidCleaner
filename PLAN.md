@@ -604,11 +604,41 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   a −19.1 dB control window.
 
   **Still owed:** "plays in Infuse" is the one part of the §11 demo only Darick can confirm — the
-  file is at `video/PLUR1BUS - S01E01 - We is Us.CLEAN.mkv`. And the container was not built: the
-  Docker daemon was not running on this Mac, so §10's image (now carrying `--extra stt`) and the
-  ffmpeg-7.x behaviour of `-/filter_complex` and the 100-term expression budget remain unverified on
-  Debian trixie. `get_caps()` version-gates the flag and two integration tests pin the budget, so
-  the risk is contained, but it is not yet proven there.
+  file is at `video/PLUR1BUS - S01E01 - We is Us.CLEAN.mkv`.
+- 2026-09-02 — **Container verified, on both architectures.** The image builds and the whole M1
+  pipeline runs inside it on Debian trixie's **ffmpeg 7.1.5**, which closes the gap left when the
+  Docker daemon was unavailable. Tested natively on arm64 and, under emulation, on **amd64 — the
+  actual unraid target**:
+
+  * **Image content is 2.4 GB (arm64) / 3.2 GB (amd64)**, so §10's "~3 GB" estimate was accurate.
+    Beware the tooling: `docker images` reports 3.34/4.36 GB (snapshotter overhead) while
+    `docker image inspect --format '{{.Size}}'` reports a misleading 770 MB; `du` inside the
+    container and the sum of layer sizes agree on the figures above. `torch` alone is 652 MB, so
+    the CPU-wheel pin is worth roughly 2.5 GB — and it holds on **both** arches:
+    `torch 2.14.0+cpu` with `torch.version.cuda is None` and **zero `nvidia-*` directories** in
+    `site-packages`.
+  * On amd64 the full render path was exercised too (STT replayed from a transcript, since the
+    model would be pathologically slow under emulation): **26/26 verify checks**, −91.0 dB in the
+    mute windows, and the same `a:0` Clean / `a:1` Original / `a:2` Commentary layout.
+  * `get_caps()` detects version 7.1 and selects **`-/filter_complex`**, which works; the pipeline
+    ran end to end through it.
+  * **The 100-term expression budget is identical on 7.1.5 and 9.0.1** (100 parses, 101 rejected),
+    bisected across 17 sizes on both. So `MAX_TERMS_PER_CHUNK = 90` is right for both, and the
+    earlier suspicion that 7.x differed was a quoting bug in the throwaway test script, not ffmpeg.
+  * `vidcleaner clean` on the generated fixture: **26/26 verify checks**, mute windows at −90.3 dB,
+    5 subtitle words masked, `a:0` Clean/default, `a:1` Original, and the third track's `comment`
+    disposition preserved — so §3's C4 correction holds on ffmpeg 7 as well.
+  * Word lists ship inside the wheel: `vidcleaner words` runs in-image and its false-positive gate
+    passes. The no-torch import boundary also holds inside the image, with torch installed.
+  * **Entrypoint and packaging (the M0 demo that was never run):** `gosu` with unraid's 99:100,
+    `alembic upgrade head`, api and worker both start, 181 word entries and the default profile seed
+    on first boot, `spa_built: true`. `/api/health` returns `ok`; `/` and `/library` serve the SPA
+    (200) and an unknown `/api/*` path 404s. The Docker healthcheck reports **healthy**.
+    `VIDCLEANER_ROLE=worker` seeds on its own, confirming that ownership split. Killing the worker
+    exits the container (137), so §4's "if either exits the container exits" holds; `docker stop`
+    shuts down gracefully in 0.19 s (143, with `worker.shutdown` logged). `docker compose up` works
+    with the documented volume env vars, and a settings PATCH round-trips with the API key
+    **`enc:v1:`-encrypted at rest** and masked as `***` on read.
 
 ## 15. Working agreement for future sessions
 

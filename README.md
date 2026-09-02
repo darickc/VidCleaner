@@ -76,6 +76,8 @@ swaps are same-filesystem renames) and `/work` (scratch, put it on an SSD). On u
 `unraid/vidcleaner.xml`. Override the host paths with `MEDIA_DIR`, `BACKUPS_DIR`, `CONFIG_DIR`
 and `WORK_DIR` when running compose elsewhere.
 
-The image runs both processes; `VIDCLEANER_ROLE=api|worker|all` splits them if you ever want
+The image is about 3 GB (Debian trixie + ffmpeg 7.1 + CPU-only torch) and has been built and
+exercised for both `linux/amd64` (unraid) and `linux/arm64`. The image runs both processes;
+`VIDCLEANER_ROLE=api|worker|all` splits them if you ever want
 them on different hosts. `GET /api/health` backs the healthcheck and reports the database
 revision, ffmpeg version and free disk per volume.
