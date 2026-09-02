@@ -102,11 +102,25 @@ def _words(action: str, categories: str | None) -> int:
     return 0
 
 
+def _add_pipeline_args(parser: argparse.ArgumentParser, *, with_output: bool) -> None:
+    from vidcleaner.cli_clean import add_arguments  # noqa: PLC0415
+
+    add_arguments(parser, with_output=with_output)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vidcleaner", description="VidCleaner utilities")
     parser.add_argument("--version", action="version", version=f"vidcleaner {__version__}")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("health", help="print configuration and dependency status as JSON")
+
+    clean = subparsers.add_parser("clean", help="mute profanity in a file and write a new MKV")
+    _add_pipeline_args(clean, with_output=True)
+
+    detect = subparsers.add_parser(
+        "detect", help="find profanity and print the counts, without rendering"
+    )
+    _add_pipeline_args(detect, with_output=False)
 
     words = subparsers.add_parser("words", help="inspect the built-in word lists")
     words.add_argument(
@@ -131,6 +145,10 @@ def main(argv: list[str] | None = None) -> int:
         return _health()
     if args.command == "words":
         return _words(args.action, args.categories)
+    if args.command in {"clean", "detect"}:
+        from vidcleaner.cli_clean import run_clean  # noqa: PLC0415
+
+        return run_clean(args, detect_only=args.command == "detect")
     parser.print_help()
     return 1
 

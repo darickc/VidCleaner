@@ -345,7 +345,11 @@ def run(ctx) -> None:
 
     probe = ProbeResult.read(ctx.ws.probe_json)
     detections = DetectionResult.read(ctx.ws.detections_json)
-    subs = SubtitlesResult.read(ctx.ws.subs_json)
+    # Tolerate a missing subs.json: redaction is then simply skipped rather
+    # than failing a render that is otherwise fine.
+    subs = (
+        SubtitlesResult.read(ctx.ws.subs_json) if ctx.ws.subs_json.is_file() else SubtitlesResult()
+    )
 
     if ctx.matcher is None:
         from vidcleaner.matching.compiler import build_matcher  # noqa: PLC0415

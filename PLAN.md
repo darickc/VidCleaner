@@ -529,6 +529,37 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   had omitted. Both runs exercised the guards for real — whisperX returned one 4.1 s span for a
   single word, which the >3 s guard rejected in favour of the subtitle span exactly as §7 intends.
   This is the concrete evidence that the guards are load-bearing, not decorative.
+- 2026-09-01 — **M1 step 9 (CLI + persistence) complete.** Adds `vidcleaner/cli_clean.py` and
+  `pipeline/persist.py`, plus `vidcleaner clean` / `detect`. Verified: 1088 passed, and the full
+  `clean` ran on a real 60 s clip from the test episode — 26/26 verify checks, mute windows measured
+  at −90.3 dB and the control window at −9.7 dB, 8 subtitle words masked, output layout `a:0` Clean
+  eac3 5.1 eng default / `a:1` Original, all five `VIDCLEANER*` tags present.
+- 2026-09-01 — **M1's CLI does write `jobs` and `detections` rows** (user decision), but persistence
+  lives in `pipeline/persist.py` and is called by the CLI *after* the pipeline, never threaded
+  through `StageContext` — CLAUDE.md requires stages to be pure functions of their on-disk inputs,
+  and a `Session` in the context would make every stage test need a migrated database. The
+  non-null FK chain (`detections → jobs → media_items → titles`) is satisfied by a **sentinel
+  title**: `kind="movie"`, `arr_id=-1` (negative, so it can never collide with a real Sonarr id),
+  `enabled=False` (so M3's backfill ignores it). `media_items` rows are keyed on `path` with
+  `season`/`episode` NULL, which SQLite treats as distinct under `uq_media_items_title_s_e`.
+  **M3 owes a reconciliation step**: when a real arr file matches a local row's path it must adopt
+  that row rather than inserting a duplicate.
+- 2026-09-01 — **§5's rollup query needs a cast.** As written, `SUM(muted)` returns `True` rather
+  than a count: `muted` is a Boolean column, so SQLAlchemy applies the Boolean result processor to
+  the aggregate. M4's per-word rollup must use `func.sum(cast(Detection.muted, Integer))`. Asserted
+  in `test_the_rollup_query_from_plan_section_five_works`.
+- 2026-09-01 — Two bugs the CLI work exposed. First, `configure_logging` bound `sys.stderr` at
+  configure time and `cache_logger_on_first_use` kept it forever, so reconfiguring while anything
+  had replaced the stream (pytest's `capsys`, or the CLI's own call) left the cached logger writing
+  to a closed file — surfacing much later as `ValueError: I/O operation on closed file` in eight
+  unrelated tests. The factory now resolves `sys.stderr` per call. Second, the CLI never called
+  `configure_logging` at all, so structlog's default factory wrote to **stdout** and corrupted
+  `--json`.
+- 2026-09-01 — `--detections FILE` enters the pipeline at `render` but still runs `probe` and
+  `subtitles`: render needs `probe.json` for the plan and `subs.json` for the redaction list, and
+  neither stage needs STT. `render` also tolerates a missing `subs.json` by skipping redaction
+  rather than failing an otherwise good render. This flag is the mechanism behind M4's "reprocess
+  after a whitelist edit".
 
 ## 15. Working agreement for future sessions
 

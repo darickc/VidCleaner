@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -73,3 +74,75 @@ def test_words_list_covers_every_entry(capsys):
     main(["words", "list"])
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
     assert len(lines) == len(load_builtin_entries())
+
+
+# ------------------------------------------------------- clean / detect
+
+
+def test_clean_and_detect_are_registered():
+    parser = build_parser()
+    actions = [a for a in parser._actions if a.dest == "command"]
+    assert {"clean", "detect"} <= set(actions[0].choices)
+
+
+def test_clean_accepts_the_documented_flags():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "clean",
+            "/media/x.mkv",
+            "--out",
+            "/tmp/out.mkv",
+            "--dry-run",
+            "--force",
+            "--job-id",
+            "j1",
+            "--categories",
+            "strong,mild",
+            "--model",
+            "tiny",
+            "--no-db",
+            "--json",
+            "--quiet",
+        ]
+    )
+    assert args.command == "clean"
+    assert args.file == Path("/media/x.mkv")
+    assert args.out == Path("/tmp/out.mkv")
+    assert args.dry_run and args.force and args.no_db and args.as_json and args.quiet
+    assert args.job_id == "j1"
+    assert args.categories == "strong,mild"
+    assert args.model == "tiny"
+
+
+def test_detect_has_no_output_flags():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["detect", "/media/x.mkv", "--out", "/tmp/out.mkv"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["detect", "/media/x.mkv", "--dry-run"])
+
+
+def test_detect_accepts_the_shared_flags():
+    args = build_parser().parse_args(
+        ["detect", "/media/x.mkv", "--categories", "strong", "--no-db"]
+    )
+    assert args.command == "detect" and args.no_db
+
+
+def test_a_missing_file_is_reported_cleanly(capsys, tmp_path):
+    assert main(["detect", str(tmp_path / "nope.mkv"), "--no-db"]) == 66
+    assert "not a file" in capsys.readouterr().err
+
+
+def test_clean_requires_a_file():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["clean"])
+
+
+def test_the_transcript_and_detections_flags_are_paths():
+    args = build_parser().parse_args(
+        ["clean", "/media/x.mkv", "--transcript", "/t.json", "--detections", "/d.json"]
+    )
+    assert args.transcript == Path("/t.json")
+    assert args.detections == Path("/d.json")
