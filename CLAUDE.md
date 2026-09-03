@@ -49,6 +49,10 @@ Sonarr/Radarr, with a review UI. Python (FastAPI + worker) backend, React/TypeSc
   before the first one and `swap.recover()` resolves every crash state from it. `swap` and
   `refresh` are therefore *not* pure functions of their on-disk inputs: `swap` gets resume
   safety from the journal and `refresh` from idempotence.
+- Bitmap subtitle streams are **never** rewritten. M6 may OCR a PGS track (`pipeline/pgs.py` +
+  `pipeline/ocr.py`), but its text is *windowing evidence only*: it lands in `/work`, never in the
+  library, never in `redactable_streams`, and an OCR cue never mutes without an STT token
+  agreeing (`detect.DetectOptions.mute_subtitle_only`).
 - **The database stores local paths exclusively.** Arr and Jellyfin paths are translated only at
   the integration boundary, through `integrations/pathmap.py` (`from_prefix` = the app's path,
   `to_prefix` = ours). Never map a `/work` or `/backups` path.

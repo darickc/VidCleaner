@@ -73,6 +73,24 @@ const SECTIONS: Array<{ title: string; fields: Field[] }> = [
         help: "measured to cost 5× recall — see docs/eval.md",
       },
       { key: "drift_check", label: "Subtitle drift check", kind: "bool" },
+      {
+        key: "ocr_bitmap_subtitles",
+        label: "OCR bitmap (PGS) subtitles",
+        kind: "bool",
+        help: "reads a Blu-ray subtitle track so a remux can stay in windowed mode",
+      },
+      {
+        key: "ocr_min_confidence",
+        label: "OCR minimum confidence",
+        kind: "number",
+        help: "0 = keep every cue; confidence tracks correctness poorly — see docs/eval.md",
+      },
+      {
+        key: "ocr_max_workers",
+        label: "OCR workers",
+        kind: "number",
+        help: "0 = min(4, cores − 2)",
+      },
     ],
   },
   {

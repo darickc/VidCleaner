@@ -111,6 +111,23 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.contract)
 
 
+def _guard(item, marker: str, status, env_var: str) -> None:
+    """Skip a marked test when its tool is missing -- or fail it if CI said so.
+
+    Factored out so the ``ocr`` tier gets the same protection as ``ffmpeg``
+    rather than a weaker one: a silently-skipped OCR tier is exactly the rot
+    described below, and M6 would be the second time it happened.
+    """
+    if marker not in item.keywords:
+        return
+    ok, why = status()
+    if ok:
+        return
+    if os.environ.get(env_var) == "1":
+        pytest.fail(f"{env_var}=1 but {marker} is unusable: {why}")
+    pytest.skip(f"{marker} unavailable: {why}")
+
+
 def pytest_runtest_setup(item):
     """Skip an ffmpeg test when ffmpeg is unusable -- or **fail** it if CI said so.
 
@@ -131,11 +148,15 @@ def pytest_runtest_setup(item):
     runs pytest in a subprocess to prove it, because that is the only way to assert
     what the flag does to a *run*.
     """
-    if "ffmpeg" not in item.keywords:
-        return
-    ok, why = ffmpeg_status()
-    if ok:
-        return
-    if os.environ.get("VIDCLEANER_TEST_REQUIRE_FFMPEG") == "1":
-        pytest.fail(f"VIDCLEANER_TEST_REQUIRE_FFMPEG=1 but ffmpeg is unusable: {why}")
-    pytest.skip(f"ffmpeg unavailable: {why}")
+    _guard(item, "ffmpeg", ffmpeg_status, "VIDCLEANER_TEST_REQUIRE_FFMPEG")
+    _guard(item, "ocr", ocr_status, "VIDCLEANER_TEST_REQUIRE_OCR")
+
+
+@lru_cache(maxsize=1)
+def ocr_status() -> tuple[bool, str]:
+    """Is OCR usable? Same shape as :func:`ffmpeg_status`, same reason."""
+    from vidcleaner.pipeline import ocr
+
+    if not ocr.is_available():
+        return False, "tesseract or the `ocr` extra is missing"
+    return True, "tesseract present"

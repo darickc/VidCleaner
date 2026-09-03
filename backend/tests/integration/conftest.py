@@ -36,6 +36,14 @@ def sample_mp4(fixture_media: FixtureSet, tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def sample_pgs_mkv(fixture_media: FixtureSet, tmp_path: Path) -> Path:
+    """Bitmap subtitles only: the file M6's OCR path exists for."""
+    target = tmp_path / fixture_media.pgs_mkv.name
+    shutil.copy2(fixture_media.pgs_mkv, target)
+    return target
+
+
+@pytest.fixture
 def runner(tmp_path: Path):
     from vidcleaner.pipeline.ffmpeg import FFmpegRunner
 

@@ -14,11 +14,14 @@ over committed ffprobe JSON instead:
 
 * **DTS/TrueHD sources.** ffmpeg's ``dca`` and ``truehd`` encoders are
   experimental, so building such media would test ffmpeg rather than us.
-* **Bitmap subtitles.** ffmpeg refuses text-to-bitmap subtitle transcoding
-  ("only possible from text to text or bitmap to bitmap"), so a PGS/VobSub
-  stream cannot be synthesized without committing binary media. The
-  "bitmap subtitles are copied, never redacted" rule is a pure decision in
-  ``render``/``subtitles`` and is asserted there.
+* **DTS/TrueHD sources** (above). **VobSub** is also still absent: ffmpeg has
+  no vobsub muxer, so an ``.idx``/``.sub`` pair cannot be produced here either.
+
+**PGS is generated** as of M6, which supersedes the 2026-09-01 note that bitmap
+subtitles could not be synthesized. ffmpeg still has no PGS *encoder*, but the
+segment format is simple enough to write directly (``scripts/pgs_writer``) with
+Pillow's bundled font supplying the glyphs -- so ``sample_pgs.mkv`` is a real
+bitmap-subtitle fixture with nothing binary committed and no network access.
 
 Usage::
 
@@ -64,6 +67,7 @@ class FixtureSet:
     nolang_mkv: Path
     nosubs_mkv: Path
     drift_mkv: Path
+    pgs_mkv: Path
 
     def all(self) -> list[Path]:
         return [
@@ -74,6 +78,7 @@ class FixtureSet:
             self.nolang_mkv,
             self.nosubs_mkv,
             self.drift_mkv,
+            self.pgs_mkv,
         ]
 
 
@@ -413,6 +418,83 @@ def build_drift_mkv(dest: Path) -> Path:
     return out
 
 
+#: The PGS fixture's cues. Deliberately the same words as ``marked.srt`` so an
+#: OCR run and a text run over equivalent media are directly comparable -- minus
+#: the ASS markup, which a bitmap cannot carry.
+PGS_CUES = [
+    (0.5, 1.5, "Oh shit, that hurt."),
+    (2.0, 3.0, "You fucking idiot."),
+    (3.5, 4.5, "Nothing to see in Scunthorpe."),
+    (5.0, 6.0, "God damn it."),
+    (8.0, 9.0, "Bullshit."),
+]
+
+
+def build_pgs_mkv(dest: Path) -> Path:
+    """Bitmap subtitles: the file that used to force a full-file STT pass.
+
+    This is the fixture the 2026-09-01 Decision Log said could not exist. It
+    still cannot be made by ffmpeg -- there is no PGS encoder -- but the segments
+    are simple enough to emit directly, and Pillow's bundled font rasterises the
+    glyphs, so nothing binary is committed and nothing is downloaded.
+    ``scripts/pgs_writer`` does that; here we only mux the result.
+    """
+    from scripts.pgs_writer import PgsCue, write_sup
+
+    sup = dest / "sample_pgs.sup"
+    sup.write_bytes(
+        write_sup(
+            [PgsCue(start, end, text) for start, end, text in PGS_CUES],
+            video_width=1280,
+            video_height=720,
+            band_height=96,
+            font_size=40,
+        )
+    )
+    out = dest / "sample_pgs.mkv"
+    _run(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            VIDEO,
+            "-f",
+            "lavfi",
+            "-i",
+            TONE,
+            "-i",
+            str(sup),
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "2:s",
+            *VIDEO_ARGS,
+            "-c:a",
+            "ac3",
+            "-b:a",
+            "192k",
+            "-ac",
+            "2",
+            "-c:s",
+            "copy",
+            # Without this ffmpeg rebases the .sup input by its own start_time,
+            # so every cue lands 0.5 s early and the fixture no longer says what
+            # PGS_CUES says. (Extraction is unaffected either way: `-c:s copy`
+            # out of a container preserves absolute time, which is what keeps
+            # OCR cues on the one clock.)
+            "-copyts",
+            "-metadata:s:a:0",
+            "language=eng",
+            "-metadata:s:s:0",
+            "language=eng",
+            str(out),
+        ]
+    )
+    return out
+
+
 def build_all(dest: Path) -> FixtureSet:
     dest.mkdir(parents=True, exist_ok=True)
     return FixtureSet(
@@ -424,6 +506,7 @@ def build_all(dest: Path) -> FixtureSet:
         nolang_mkv=build_nolang_mkv(dest),
         nosubs_mkv=build_nosubs_mkv(dest),
         drift_mkv=build_drift_mkv(dest),
+        pgs_mkv=build_pgs_mkv(dest),
     )
 
 

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from rapidfuzz import fuzz
@@ -96,6 +96,15 @@ class DetectOptions:
     max_range_s: float = MAX_RANGE_S
     max_cue_offset_s: float = MAX_CUE_OFFSET_S
     fuzz_threshold: float = FUZZ_THRESHOLD
+    mute_subtitle_only: bool = True
+    """Whether a subtitle hit with no matching STT token still mutes.
+
+    True for a human-authored cue: "no STT token" there means Whisper missed a
+    word the subtitle author heard, and muting the proportional span is the
+    right bet. **False for an OCR source** (M6), where it may equally mean OCR
+    invented the word -- and the bet costs ~1.2 s of real dialogue. The
+    detection is still recorded and still shows on the Item page as suspicious;
+    it just does not silence anything without STT corroboration."""
 
     @classmethod
     def from_profile(cls, profile, settings=None) -> DetectOptions:
@@ -431,7 +440,16 @@ def _windowed(
                     suspicious=True,
                     suspicious_reason="no STT token matched in the window",
                     subtitle_cue_idx=hit.cue_index,
+                    muted=opts.mute_subtitle_only,
                 )
+                if not opts.mute_subtitle_only:
+                    # M6: an OCR cue is a candidate, not a witness. Recorded and
+                    # visible for review, but it silences nothing on its own.
+                    detection = detection.model_copy(
+                        update={
+                            "suspicious_reason": "OCR cue with no STT token; not muted",
+                        }
+                    )
         if matcher.is_suppressed(hit.word_canonical, cue.text if cue else hit.word_raw):
             detection = detection.model_copy(update={"whitelisted": True, "muted": False})
         out.append(detection)
@@ -747,6 +765,11 @@ def run(ctx) -> None:
         if transcript.segments or transcript.mode_reason
         else ("windowed" if subs.cues else "full")
     )
+    opts = DetectOptions.from_profile(ctx.spec.profile)
+    # M6: OCR names a candidate; STT must confirm it. See DetectOptions.
+    if subs.source.kind == "ocr":
+        opts = replace(opts, mute_subtitle_only=False)
+
     result = detect(
         matcher=matcher,
         cues=subs.cues,
@@ -755,12 +778,13 @@ def run(ctx) -> None:
         hits=subs.hits,
         drift_offset_s=subs.offset_s,
         duration_s=probe.duration,
-        opts=DetectOptions.from_profile(ctx.spec.profile),
+        opts=opts,
     )
 
     ctx.log.info(
         "detect.done",
         mode=mode,
+        subtitle_kind=subs.source.kind,
         mode_reason=transcript.mode_reason,
         tokens=len(tokens),
         **{k: v for k, v in result.stats.items()},

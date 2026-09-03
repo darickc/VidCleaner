@@ -31,6 +31,18 @@ stt = [
     "torchaudio>=2.4",
 ]
 
+# M6: OCR a PGS subtitle track so a remux does not need a full-file STT pass.
+# Deliberately NOT `pgsrip`, which the PLAN.md Decision Log explains: it needs
+# numpy>=2.2 and setuptools<71 while the `stt` extra above resolves numpy 2.0.2
+# and setuptools 84, and the worker needs both extras in one environment. The
+# PGS decoder is ours (`pipeline/pgs.py`); this is just the OCR shim and the
+# rasteriser. Pillow is already in the lock via matplotlib <- whisperx, but it
+# is named here because the `ocr` extra must stand on its own.
+ocr = [
+    "pytesseract>=0.3.13",
+    "pillow>=11",
+]
+
 # PLAN.md §10 requires CPU-only torch. Resolved from PyPI, torch drags the whole
 # nvidia-*-cu12 wheel set on amd64 Linux -- roughly +2.5 GB in an image whose
 # target is ~3 GB total -- for a design that never touches CUDA.
@@ -73,6 +85,7 @@ addopts = "--strict-markers"
 markers = [
     "ffmpeg: needs a working ffmpeg/ffprobe >= 7.0 (auto-applied to tests/integration/)",
     "contract: mocked Sonarr/Radarr/Jellyfin (auto-applied to tests/contract/); no ffmpeg",
+    "ocr: needs the tesseract binary and the `ocr` extra (M6 bitmap subtitles)",
 ]
 
 [tool.ruff]

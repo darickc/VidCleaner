@@ -14,9 +14,10 @@ and Jellyfin are refreshed afterwards.
 
 ## Status
 
-**All five milestones are complete**: M1 (core clean via CLI), M2 (full-file STT, drift and
-evaluation), M3 (job queue, backup/swap, Sonarr/Radarr/Jellyfin), M4 (the web UI) and M5
-(profiles, the audit pass, retention and the install path below). The pipeline runs end to
+**All six milestones are complete**: M1 (core clean via CLI), M2 (full-file STT, drift and
+evaluation), M3 (job queue, backup/swap, Sonarr/Radarr/Jellyfin), M4 (the web UI), M5
+(profiles, the audit pass, retention and the install path below) and M6 (OCR for bitmap
+subtitles). The pipeline runs end to
 end on a real file:
 
 ```bash
@@ -35,9 +36,13 @@ Subtitles are used to narrow which parts of the audio need speech recognition, w
 makes CPU-only STT practical — about 5% of an episode's runtime on the test media. Before they
 are trusted, a **drift check** samples three cues across the file and measures how far they sit
 from the audio, so a subtitle track authored for another frame rate or another cut cannot mute
-the wrong second. A file with **no usable subtitles** falls back to transcribing the whole thing
-(`--stt-mode full`, or automatically), guarded by `stt_full_max_hours` so a long film cannot
-occupy the worker all night.
+the wrong second. A file whose only subtitles are **bitmap** — the usual case for a Blu-ray
+remux — has its PGS track read by OCR, which costs about 13 seconds for a 56-minute episode and
+keeps it on the cheap windowed path. OCR is treated as a lead, not a witness: it decides which
+audio to transcribe and never mutes a word speech recognition did not also hear. A file with
+**no usable subtitles at all** still falls back to transcribing the whole thing (`--stt-mode
+full`, or automatically), guarded by `stt_full_max_hours` so a long film cannot occupy the
+worker all night.
 
 Detection quality is measured rather than asserted: see [docs/eval.md](docs/eval.md).
 
@@ -178,12 +183,17 @@ speech-to-text stack is an optional extra: `uv sync --extra stt` (faster-whisper
 CPU-only torch). Without it everything except the `transcribe` stage still runs, and the
 integration tests that need speech recognition skip themselves.
 
-The integration tier skips itself when ffmpeg is missing, which is convenient locally
-and dangerous in CI — so set `VIDCLEANER_TEST_REQUIRE_FFMPEG=1` there and a missing
-ffmpeg fails the run instead:
+Bitmap-subtitle OCR is a second extra: `uv sync --extra ocr` plus the tesseract binary
+(`brew install tesseract`; the image installs `tesseract-ocr` and `tesseract-ocr-eng` from
+Debian). Without it a PGS-only file simply falls back to a full-file transcription, exactly as
+it did before M6.
+
+Both tiers skip themselves when their tool is missing, which is convenient locally
+and dangerous in CI — so set the matching flag there and a missing tool fails the
+run instead:
 
 ```bash
-cd backend && VIDCLEANER_TEST_REQUIRE_FFMPEG=1 uv run pytest
+cd backend && VIDCLEANER_TEST_REQUIRE_FFMPEG=1 VIDCLEANER_TEST_REQUIRE_OCR=1 uv run pytest
 ```
 
 ## The image

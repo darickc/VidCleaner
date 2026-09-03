@@ -266,6 +266,54 @@ converts back to episode time. Any editor that reads that format works.
 `validate` reports the count, and `run` starts printing real median and mean timing error
 instead of `unverified`. That is the number that decides padding.
 
+## Bitmap subtitle OCR (M6)
+
+The question M6 has to answer with numbers is whether reading a PGS track is cheaper than the
+full-file STT pass it avoids, because that is what decides the default. Measured on
+PLURIBUS S01E01 (56:28), whose real English subtitles were rasterised into a genuine PGS track
+and then OCR'd back, tesseract 5.5.3, 4 workers:
+
+| path | cost | STT windows |
+|---|---|---|
+| **Before M6**: no text subs, full-file `medium` pass | **1173 s** (measured in M2) | n/a — the whole file |
+| **With M6**: OCR then the ordinary windowed pass | **13 s OCR** + ~52 s STT ≈ **65 s** | 144 s = **4.2%** of runtime |
+| For reference: the same episode's real text subtitles | 67 s STT | 186 s = 5.5% |
+
+**About 18x cheaper**, and it also rescues the case where a file longer than `stt_full_max_hours`
+is not promoted at all and currently yields *no detections whatsoever*. Hence
+`ocr_bitmap_subtitles` defaults to **on**: "off" means paying the more expensive thing.
+
+### What OCR costs in recall
+
+| source | hits found | detail |
+|---|---|---|
+| real text subtitles (ground truth) | **44** | fuck 18, god 10, shit 8, goddamn 3, bullshit 2, jesus 2, christ 1 |
+| OCR, rendered in Arial | **33** (75%) | shit 8/8, god 7/10, goddamn 2/3, christ 1/1 |
+| OCR, rendered in Pillow's bundled Aileron | **24** (55%) | `shit` 2/8 — see below |
+
+**Both of those are floors, and the gap between them is the point.** The Aileron number is
+dominated by *our rasteriser*, not by OCR: that face makes tesseract read `h` as `n` and `d` as
+`a`, so `Bullshit`→`Bulisnit`, `Shit`→`Snit`, `God`→`Goa`. `fuck` survives 18/18 precisely
+because it contains none of the confused letters. Real Blu-ray PGS is professionally typeset at
+1080p and should do better than either row. **Do not quote 55% as the expected recall of this
+feature** — it is the recall of the test fixture, which is deliberately font-file-free so it can
+be generated anywhere.
+
+The recall cost is also why an OCR cue never mutes on its own; see `PLAN.md` §14.
+
+### OCR confidence does not track correctness
+
+`ocr_min_confidence` shipped at 60 on the assumption that it would. Measured on the M6 fixture:
+
+| tesseract mean word confidence | text | correct? |
+|---|---|---|
+| **5.0** | `Bullshit.` | yes |
+| **88.5** | `On snit, that nurt.` | no (`Oh shit, that hurt.`) |
+
+A gate at 60 therefore discarded the good cue and kept the bad one — exactly backwards. The
+default is now **0** (keep every cue), and precision comes from the rule that an OCR cue needs
+STT corroboration before it mutes anything. The knob remains for a genuinely noisy source.
+
 ## Known gaps
 
 * 9 of 15 labels are verified. The remaining 6 are clip c2, which cannot be labelled by hand;
@@ -276,5 +324,7 @@ instead of `unverified`. That is the number that decides padding.
 * Precision needs `--repeat 3` to mean anything, which triples the runtime. If that becomes a
   problem, pinning `cpu_threads=1` would make runs reproducible at the cost of speed.
 * One episode, one language, one genre.
+* **OCR recall is measured against a synthetic rasteriser, not real Blu-ray PGS.** The honest
+  number needs one real remux; until then treat the table above as a lower bound.
 
 Conclusions that change behaviour belong in `PLAN.md` §14, not here.

@@ -19,6 +19,7 @@ shape the implementation:
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,6 +119,7 @@ def subtitle_candidates(
     *,
     preferred_language: str | None,
     sidecars: Sequence[Path] = (),
+    ocr: bool = False,
 ) -> list[SubtitleSource]:
     """§6 step 3's precedence, as a list rather than a single answer.
 
@@ -168,11 +170,36 @@ def subtitle_candidates(
     for stream in text_streams:
         add(stream, "embedded_forced_only")
 
+    # OCR last, always. A real text track -- even a forced one in the wrong
+    # language -- is better evidence than anything Tesseract can produce, so an
+    # OCR candidate is only ever reached when the list above is empty.
+    if ocr:
+        seen_ocr: set[int] = set()
+
+        def add_ocr(stream: SubtitleStreamInfo, reason: str) -> None:
+            # Same shape as `add` above, and for the same reason: the passes
+            # below overlap, so without this a non-forced preferred-language
+            # track is offered twice and gets OCR'd twice.
+            if stream.typed_index in seen_ocr:
+                return
+            seen_ocr.add(stream.typed_index)
+            out.append(_ocr(stream, reason))
+
+        for stream in probe.ocrable_subtitles:
+            if lang.matches(stream.language, preferred_language) and not stream.is_forced:
+                add_ocr(stream, "ocr_preferred_language")
+        for stream in probe.ocrable_subtitles:
+            if lang.matches(stream.language, preferred_language):
+                add_ocr(stream, "ocr_preferred_language_forced")
+        for stream in probe.ocrable_subtitles:
+            add_ocr(stream, "ocr_any")
+
     return out
 
 
-def no_subtitles(probe: ProbeResult) -> SubtitleSource:
-    reason = "no_text_subtitles_only_bitmap" if probe.subtitles else "no_subtitles"
+def no_subtitles(probe: ProbeResult, *, reason: str | None = None) -> SubtitleSource:
+    if reason is None:
+        reason = "no_text_subtitles_only_bitmap" if probe.subtitles else "no_subtitles"
     return SubtitleSource(kind="none", reason=reason)
 
 
@@ -192,6 +219,17 @@ def choose_subtitle_source(
 def _embedded(stream: SubtitleStreamInfo, reason: str) -> SubtitleSource:
     return SubtitleSource(
         kind="embedded",
+        stream_typed_index=stream.typed_index,
+        codec_name=stream.codec_name,
+        language=stream.language,
+        reason=reason,
+    )
+
+
+def _ocr(stream: SubtitleStreamInfo, reason: str) -> SubtitleSource:
+    """A bitmap stream we intend to read. Never a redaction target."""
+    return SubtitleSource(
+        kind="ocr",
         stream_typed_index=stream.typed_index,
         codec_name=stream.codec_name,
         language=stream.language,
@@ -385,8 +423,75 @@ def redact_line(raw: str, matcher: Matcher, *, mask_char: str = "*") -> tuple[st
     return out, len(matches), dropped
 
 
+def _ocr_enabled(ctx, probe: ProbeResult) -> bool:
+    """Whether OCR is worth offering as a candidate for this file.
+
+    All three conditions are cheap and the order matters for the log: the
+    setting is the user's choice, the stream list decides whether there is
+    anything to read, and the binary check is the one that can be false on an
+    otherwise correctly configured install.
+    """
+    if not getattr(ctx.settings, "ocr_bitmap_subtitles", False):
+        return False
+    if not probe.ocrable_subtitles:
+        return False
+    from vidcleaner.pipeline import ocr as ocr_module  # noqa: PLC0415 - optional extra
+
+    if not ocr_module.is_available():
+        ctx.log.warning("subtitles.ocr_unavailable", reason="tesseract or pillow missing")
+        return False
+    return True
+
+
+def _run_ocr(ctx, probe: ProbeResult, candidate: SubtitleSource, stats: dict | None):
+    """Extract one PGS stream and read it. Returns ``(srt_path, cues)``."""
+    from vidcleaner.pipeline import ocr as ocr_module  # noqa: PLC0415 - optional extra
+
+    typed_index = candidate.stream_typed_index
+    sup = ocr_module.extract_sup(ctx, probe, typed_index)
+    collected = ocr_module.OcrStats()
+    started = time.monotonic()
+    cues = ocr_module.ocr_sup(
+        sup,
+        language=candidate.language or ctx.settings.preferred_language or "eng",
+        min_confidence=ctx.settings.ocr_min_confidence,
+        workers=ctx.settings.ocr_max_workers,
+        on_progress=lambda fraction: ctx.progress(NAME, fraction),
+        stats=collected,
+    )
+    elapsed = time.monotonic() - started
+    if stats is not None:
+        stats.update(collected.as_dict())
+        stats["seconds"] = round(elapsed, 1)
+    ctx.log.info(
+        "subtitles.ocr_done",
+        stream=typed_index,
+        seconds=round(elapsed, 1),
+        **collected.as_dict(),
+    )
+    # The cues go to /work as an ordinary SRT so everything downstream -- and
+    # anyone debugging a job -- sees the same shape as any other source.
+    written = ctx.ws.subs_dir / f"ocr_{typed_index}.srt"
+    _write_srt(written, cues)
+    return written, cues
+
+
+def _write_srt(path: Path, cues: Sequence[SubtitleCue]) -> None:
+    subs = pysubs2.SSAFile()
+    for cue in cues:
+        subs.append(
+            pysubs2.SSAEvent(
+                start=int(round(cue.start * 1000)),
+                end=int(round(cue.end * 1000)),
+                text=cue.text,
+            )
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subs.save(str(path), format_="srt")
+
+
 def _load_best_candidate(
-    ctx, probe: ProbeResult, sidecars: Sequence[Path]
+    ctx, probe: ProbeResult, sidecars: Sequence[Path], ocr_stats: dict | None = None
 ) -> tuple[SubtitleSource, list[SubtitleCue]]:
     """The first candidate that actually parses, with its cues.
 
@@ -396,7 +501,10 @@ def _load_best_candidate(
     outcome than either.
     """
     candidates = subtitle_candidates(
-        probe, preferred_language=ctx.settings.preferred_language, sidecars=sidecars
+        probe,
+        preferred_language=ctx.settings.preferred_language,
+        sidecars=sidecars,
+        ocr=_ocr_enabled(ctx, probe),
     )
     for candidate in candidates:
         try:
@@ -405,6 +513,14 @@ def _load_best_candidate(
             if candidate.kind == "embedded" and candidate.stream_typed_index is not None:
                 extracted = _extract_stream(ctx, probe, candidate.stream_typed_index)
                 return candidate.model_copy(update={"path": str(extracted)}), parse_cues(extracted)
+            if candidate.kind == "ocr" and candidate.stream_typed_index is not None:
+                written, cues = _run_ocr(ctx, probe, candidate, ocr_stats)
+                if cues:
+                    return candidate.model_copy(update={"path": str(written)}), cues
+                # An OCR pass that produced nothing legible is not a failure --
+                # it just means this file still needs a full-file STT pass.
+                ctx.log.warning("subtitles.ocr_empty", stream=candidate.stream_typed_index)
+                continue
         except Exception as exc:  # noqa: BLE001 - any unreadable candidate is skippable
             ctx.log.warning(
                 "subtitles.candidate_unusable",
@@ -469,7 +585,8 @@ def run(ctx) -> None:
         ctx.matcher = matcher
 
     sidecars = find_sidecars(Path(probe.path))
-    source, cues = _load_best_candidate(ctx, probe, sidecars)
+    ocr_stats: dict[str, float] = {}
+    source, cues = _load_best_candidate(ctx, probe, sidecars, ocr_stats)
 
     hits = find_hits(cues, matcher)
 
@@ -507,6 +624,7 @@ def run(ctx) -> None:
         reliable=drift_result.action != "unreliable",
         usable=usable,
         window_pad_s=pad_s,
+        ocr_stats=ocr_stats or None,
         redactable=redactable_streams(probe),
         redactable_sidecars=[
             str(s)
@@ -526,6 +644,7 @@ def run(ctx) -> None:
         windows=len(windows),
         window_seconds=round(sum(w.duration for w in windows), 1),
         redactable=len(result.redactable),
+        ocr=ocr_stats or None,
         drift=drift_result.action,
         drift_reason=drift_result.reason,
         offset_s=round(offset_s, 3),

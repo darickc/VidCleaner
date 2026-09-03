@@ -76,13 +76,20 @@ __all__ = [
     "VerifyResult",
     "VideoStreamInfo",
     "WordCount",
+    "OCRABLE_SUBTITLE_CODECS",
     "merge_ranges",
 ]
 
 #: Redactable. ``text`` is what ffprobe reports for some MicroDVD/plain streams.
 TEXT_SUBTITLE_CODECS = frozenset({"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"})
-#: Passed through untouched. OCR (`pgsrip`) is a later option per §11.
+#: Passed through untouched -- always, including when we OCR them. M6 reads a
+#: PGS track to narrow STT windows; it never rewrites one.
 BITMAP_SUBTITLE_CODECS = frozenset({"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub"})
+#: The bitmap codecs we can OCR (M6). PGS only: ffmpeg has no VobSub *muxer*, so
+#: extracting `.idx`/`.sub` would need mkvextract and a second decoder, and
+#: DVB/xsub are broadcast- and DivX-era formats a Sonarr/Radarr library does not
+#: carry. The rest keep falling through to a full-file STT pass.
+OCRABLE_SUBTITLE_CODECS = frozenset({"hdmv_pgs_subtitle"})
 
 SCHEMA_VERSION = 1
 
@@ -226,6 +233,10 @@ class SubtitleStreamInfo(BaseModel):
     def is_bitmap(self) -> bool:
         return self.codec_name in BITMAP_SUBTITLE_CODECS
 
+    @property
+    def is_ocrable(self) -> bool:
+        return self.codec_name in OCRABLE_SUBTITLE_CODECS
+
 
 class CodecPlan(BaseModel):
     """The chosen encoder for the clean track. Produced by ``codecs.py``."""
@@ -282,6 +293,11 @@ class ProbeResult(Artifact):
     def text_subtitles(self) -> list[SubtitleStreamInfo]:
         return [s for s in self.subtitles if s.is_text]
 
+    @property
+    def ocrable_subtitles(self) -> list[SubtitleStreamInfo]:
+        """Bitmap streams M6 can read. Never a redaction target -- see ``ocr``."""
+        return [s for s in self.subtitles if s.is_ocrable]
+
 
 # ------------------------------------------------------------------ subtitles
 
@@ -313,7 +329,10 @@ class SubtitleHit(BaseModel):
 
 
 class SubtitleSource(BaseModel):
-    kind: Literal["sidecar", "embedded", "none"] = "none"
+    kind: Literal["sidecar", "embedded", "ocr", "none"] = "none"
+    """``ocr`` is a bitmap stream read by :mod:`vidcleaner.pipeline.ocr`. It is
+    *windowing evidence only*: it never mutes on its own (see ``detect``) and is
+    never written back to the library."""
     path: str | None = None
     stream_typed_index: int | None = None
     codec_name: str | None = None
@@ -342,6 +361,8 @@ class SubtitlesResult(Artifact):
     redactable: list[int] = Field(default_factory=list)
     """Typed indexes of text subtitle streams whose language we can redact."""
     sidecars: list[str] = Field(default_factory=list)
+    ocr_stats: dict[str, float] | None = None
+    """What an OCR pass cost and discarded, when ``source.kind == "ocr"``."""
     redactable_sidecars: list[str] = Field(default_factory=list)
     """Sidecar files to redact. A subset of ``sidecars``: see
     ``subtitles.redactable_sidecars`` for why an *untagged* sidecar is included

@@ -29,7 +29,7 @@ Sonarr/Radarr/Jellyfin or have a review UI). We build our own, borrowing their f
 | Tech stack | **Python 3.12 backend (FastAPI + SQLAlchemy/SQLite + separate worker process) + React/TypeScript/Vite UI**, one Docker image; FastAPI serves the built SPA. |
 | Selection | **Per-title toggle + automation.** UI lists Sonarr series and Radarr movies; user marks titles "clean". Marking a title enqueues its **existing files (backfill)**; Sonarr/Radarr webhooks enqueue new imports/upgrades. Manual "process now"/"reprocess"/"restore original" always available. |
 | Word list | **Built-in categorized tiers + custom edits.** Categories (strong, mild, religious, slurs, sexual) toggled per *profile*; custom words/phrases; per-title profile override; whitelist for false positives (global/title/item). |
-| Subtitles | **Redact text subtitles too** (SRT/ASS/SSA/WebVTT/mov_text embedded or sidecar → `****`). Bitmap subs (PGS/VobSub) untouched. |
+| Subtitles | **Redact text subtitles too** (SRT/ASS/SSA/WebVTT/mov_text embedded or sidecar → `****`). Bitmap subs (PGS/VobSub) are **never** rewritten. Since M6 a PGS track may be **OCR'd for windowing only** — it narrows which audio needs STT and never decides on its own what to mute. |
 | Approval | **Auto-apply, review after.** Every detection visible with a playable snippet; false positives → whitelist → reprocess. |
 | Paths | **Same paths in every container.** Implement an optional prefix-mapping table (identity default). |
 | Container format | Output is always **MKV** (MP4 inputs are remuxed; MP4 can't carry SRT/ASS/FLAC cleanly). |
@@ -56,7 +56,7 @@ Sonarr/Radarr/Jellyfin or have a review UI). We build our own, borrowing their f
 - UHD 630 via OpenVINO/Vulkan: encoder-only, unverified for Gen9 ⇒ CPU-only for v1.
 
 **Subtitles**
-- Cues are sentence-level (1–6 s) and can be offset or drift (fps mismatch ⇒ minutes). Extract: `ffmpeg -i in.mkv -map 0:s:m:language:eng out.srt`; `codec_name` `subrip/ass/mov_text/webvtt` = text; `hdmv_pgs_subtitle/dvd_subtitle` = bitmap (skip; future OCR via `pgsrip`).
+- Cues are sentence-level (1–6 s) and can be offset or drift (fps mismatch ⇒ minutes). Extract: `ffmpeg -i in.mkv -map 0:s:m:language:eng out.srt`; `codec_name` `subrip/ass/mov_text/webvtt` = text; `hdmv_pgs_subtitle/dvd_subtitle` = bitmap. **M6 OCRs PGS** — `ffmpeg -c:s copy -f sup` (bit-exact, and it removes any need for mkvextract) then our own segment/RLE decoder plus tesseract. Not `pgsrip`; see the Decision Log. VobSub stays skipped: ffmpeg has no vobsub *muxer*.
 
 **ffmpeg**
 - Mute: `volume=0:enable='between(t,s,e)+...'`; `enable` gates whole frames (AAC 21 ms, AC3 32 ms) ⇒ prepend `asetnsamples=n=240` (5 ms). 80 ms lead padding makes clicks inaudible; optional 10 ms `afade` edges (cleanvid pattern) as a setting.
@@ -114,6 +114,7 @@ VidCleaner/
                 ffmpeg.py graph.py lang.py             # subprocess layer, filter builder, ISO 639
                 probe.py extract.py subtitles.py codecs.py
                 stt.py whisper_backend.py              # lazy-import boundary for torch
+                pgs.py ocr.py                          # M6: PGS decode + tesseract
                 detect.py render.py verify.py persist.py
                 drift.py                               # M2
                 swap.py refresh.py                     # M3
@@ -205,7 +206,9 @@ VidCleaner/
 - [x] **M4 — UI**: Queue, Library (toggle/profile), Title, Item (counts, detections, snippet players, whitelist + reprocess, restore original), Settings with Test buttons and webhook setup. *Demo: mark a false positive, reprocess, word audible again.*
 - [x] **M5 — Profiles, audit pass, retention, hardening**: Words & Profiles page, per-title override, audit jobs, backup retention/purge, disk guards, stale-path handling, PUID/PGID, unraid template, README, thread/model tuning. *Demo: fresh unraid install from template to first cleaned episode in < 15 min of setup.*
 
-Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU encoder, extra EAC3 downmix track, Bazarr integration to fetch subs before STT, notifications (Discord/Pushover), multi-language word lists.
+- [x] **M6 — Bitmap subtitle OCR**: read a PGS track so a Blu-ray remux narrows its STT windows instead of falling through to a full-file pass; PGS decoder + tesseract, OCR cues never redacted and never muting without STT corroboration; a generated PGS fixture. *Demo: a bitmap-only file stays in windowed mode, with the cost measured against the full-file pass it replaces.*
+
+Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 downmix track, Bazarr integration to fetch subs before STT, notifications (Discord/Pushover), multi-language word lists, VobSub OCR.
 
 ## 12. Verification strategy
 
@@ -2248,6 +2251,104 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   confirming Jellyfin shows *Clean* as the default track and Infuse plays it. Everything up to
   the hardware is proven here, and the fresh-install timing (7 s to a UI, 92 s to a cleaned
   episode) leaves the 15-minute budget almost entirely to typing in URLs and API keys.
+
+- 2026-09-03 — **M6 (bitmap subtitle OCR) complete.** Adds `pipeline/pgs.py` (a pure-stdlib PGS
+  decoder), `pipeline/ocr.py` (extraction + tesseract) and `scripts/pgs_writer.py` (fixture
+  generation). Verified: **1810 passed** (1770 before), ruff clean, 80 frontend tests, and both
+  `VIDCLEANER_TEST_REQUIRE_FFMPEG=1` and the new `VIDCLEANER_TEST_REQUIRE_OCR=1` green.
+- 2026-09-03 — **Bazarr is deferred, not forgotten.** It was the other half of "get subtitles for
+  files that lack them", and it is the better answer *if you run Bazarr* — but Darick does not,
+  so the integration could only ever have been verified against `respx` mocks. This project's
+  evidence is that the interesting bugs come from running the thing (the M5 demo alone found
+  three, one of which would have broken every install), so a client for software nobody here runs
+  inverts the whole method. It stays on §11's later list, and it needs **no** VidCleaner change to
+  be useful when it arrives: Bazarr writes a sidecar into the library folder and `find_sidecars`
+  already picks that up, ranked above OCR.
+- 2026-09-03 — **`pgsrip` is not used, despite §11 naming it.** Two independent reasons. It
+  requires `numpy>=2.2` and `setuptools<71` while this project's lock resolves **numpy 2.0.2 and
+  setuptools 84** for the `stt` extra, and the worker needs both extras in one environment — a
+  hard conflict, not a preference. And it pulls `opencv-python`: measured, a venv with pgsrip is
+  **165 MB of site-packages, 120 MB of it `cv2`**, against ~30–70 MB for tesseract plus a
+  pure-Python decoder. Its `Sup` path did settle one thing for us: it proves mkvtoolnix is only
+  needed to get the stream *out* of an MKV, and `ffmpeg -c:s copy -f sup` does that instead — so
+  the image gains **one** binary, `tesseract-ocr(-eng)`, from trixie main on both arches, with no
+  third-party apt repo. **Verified** by installing it in a throwaway `python:3.12-slim-trixie`
+  container: `tesseract 5.5.0`, arm64, 15 MB of tessdata — which also confirms the package names
+  and the new build-time version assertion. **Not verified here:** a full image rebuild, which
+  stalled fetching the `docker/dockerfile:1` frontend from Docker Hub; that is owed alongside the
+  unraid run below. Its segment/RLE layout is the reference for `pipeline/pgs.py` (MIT,
+  ratoaq2), which is ~200 lines of stdlib and unit-testable with no OCR installed.
+- 2026-09-03 — **OCR output is windowing evidence, never library content, and this is structural
+  rather than a promise.** The `.srt` is written to `/work/<job>/subs/` only. It cannot reach
+  `redactable_streams` (which filters `probe.text_subtitles`, and a PGS stream is not one) nor
+  `find_sidecars` (which looks beside the media file), so `verify`'s fatal
+  `bitmap_subtitles_untouched` check holds with **no change to `render.py` or `verify.py` at
+  all**. Asserted both ways: a unit test on the lists, and an integration test that renders a PGS
+  file end to end and reads the check back green.
+- 2026-09-03 — **§7's 0.3-confidence subtitle-only fallback does not mute for an OCR source.**
+  When a subtitle hit finds no matching STT token, §7 mutes the proportional span (~1.2 s) at
+  `CONFIDENCE_SUBTITLE_ONLY`. For a human-authored cue that is a good bet: "no STT token" means
+  Whisper missed a word someone actually heard. For OCR it may equally mean **OCR invented the
+  word**, and the bet costs 1.2 s of real dialogue. `DetectOptions.mute_subtitle_only` is False
+  when `subs.source.kind == "ocr"`: the detection is still recorded, still `suspicious`, still
+  visible on the Item page — it simply silences nothing without corroboration. Words STT *does*
+  confirm mute exactly as before, which is the common case and the entire point of the feature.
+- 2026-09-03 — **The 2026-09-01 note that bitmap subtitles cannot be synthesized is superseded.**
+  It is still true that ffmpeg has no PGS encoder — re-measured on ffmpeg 9.0.1, `-c:s dvdsub`
+  from text fails with "only possible from text to text or bitmap to bitmap". But ffmpeg reports
+  **`DE sup`**: it both demuxes *and* muxes raw PGS. So `scripts/pgs_writer.py` emits the segments
+  directly, with Pillow's **bundled** Aileron face supplying the glyphs (no font file, no
+  network), and `-c:s copy` muxes the result into an MKV that ffprobe reports as
+  `hdmv_pgs_subtitle`. Extracting it back is **byte-identical**. That gives a real bitmap-subtitle
+  fixture inside the project's "generate, commit nothing binary" rule, and it makes writer and
+  parser independent implementations of one table — so a round trip means both are right rather
+  than consistently wrong.
+- 2026-09-03 — **`-copyts` is required when muxing the fixture's `.sup`.** Without it ffmpeg
+  rebases the input by its own `start_time` and every cue lands 0.5 s early, so the fixture stops
+  saying what `PGS_CUES` says. *Extraction* is unaffected — verified against a stream whose
+  packets sit at 1.0/3.0 s, which parse back as 1.0/3.0 — which is what keeps OCR cues on the
+  **one clock** with every other subtitle source.
+- 2026-09-03 — **`ocr_min_confidence` defaults to 0, against the design's own first guess.** It
+  shipped at 60 on the theory that tesseract's mean word confidence tracks correctness. Measured
+  on the fixture, it inverts: a correctly-read `Bullshit.` scored **5.0** and a misread
+  `Oh shit, that hurt.` → `On snit, that nurt.` scored **88.5**, so the gate discarded the good
+  cue and kept the bad one. Precision here comes from the no-mute-without-STT rule above, which
+  does not depend on the number at all. The knob stays for a genuinely noisy source.
+- 2026-09-03 — **OCR defaults on, because "off" means paying the more expensive thing.** Measured
+  on PLURIBUS S01E01 (56:28) by rasterising its real English subtitles into a genuine PGS track:
+  OCR of all 538 cues takes **13 s** at 4 workers and yields windows covering **4.2%** of the
+  runtime, so the whole M6 path is ~65 s against the **1173 s** full-file `medium` pass it
+  replaces — about **18x**. It also rescues files longer than `stt_full_max_hours`, which today
+  are not promoted at all and therefore produce *no detections whatsoever*. A missing tesseract
+  logs `subtitles.ocr_unavailable` and falls through to the old behaviour; no job ever fails
+  because OCR is absent.
+- 2026-09-03 — **The recall cost is real and is honestly a fixture artifact as much as an OCR
+  one.** Against the same episode's text subtitles (44 hits) OCR finds **33 (75%)** rendered in
+  Arial but only **24 (55%)** in Pillow's bundled Aileron, which makes tesseract read `h` as `n`
+  and `d` as `a` (`Bullshit`→`Bulisnit`, `God`→`Goa`); `fuck` survives 18/18 precisely because it
+  contains neither letter. Real Blu-ray PGS is professionally typeset at 1080p and should beat
+  both. `docs/eval.md` records the tables and says plainly that 55% must not be quoted as the
+  feature's expected recall. **Still owed:** the same measurement against one real remux.
+- 2026-09-03 — **Scope is PGS only.** VobSub (`dvd_subtitle`) needs mkvextract, because ffmpeg has
+  a vobsub demuxer but no muxer, plus a second decoder for its palette/interlace handling; DVB and
+  xsub are broadcast- and DivX-era formats a Sonarr/Radarr library does not carry. All three keep
+  falling through to a full-file pass, and `OCRABLE_SUBTITLE_CODECS` is the one place that says so.
+- 2026-09-03 — **No new pipeline stage.** OCR runs inside `subtitles`, so `JOB_STAGES`,
+  `STAGE_TO_STATE`, `jobs.state` and the stage registry are all untouched and there is no
+  migration. A separate stage would only have bought a resume marker for a 13-second step, and
+  `subtitles.done` already makes the whole thing resumable. `subtitle_source` is free text, so
+  `ocr_preferred_language` persists as-is.
+- 2026-09-03 — Two bugs the tests caught rather than review. `subtitle_candidates` offered a
+  non-forced preferred-language PGS stream **twice** (it matched both of the first two passes),
+  which would have OCR'd the same track twice — the text path's `add()` helper has always
+  deduplicated for exactly this reason, and the OCR block now does too. And `pgs.render`
+  composited white PGS text onto a *white* background, producing a uniformly blank image: every
+  structural check passed, OCR simply returned nothing, and the symptom was indistinguishable
+  from "this file has no subtitles". PGS is bright-over-transparent, so the composite is onto
+  black and then inverted. Both have regression tests.
+- 2026-09-03 — `VIDCLEANER_TEST_REQUIRE_OCR=1` joins `VIDCLEANER_TEST_REQUIRE_FFMPEG=1`, sharing
+  one `_guard` helper. M5 recorded how the ffmpeg version of this rotted into a no-op; giving the
+  new tier a weaker guard than the old one would have been the same mistake twice.
 
 ## 15. Working agreement for future sessions
 

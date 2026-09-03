@@ -62,6 +62,28 @@ class AppSettings(BaseModel):
     mute_censored_tokens: bool = True
     preferred_language: str = "eng"
 
+    # --- bitmap subtitle OCR (§11 M6) ---
+    ocr_bitmap_subtitles: bool = True
+    """OCR a PGS subtitle track when there is no text one, so the job can stay in
+    windowed mode. On by default because "off" means paying the *more* expensive
+    thing -- a full-file pass -- and because a file longer than
+    ``stt_full_max_hours`` is not promoted at all and would otherwise yield no
+    detections. Degrades silently to the old behaviour when tesseract is absent."""
+    ocr_min_confidence: int = Field(default=0, ge=0, le=100)
+    """Drop OCR cues below this mean word confidence. **0 (keep everything) by
+    measurement, not by taste.**
+
+    This shipped at 60 on the theory that confidence tracks correctness. It does
+    not: on the M6 fixture tesseract scored a perfectly-read ``Bullshit.`` at
+    **5.0** and a misread ``Oh shit, that hurt.`` -> ``On snit, that nurt.`` at
+    **88.5**, so a gate at 60 discarded the good cue and kept the bad one --
+    exactly backwards. Precision here comes from the rule that an OCR cue never
+    mutes without STT corroboration (``detect.DetectOptions.mute_subtitle_only``),
+    which does not depend on this number at all. The knob stays for a user with a
+    genuinely noisy source."""
+    ocr_max_workers: int = Field(default=0, ge=0, le=32)
+    """Parallel tesseract processes. 0 = ``min(4, cores - 2)``."""
+
     # --- subtitle drift (§6 step 3) ---
     drift_check: bool = True
     """Measure the subtitle offset before choosing STT windows. ~10 s per job."""
