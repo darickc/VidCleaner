@@ -75,11 +75,14 @@ token gets a 401 with nothing written to the database.
 
 > **The image is not published to a registry yet**, so building it locally is the only
 > supported path today. `unraid/vidcleaner.xml` is a working Community Applications
-> template except for its `Repository`/`Support`/`Project`/`Icon` URLs, which are
-> placeholders until this repository has a home.
+> template and its `Support`, `Project` and `TemplateURL` links now resolve; the two
+> still outstanding are `Repository` (which needs a published image) and `Icon` (there
+> is no `unraid/vidcleaner.png` yet). CA rejects a template failing either, so it is
+> not submittable until both are done.
 
 ```bash
-git clone <this repo> && cd VidCleaner && docker compose up --build -d
+git clone https://github.com/darickc/VidCleaner.git
+cd VidCleaner && docker compose up --build -d
 ```
 
 Then open `http://<host>:8585`.
