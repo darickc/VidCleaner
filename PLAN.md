@@ -2274,9 +2274,7 @@ Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 down
   the image gains **one** binary, `tesseract-ocr(-eng)`, from trixie main on both arches, with no
   third-party apt repo. **Verified** by installing it in a throwaway `python:3.12-slim-trixie`
   container: `tesseract 5.5.0`, arm64, 15 MB of tessdata — which also confirms the package names
-  and the new build-time version assertion. **Not verified here:** a full image rebuild, which
-  stalled fetching the `docker/dockerfile:1` frontend from Docker Hub; that is owed alongside the
-  unraid run below. Its segment/RLE layout is the reference for `pipeline/pgs.py` (MIT,
+  and the new build-time version assertion. The full image was rebuilt and OCR exercised inside it; see below. Its segment/RLE layout is the reference for `pipeline/pgs.py` (MIT,
   ratoaq2), which is ~200 lines of stdlib and unit-testable with no OCR installed.
 - 2026-09-03 — **OCR output is windowing evidence, never library content, and this is structural
   rather than a promise.** The `.srt` is written to `/work/<job>/subs/` only. It cannot reach
@@ -2346,6 +2344,18 @@ Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 down
   structural check passed, OCR simply returned nothing, and the symptom was indistinguishable
   from "this file has no subtitles". PGS is bright-over-transparent, so the composite is onto
   black and then inverted. Both have regression tests.
+- 2026-09-03 — **OCR output is not identical across platforms, and a test learned that the hard
+  way.** Running the image found the same fixture reading `Bullshit.` correctly under macOS's
+  freetype and as `Bulisnit.` inside Debian — so the integration assertion on the full hit set
+  would have failed on Linux CI for a reason unrelated to the code. It now asserts a small
+  platform-stable subset (`fuck`, `god damn`) and says why. Verified in the container: cue times
+  land exactly on `PGS_CUES` (so `-copyts` did its job), `Scunthorpe` stays unmatched, and
+  `ocr.is_available()` is True with `tesseract 5.5.0`.
+- 2026-09-03 — **The image was rebuilt and exercised.** `vidcleaner:m6` is **3.43 GB against
+  3.34 GB** before — **+90 MB**, about 3%, for tesseract, its language data and `pytesseract`.
+  OCR ran end to end inside it against the generated PGS fixture. (The runtime image is built
+  `--no-dev`, so pytest is absent by design and the suite is not runnable in-container; the
+  behaviour was reproduced directly instead.)
 - 2026-09-03 — `VIDCLEANER_TEST_REQUIRE_OCR=1` joins `VIDCLEANER_TEST_REQUIRE_FFMPEG=1`, sharing
   one `_guard` helper. M5 recorded how the ffmpeg version of this rotted into a no-op; giving the
   new tier a weaker guard than the old one would have been the same mistake twice.

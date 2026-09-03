@@ -98,12 +98,18 @@ def test_the_expected_words_survive_ocr(ctx_for, sample_pgs_mkv):
     subs = run_to_subtitles(ctx)
 
     found = {hit.word_canonical for hit in subs.hits}
-    assert {"fuck", "bullshit", "god damn"} <= found
+    # Deliberately a small, platform-stable subset. OCR output is not identical
+    # across machines -- the same fixture reads `Bullshit.` correctly under
+    # macOS's freetype and as `Bulisnit.` inside the Debian image -- so asserting
+    # the full hit set would make this test fail on Linux CI for a reason that
+    # has nothing to do with the code. These two survive both.
+    assert {"fuck", "god damn"} <= found
 
     # And the honest other half: OCR loses words, which is why this feature only
     # ever *narrows* STT and never decides on its own what to mute. Pillow's
-    # bundled font reads "Oh shit, that hurt." as "On snit, that nurt.", so
-    # `shit` is simply gone -- a recall cost, never a wrong mute.
+    # bundled font makes tesseract read `h` as `n`, so "Oh shit, that hurt."
+    # becomes "On snit, that nurt." and `shit` is simply gone -- a recall cost,
+    # never a wrong mute. docs/eval.md has the measured tables.
     assert "shit" not in found
 
 
