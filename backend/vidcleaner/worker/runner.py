@@ -28,7 +28,7 @@ from sqlalchemy import select, text
 
 from vidcleaner.config import Settings, get_settings
 from vidcleaner.db.constants import STAGE_TO_STATE
-from vidcleaner.db.models import Job
+from vidcleaner.db.models import Job, MediaItem, Title
 from vidcleaner.db.queries import evidence_job_ids
 from vidcleaner.db.session import get_engine, session_scope, utcnow
 from vidcleaner.logging import get_logger
@@ -290,7 +290,7 @@ class Worker:
             try:
                 result = run_stage(ctx, stage)
             except StageError as exc:
-                return self._on_stage_error(claimed, stage, exc, timeline)
+                return self._on_stage_error(claimed, stage, exc, timeline, plan)
 
             timeline.info(
                 f"{stage} {'skipped' if result.skipped else 'done'}",
@@ -402,8 +402,10 @@ class Worker:
         if mode in ("full", "audit"):
             monitor.tracker.reweight(STAGE_WEIGHTS_FULL)
 
-    def _on_stage_error(self, claimed, stage, exc: StageError, timeline) -> JobOutcome:
-        verdict = classify(stage, exc.cause or exc, attempts=claimed.attempts)
+    def _on_stage_error(self, claimed, stage, exc: StageError, timeline, plan=None) -> JobOutcome:
+        cause = exc.cause or exc
+        resolved = self._reresolve(cause, plan, timeline)
+        verdict = classify(stage, cause, attempts=claimed.attempts, resolved=resolved)
         timeline.error(f"{stage} failed", error=exc.message, verdict=verdict.verdict)
         if verdict.verdict == "best_effort":
             # The swap already committed: the library file is correct and a retry
@@ -421,6 +423,48 @@ class Worker:
             timeline.info("retry scheduled", seconds=int(verdict.retry_in_s))
             return JobOutcome(claimed.job_id, "queued", stage=stage, error=exc.message)
         return JobOutcome(claimed.job_id, verdict.state, stage=stage, error=exc.message)
+
+    def _reresolve(self, cause: BaseException, plan, timeline) -> str | None:
+        """§6's "re-resolve via the arr API", finally wired up.
+
+        Only for a vanished source, and only when there is an arr to ask. Returns the
+        `Resolution.outcome` so `policy.classify` can decide whether the one allowed
+        retry is worth spending -- against an *unchanged* path it never is, because the
+        next attempt fails for exactly the same reason.
+
+        The integrations bundle is opened here rather than reused from `ctx`: this runs
+        inside the stage machine, and `run_job`'s ``finally`` has not closed anything
+        yet, but a short-lived client keeps the failure path independent of whatever
+        state the job's own bundle is in.
+        """
+        from vidcleaner.pipeline.stages import StaleSourceError  # noqa: PLC0415
+        from vidcleaner.worker.resolve import reresolve_path  # noqa: PLC0415
+
+        if plan is None or not isinstance(cause, StaleSourceError):
+            return None
+        integrations = None
+        try:
+            with session_scope() as session:
+                integrations = _integrations_for(session)
+                item = session.get(MediaItem, plan.item.id)
+                title = session.get(Title, item.title_id) if item else None
+                if item is None:
+                    return None
+                result = reresolve_path(session, item, title, integrations)
+        except Exception as exc:  # noqa: BLE001 - never mask the real stage failure
+            log.warning("resolve.failed", error=str(exc)[:200])
+            return None
+        finally:
+            if integrations is not None:
+                integrations.close()
+
+        timeline.info(
+            "asked the arr where the file went",
+            outcome=result.outcome,
+            detail=result.detail,
+            path=result.path,
+        )
+        return result.outcome
 
     # -------------------------------------------------------------- recording
 

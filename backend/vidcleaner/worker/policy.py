@@ -58,11 +58,17 @@ def backoff_for(attempts: int) -> float:
     return BACKOFF_S[index]
 
 
-def classify(stage: str, exc: BaseException, *, attempts: int) -> Outcome:
+def classify(
+    stage: str, exc: BaseException, *, attempts: int, resolved: str | None = None
+) -> Outcome:
     """Decide a failed stage's fate.
 
     ``attempts`` is the claim count (see ``Job``'s docstring), so the poison-job guard
     counts crashes as well as failures.
+
+    ``resolved`` is `worker.resolve.Resolution.outcome` when the caller has already
+    asked the arr where a vanished source went -- ``"moved"``, ``"unchanged"``,
+    ``"gone"`` or ``"unavailable"``. ``None`` means it did not ask.
     """
     if isinstance(exc, SwapBrokenError):
         # Both a library rename and its rollback failed. A retry cannot help and could
@@ -70,10 +76,30 @@ def classify(stage: str, exc: BaseException, *, attempts: int) -> Outcome:
         return Outcome("terminal", "failed", detail="swap broken; manual recovery required")
 
     if isinstance(exc, StaleSourceError):
-        # §6's "path vanished": re-resolve and requeue once, then give up. One retry,
-        # because the arr needs a moment to finish whatever moved the file.
-        if attempts <= 1:
+        # §6's "path vanished": re-resolve and requeue once, then give up.
+        #
+        # ``resolved`` is the caller's answer from `worker.resolve.reresolve_path`,
+        # and it is what decides this now. Retrying was previously gated on
+        # ``attempts <= 1``, which was wrong twice over: `attempts` counts **claims**,
+        # so a single crash spent the whole allowance, and nothing re-resolved
+        # anything -- so the retry ran against the identical path a minute later and
+        # could only fail the same way. There is no point spending a retry unless the
+        # file has actually moved.
+        if resolved == "moved":
+            return Outcome("stale", "queued", retry_in_s=5.0, detail="source moved; requeueing")
+        if resolved == "gone":
+            # The arr agrees the file is gone. Retrying cannot bring it back.
+            return Outcome("stale", "stale", detail="the arr no longer has this file")
+        if resolved in (None, "unavailable") and attempts <= 1:
+            # We do not know: nothing asked, or there was no arr to ask (a CLI row, an
+            # unconfigured install, a Sonarr that timed out). `"unavailable"` is the
+            # same epistemic state as `None`, so both fall back to M3's behaviour --
+            # one blind retry, in case whatever moved the file is still finishing.
             return Outcome("stale", "queued", retry_in_s=60.0, detail="source changed; requeueing")
+        if resolved == "unchanged":
+            # The arr insists the path is right and the file is not there, so its
+            # database is behind the disk. A retry re-reads the same absent file.
+            return Outcome("stale", "stale", detail="the arr still reports a path that is gone")
         return Outcome("stale", "stale", detail="source is gone or keeps changing")
 
     if stage in BEST_EFFORT_STAGES:

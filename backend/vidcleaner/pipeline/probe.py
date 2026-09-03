@@ -21,6 +21,7 @@ from vidcleaner.pipeline.artifacts import (
     VideoStreamInfo,
 )
 from vidcleaner.pipeline.codecs import choose_clean_codec, from_stream
+from vidcleaner.pipeline.stages import StaleSourceError
 from vidcleaner.pipeline.workspace import Workspace
 
 NAME = "probe"
@@ -257,7 +258,13 @@ def wait_for_stable(
         try:
             stat = path.stat()
         except OSError as exc:
-            raise ProbeError(f"source vanished: {path}") from exc
+            # `StaleSourceError`, not `ProbeError`: `stages.py:StaleSourceError` has
+            # always documented `probe` as a raise site, and it is the class that
+            # reaches §6's re-resolve-and-requeue path in `policy.classify`. Raising
+            # the generic error sent a vanished source down the ordinary retry
+            # ladder, where re-reading the same missing path three times is all it
+            # could ever do.
+            raise StaleSourceError(NAME, f"source vanished: {path}") from exc
         current = (stat.st_size, stat.st_mtime)
         stable = stable + 1 if current == previous else 0
         if stable >= stable_polls:
@@ -298,7 +305,7 @@ def check_free_space(probe: ProbeResult, work_dir: Path, backups_dir: Path | Non
 def run(ctx) -> None:
     source = Path(ctx.spec.source_path)
     if not source.is_file():
-        raise ProbeError(f"source is not a file: {source}")
+        raise StaleSourceError(NAME, f"source is not a file: {source}")
 
     stat = source.stat()
     payload = ctx.runner.probe(source)

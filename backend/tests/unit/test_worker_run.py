@@ -731,3 +731,52 @@ def test_the_gate_can_be_turned_off(worker, library, monkeypatch) -> None:
         shutil, "disk_usage", lambda _p: type("U", (), {"free": 0, "total": 1 << 30})()
     )
     assert worker.poll_once() is True, "0 disables the gate"
+
+
+def test_a_moved_file_is_re_resolved_and_the_retry_succeeds(worker, library, monkeypatch) -> None:
+    """§6 end to end: the path vanished, the arr said where it went, the retry worked.
+
+    Before M5 the retry ran against the identical path a minute later, so the one
+    allowed attempt was guaranteed to be wasted and every moved file ended `stale`.
+    """
+    item_id, source = library
+    moved = source.with_name("S01E01 - Renamed.mkv")
+    source.rename(moved)
+    job_id = queue_job(item_id)
+
+    from vidcleaner.worker import resolve as resolve_mod
+    from vidcleaner.worker import runner as runner_mod
+
+    def fake_reresolve(session, item, _title, _integrations):
+        item.path = str(moved)
+        session.flush()
+        return resolve_mod.Resolution("moved", path=str(moved), detail="moved")
+
+    monkeypatch.setattr(runner_mod, "_integrations_for", lambda _s: None)
+    monkeypatch.setattr(resolve_mod, "reresolve_path", fake_reresolve)
+
+    worker.poll_once()
+    assert job_row(job_id).state == "queued", "requeued because the file actually moved"
+    assert any("asked the arr where the file went" in m for m in timeline(job_id))
+
+    with session_scope() as session:
+        session.get(Job, job_id).retry_at = None
+    assert worker.poll_once() is True
+    assert job_row(job_id).state == "done", "the retry ran against the new path"
+
+
+def test_a_stale_job_leaves_the_item_stale(worker, library) -> None:
+    """`pending` means "we intend to clean it" and `sync.backfill_title` does not skip
+    it, so the item would be instantly re-enqueueable against a path that is gone."""
+    item_id, source = library
+    source.unlink()
+    job_id = queue_job(item_id)
+
+    worker.poll_once()
+    with session_scope() as session:
+        session.get(Job, job_id).retry_at = None
+    worker.poll_once()
+
+    assert job_row(job_id).state == "stale"
+    with session_scope() as session:
+        assert session.get(MediaItem, item_id).status == "stale"

@@ -2043,6 +2043,39 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   clean permanent. A refusal comes back as a warning on the response rather than an error, so a
   misconfigured `backup_path` is visible instead of silently meaning "nothing to purge".
 
+- 2026-09-03 — **M5 step 5 (stale-path re-resolution) complete.** `worker/resolve.py`, a
+  `resolved=` argument to `policy.classify`, a `_reresolve` hook in the runner, and `probe`
+  raising the right exception. Verified: 1763 passed.
+- 2026-09-03 — **§6's "re-resolve via the arr API" did not exist, and its absence made the one
+  allowed retry *guaranteed* to be wasted.** `policy.classify` has requeued a
+  `StaleSourceError` once since M3 and `stages.StaleSourceError`'s docstring has described the
+  re-resolution — but nothing re-resolved anything, so `plan_job` rebuilt the spec from the
+  same `item.path` and the retry sixty seconds later failed for exactly the same reason. Every
+  moved file ended `stale`. The transport was already there and unused for this:
+  `SonarrClient.get_episode_file` even says "``None`` on 404 rather than an exception: §6's
+  'path vanished' path calls this precisely because the file may be gone".
+- 2026-09-03 — **The retry is now gated on the *answer*, not on the attempt count.**
+  `attempts <= 1` was wrong twice: `attempts` counts **claims**, so one crash spent the whole
+  allowance before the file ever moved, and a retry against an unchanged path cannot succeed.
+  `classify` takes `resolved=` and spends a retry only for `"moved"` — and then after 5 s
+  rather than 60, because there is nothing to wait for once we know where the file went.
+  `"gone"` (the arr agrees) and `"unchanged"` (the arr's database is behind the disk) go
+  straight to `stale`. `None` and `"unavailable"` are the *same* epistemic state — nothing
+  asked, or there was nobody to ask — and both keep M3's single blind retry, which is what a
+  CLI row and an unconfigured install get.
+- 2026-09-03 — **Re-resolution is keyed on `arr_file_id`, not on a path search.** It is the
+  identity M3 settled on (a `Rename` webhook is keyed the same way) and it survives precisely
+  the folder moves and renames that cause this failure. The arr's answer is translated through
+  `pathmap.to_local` at the boundary, per CLAUDE.md.
+- 2026-09-03 — **`probe` raised `ProbeError`, not `StaleSourceError`, for a vanished source** —
+  despite `stages.py` documenting `probe` as a raise site for it since M1. A missing file
+  therefore went down the *ordinary* retry ladder, where re-reading the same absent path three
+  times is all it could ever do. Both cases (`wait_for_stable`'s vanished poll and "source is
+  not a file") now raise the class that reaches the recovery path.
+- 2026-09-03 — A hung or erroring arr during re-resolution is swallowed to `"unavailable"`.
+  The stage failure is the interesting news, and a timeout in the diagnosis must never replace
+  the diagnosis.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
