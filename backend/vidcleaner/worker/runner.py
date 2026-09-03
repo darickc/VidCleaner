@@ -24,7 +24,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from vidcleaner.config import Settings, get_settings
 from vidcleaner.db.constants import STAGE_TO_STATE
@@ -153,6 +153,7 @@ class Worker:
             job = session.get(Job, claimed.job_id)
             if job is None:  # pragma: no cover - the row was deleted under us
                 return JobOutcome(claimed.job_id, "failed", error="the job row is gone")
+            _restore_before_reclean(session, job, timeline)
             plan = plan_job(session, job, deploy=self.settings)
             item_id = plan.item.id
             arr_paths = (plan.title.arr_path,) if plan.title and plan.title.arr_path else ()
@@ -383,6 +384,49 @@ class Worker:
 
         if outcome.state in ("done", "already_clean"):
             prune_work_dir(ctx.ws)
+
+
+def _restore_before_reclean(session, job: Job, timeline) -> None:
+    """Put the original back before re-cleaning a file we already cleaned.
+
+    Without this, a reprocess reads *our own output* as its source: the previous
+    Clean track becomes the new "Original", the file grows a track per run, and the
+    sidecar subtitles were already redacted -- so §9.4's whole flow ("whitelist a
+    false positive, reprocess, hear the word again") could never work. Found by the
+    M4 demo, which stacked `Clean, Original, Original` on one episode.
+
+    §6 words this as the audit pass "re-rendering from the backup original". Doing it
+    by restoring first, rather than by pointing the pipeline at `/backups`, keeps the
+    library-mutating code in exactly one place (`swap.py`, which owns `restore` too)
+    and leaves one `kept` backup rather than a chain of them.
+
+    Only for a job that will actually redo the work on the library: `force` (which
+    the API sets for reprocess) and not `dry_run` (which must not touch anything).
+    """
+    from vidcleaner.db.models import Backup  # noqa: PLC0415
+    from vidcleaner.pipeline.persist import restore_item  # noqa: PLC0415
+
+    if not job.force or job.dry_run:
+        return
+    kept = session.scalars(
+        select(Backup)
+        .where(Backup.media_item_id == job.media_item_id, Backup.state == "kept")
+        .order_by(Backup.created_at.desc(), Backup.id.desc())
+    ).first()
+    if kept is None:
+        return
+    try:
+        report = restore_item(session, job.media_item_id)
+    except (ValueError, RuntimeError, OSError) as exc:
+        # The library file is still whatever it was; cleaning it again is worse than
+        # not, so say so loudly and let the job run on it rather than failing here.
+        timeline.warning("could not restore the original before re-cleaning", error=str(exc)[:200])
+        return
+    timeline.info(
+        "restored the original before re-cleaning",
+        path=report.restored_path,
+        sidecars=report.sidecars,
+    )
 
 
 def _timings(ws) -> dict[str, float]:

@@ -405,3 +405,63 @@ def test_the_scheduler_only_runs_when_the_queue_is_idle(worker, library) -> None
     assert "recover_stale" in ran and "gc_work_dirs" in ran
     # Nothing is due a second time immediately.
     assert worker.scheduler.tick() == []
+
+
+# --------------------------------------------- re-cleaning starts from the original
+
+
+def test_a_forced_re_clean_restores_the_original_first(worker, library) -> None:
+    """Found by the M4 demo. Without this the second run reads *our own output*:
+    the previous Clean track becomes the new "Original", the file grows a track per
+    run, and a whitelisted word can never become audible again."""
+    item_id, source = library
+    original = source.read_bytes()
+    queue_job(item_id)
+    worker.poll_once()
+    assert source.read_bytes() != original, "the first run swapped in the clean file"
+
+    queue_job(item_id, force=True)
+    worker.poll_once()
+
+    # What the second run actually cleaned: the pristine original, put back first.
+    spec_path = Path(job_row(_last_job(item_id)).work_dir or "") / "job.json"
+    assert original == worker.settings.backups_dir.joinpath("tv/Show/S01E01.mkv").read_bytes()
+    assert spec_path.is_file()
+    with session_scope() as session:
+        states = [b.state for b in session.scalars(select(Backup)).all()]
+    assert states.count("kept") == 1, "exactly one original is restorable"
+
+
+def test_the_restore_is_recorded_on_the_job_timeline(worker, library) -> None:
+    item_id, _ = library
+    queue_job(item_id)
+    worker.poll_once()
+
+    job_id = queue_job(item_id, force=True)
+    worker.poll_once()
+    assert any("restored the original" in msg for msg in timeline(job_id))
+
+
+def test_a_dry_run_never_restores(worker, library) -> None:
+    """It must not touch the library at all -- §6 stops it after `detecting`."""
+    item_id, source = library
+    queue_job(item_id)
+    worker.poll_once()
+    cleaned = source.read_bytes()
+
+    queue_job(item_id, force=True, dry_run=True)
+    worker.poll_once()
+    assert source.read_bytes() == cleaned
+
+
+def test_a_first_clean_has_nothing_to_restore(worker, library) -> None:
+    item_id, _ = library
+    job_id = queue_job(item_id, force=True)
+    worker.poll_once()
+    assert not any("restored the original" in msg for msg in timeline(job_id))
+    assert job_row(job_id).state == "done"
+
+
+def _last_job(item_id: int) -> str:
+    with session_scope() as session:
+        return session.get(MediaItem, item_id).last_job_id

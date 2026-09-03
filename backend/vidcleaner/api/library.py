@@ -16,7 +16,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from vidcleaner.api.views import ItemRef, TitleRef, item_ref, title_ref, utc
+from vidcleaner.api.views import (
+    ItemRef,
+    TitleRef,
+    evidence_job_ids,
+    item_ref,
+    title_ref,
+    utc,
+)
 from vidcleaner.db.models import Detection, MediaItem, Profile, Title
 from vidcleaner.db.session import get_db
 
@@ -151,10 +158,10 @@ def read_title(title_id: int, db: DbSession) -> TitleDetail:
         .order_by(MediaItem.season, MediaItem.episode, MediaItem.path)
     ).all()
 
-    # Detections of each item's *last* job only. A reprocess leaves the old job's rows
-    # in place (they are the record of what that run did), so counting them all would
-    # double every reprocessed episode.
-    last_jobs = {i.last_job_id for i in items if i.last_job_id}
+    # Detections of one job per item only. A reprocess leaves the old job's rows in
+    # place (they are the record of what that run did), so counting them all would
+    # double every reprocessed episode. Which job is `views.evidence_job_ids`'.
+    last_jobs = set(evidence_job_ids(db, list(items)).values())
     per_item: dict[int, int] = {}
     if last_jobs:
         for item_id, count in db.execute(

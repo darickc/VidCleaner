@@ -276,3 +276,45 @@ def test_a_detection_offers_its_clips_only_when_they_exist(client: TestClient, s
 
 def test_an_unknown_item_is_a_404(client: TestClient) -> None:
     assert client.get("/api/items/999").status_code == 404
+
+
+# ------------------------------------------- the audit pass must not blank a page
+
+
+def test_an_audit_pass_does_not_hide_the_run_that_found_things(client: TestClient) -> None:
+    """Found by the M4 demo. The audit job short-circuits at `probe` with
+    `already_clean` and *does* become `last_job_id` (its profile hash is what stops
+    the sync re-enqueueing forever) -- so reading its empty detections would show an
+    Item page with nothing on it for a file full of muted words."""
+    _, item_id = make_movie(status="clean")
+    cleaned = add_job(item_id, state="done", trigger="backfill", age_s=600)
+    add_detections(cleaned, item_id, "shit", "fuck")
+    add_job(item_id, state="already_clean", trigger="audit", is_last=True, age_s=10)
+
+    body = client.get(f"/api/items/{item_id}").json()
+    assert body["job"]["id"] == cleaned
+    assert [d["word_canonical"] for d in body["detections"]] == ["shit", "fuck"]
+
+
+def test_a_title_rollup_survives_an_audit_pass(client: TestClient) -> None:
+    title_id, episodes = make_series(episodes=1)
+    cleaned = add_job(episodes[0], state="done", age_s=600)
+    add_detections(cleaned, episodes[0], "shit")
+    add_job(episodes[0], state="already_clean", trigger="audit", is_last=True, age_s=10)
+
+    body = client.get(f"/api/library/titles/{title_id}").json()
+    assert [c["word_canonical"] for c in body["counts"]] == ["shit"]
+    assert body["items"][0]["detection_count"] == 1
+
+
+def test_a_reprocess_that_finds_nothing_is_still_the_current_run(client: TestClient) -> None:
+    """The mirror case: after whitelisting the only hit, the page must show the new
+    empty run rather than reaching back to the run that still has detections."""
+    _, item_id = make_movie(status="clean")
+    old = add_job(item_id, state="done", age_s=600)
+    add_detections(old, item_id, "bass")
+    fresh = add_job(item_id, state="done", trigger="reprocess", is_last=True, age_s=10)
+
+    body = client.get(f"/api/items/{item_id}").json()
+    assert body["job"]["id"] == fresh
+    assert body["detections"] == []

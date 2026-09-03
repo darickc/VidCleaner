@@ -13,22 +13,71 @@ must not have.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from vidcleaner.db.models import Job, MediaItem, Title
 
 __all__ = [
+    "EVIDENCE_STATES",
     "ItemRef",
     "JobSummary",
     "TitleRef",
+    "evidence_job_ids",
     "item_label",
     "item_ref",
     "job_summary",
     "title_ref",
     "utc",
 ]
+
+
+#: States a job can be in and still have something to say about what is in the file.
+#: ``already_clean`` is the interesting exclusion: that job short-circuited at `probe`
+#: and never reached `detect`.
+EVIDENCE_STATES: tuple[str, ...] = ("done", "failed", "stale")
+
+
+def evidence_job_ids(session: Session, items: Sequence[MediaItem]) -> dict[int, str]:
+    """item id -> the job whose detections describe that file today.
+
+    Usually ``media_items.last_job_id``, which is what §5's rollup query names. But
+    the last *run* is not always the last run that **found** anything: the audit pass
+    and §4's idempotency check both end ``already_clean`` without reaching `detect`,
+    and they do update ``last_job_id`` (they must -- the profile hash they record is
+    what stops the hourly sync re-enqueueing the file forever). Reading their empty
+    detections would blank the Item page and the Title rollup for a file that is in
+    fact full of muted words. Found by the M4 demo, not by review.
+    """
+    ids = [item.id for item in items]
+    if not ids:
+        return {}
+    rows = session.execute(
+        select(Job.id, Job.media_item_id, Job.state)
+        .where(Job.media_item_id.in_(ids))
+        .order_by(Job.created_at.desc(), Job.id.desc())
+    ).all()
+
+    states = {job_id: state for job_id, _, state in rows}
+    newest_with_evidence: dict[int, str] = {}
+    for job_id, item_id, state in rows:
+        if state in EVIDENCE_STATES and item_id not in newest_with_evidence:
+            newest_with_evidence[item_id] = job_id
+
+    chosen: dict[int, str] = {}
+    for item in items:
+        last = item.last_job_id
+        if last is not None and states.get(last) not in (None, "already_clean"):
+            chosen[item.id] = last
+        elif item.id in newest_with_evidence:
+            chosen[item.id] = newest_with_evidence[item.id]
+        elif last is not None:
+            chosen[item.id] = last
+    return chosen
 
 
 def utc(value: datetime | None) -> datetime | None:

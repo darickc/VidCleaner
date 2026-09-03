@@ -21,6 +21,7 @@ from vidcleaner.api.views import (
     ItemRef,
     JobSummary,
     TitleRef,
+    evidence_job_ids,
     item_ref,
     job_summary,
     title_ref,
@@ -119,13 +120,16 @@ def read_item(item_id: int, db: DbSession, job_id: str | None = None) -> ItemDet
         select(Job).where(Job.media_item_id == item_id).order_by(Job.created_at.desc(), Job.id)
     ).all()
     chosen = None
-    wanted = job_id or item.last_job_id
+    # Not simply `last_job_id`: see `views.evidence_job_ids` -- an audit pass ends
+    # `already_clean` without ever reaching `detect`, and showing *its* (empty)
+    # detections would blank the page for a file that is full of muted words.
+    wanted = job_id or evidence_job_ids(db, [item]).get(item.id)
     if wanted is not None:
         chosen = next((j for j in runs if j.id == wanted), None)
     if chosen is None and job_id is not None:
         raise HTTPException(status_code=404, detail=f"job {job_id} is not a run of this item")
     if chosen is None:
-        # No `last_job_id` yet (or it points at a pruned row): show the newest run.
+        # Nothing recorded yet (or it points at a pruned row): show the newest run.
         chosen = runs[0] if runs else None
 
     detections: list[Detection] = []

@@ -1728,6 +1728,28 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
 - 2026-09-02 — **Field labels are per-integration ("Sonarr URL", not "URL").** Three sections with
   identically labelled inputs are ambiguous to a screen reader and to a test; found by the test.
 
+- 2026-09-02 — **The demo found a bug the tests could not: a reprocess read our own output.**
+  Re-cleaning an already-cleaned file made the previous `Clean` track the new `Original` (the
+  episode ended up `Clean, Original, Original, Commentary`), and the sidecar it read had already
+  been redacted to `****`, so a windowed run found nothing. §9.4's entire flow — whitelist a false
+  positive, reprocess, hear the word again — was therefore impossible. **Fix:** a job that is
+  `force` and not `dry_run` restores the kept original *before* planning
+  (`worker/runner._restore_before_reclean`). §6 words this as the audit pass "re-rendering from the
+  backup original"; doing it by restoring first keeps every library mutation inside `swap.py` and
+  leaves exactly one `kept` backup instead of a chain. Four tests in `test_worker_run.py`.
+- 2026-09-02 — **The demo found a second one: the audit pass blanked the Item page.** An `audit`
+  job short-circuits at `probe` with `already_clean`, and it *does* become `media_items.last_job_id`
+  — it must, because the profile hash it records is what stops the hourly sync re-enqueueing the
+  file forever. Reading §5's rollup at `last_job_id` therefore showed an empty page for an episode
+  with five muted words. `api/views.evidence_job_ids` now picks the newest run that actually reached
+  `detect`, falling back to `last_job_id`; the Item page and the Title rollup both use it. The
+  mirror case is pinned too: a reprocess that legitimately finds nothing still wins over an older
+  run that found something.
+- 2026-09-02 — **The audit pass stays inert until M5** (where §11 lists it). It enqueues with
+  `force=False`, so it reaches `probe`, sees §4's tag and ends `already_clean` without transcribing.
+  §6's "re-render from the backup original if new hits appear" needs a detect-then-decide path that
+  is not M4's business; the M4 demo runs with `audit_pass=off`.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
