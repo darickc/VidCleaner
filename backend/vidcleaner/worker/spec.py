@@ -22,10 +22,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from vidcleaner.config import Settings, get_settings
-from vidcleaner.db.models import Job, MediaItem, Title
+from vidcleaner.db.models import Backup, Job, MediaItem, Title
 from vidcleaner.logging import get_logger
 from vidcleaner.matching.compiler import Matcher
 from vidcleaner.matching.profile import matcher_for, snapshot_for
@@ -34,7 +35,7 @@ from vidcleaner.pipeline.stages import build_spec
 from vidcleaner.pipeline.workspace import Workspace
 from vidcleaner.settings_store import AppSettings, load_settings
 
-__all__ = ["JobPlan", "plan_job", "target_for"]
+__all__ = ["JobPlan", "audit_source", "plan_job", "target_for"]
 
 log = get_logger(__name__)
 
@@ -51,6 +52,9 @@ class JobPlan:
     """Stages already done in this work dir, after any invalidation."""
     invalidated: str | None = None
     """Why the previous work dir was discarded, if it was."""
+    source_backup: Backup | None = None
+    """Set when the source is a `kept` backup rather than the library file -- i.e. an
+    audit pass. See :func:`audit_source`."""
 
 
 def target_for(item: MediaItem, title: Title | None) -> JobTarget:
@@ -70,6 +74,44 @@ def target_for(item: MediaItem, title: Title | None) -> JobTarget:
         tvdb_id=title.tvdb_id if title else None,
         tmdb_id=title.tmdb_id if title else None,
     )
+
+
+def audit_source(session: Session, job: Job, item: MediaItem) -> tuple[Path, Backup | None]:
+    """Which file an audit job reads. The **backup**, not the library file.
+
+    §6's audit re-checks the original audio, and the library file no longer holds it:
+    `probe` picks the default audio stream, which after a clean is the *muted* Clean
+    track, so auditing the library file would transcribe silence where the words are.
+    `swap.backup_path_for` already anticipated this -- it keeps the original extension
+    "so the audit pass can probe the backup".
+
+    Three properties fall out of pointing at the backup, and they are why this is
+    cheaper than restoring first:
+
+    * the backup carries no ``VIDCLEANER_PROFILE_HASH`` tag, so ``probe.already_clean``
+      is False and the job needs no ``force`` -- which matters because ``force``
+      disables marker skipping, and a killed 30-minute transcription would then restart
+      from nothing on every container bounce instead of resuming;
+    * ``find_sidecars`` looks next to the source, so the audit reads the **un-redacted**
+      original subtitles rather than the ``****`` we wrote;
+    * the library is untouched for the whole pass, not just at the end.
+
+    Returns the library path unchanged for any non-audit job.
+    """
+    if job.stt_mode != "audit":
+        return Path(item.path), None
+    backup = session.scalars(
+        select(Backup)
+        .where(
+            Backup.media_item_id == item.id,
+            Backup.state == "kept",
+            Backup.backup_path.notlike("%.srt"),
+        )
+        .order_by(Backup.created_at.desc(), Backup.id.desc())
+    ).first()
+    if backup is None:
+        return Path(item.path), None
+    return Path(backup.backup_path), backup
 
 
 def plan_job(session: Session, job: Job, *, deploy: Settings | None = None) -> JobPlan:
@@ -93,8 +135,9 @@ def plan_job(session: Session, job: Job, *, deploy: Settings | None = None) -> J
         profile_id=title.profile_id if title else None,
         settings=settings,
     )
+    source, source_backup = audit_source(session, job, item)
     spec = build_spec(
-        Path(item.path),
+        source,
         profile=snapshot_for(matcher, settings),
         settings=settings,
         out=None,  # render writes /work/<uuid>/out.mkv; swap moves it into place
@@ -119,6 +162,7 @@ def plan_job(session: Session, job: Job, *, deploy: Settings | None = None) -> J
         title=title,
         completed=ws.completed_stages(),
         invalidated=invalidated,
+        source_backup=source_backup,
     )
 
 

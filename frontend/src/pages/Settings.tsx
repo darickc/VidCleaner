@@ -37,15 +37,39 @@ const SECTIONS: Array<{ title: string; fields: Field[] }> = [
   {
     title: "Speech to text",
     fields: [
-      { key: "stt_windowed_model", label: "Windowed model", kind: "text", help: "used when subtitles narrow the search" },
+      {
+        key: "stt_windowed_model",
+        label: "Windowed model",
+        kind: "text",
+        help: "used when subtitles narrow the search",
+      },
       { key: "stt_full_model", label: "Full-file model", kind: "text" },
       { key: "stt_drift_model", label: "Drift probe model", kind: "text" },
-      { key: "stt_full_max_hours", label: "Full-pass limit (hours)", kind: "number", help: "0 = no limit" },
-      { key: "cpu_threads", label: "CPU threads", kind: "number", help: "0 = cores − 2" },
+      {
+        key: "stt_full_max_hours",
+        label: "Full-pass limit (hours)",
+        kind: "number",
+        help: "0 = no limit",
+      },
+      {
+        key: "cpu_threads",
+        label: "CPU threads",
+        kind: "number",
+        help: "0 = cores − 2",
+      },
       { key: "beam_size", label: "Beam size", kind: "number" },
       { key: "preferred_language", label: "Preferred language", kind: "text" },
-      { key: "initial_prompt_hint", label: "Profanity prompt hint", kind: "bool" },
-      { key: "vad_filter", label: "Silero VAD (full passes only)", kind: "bool", help: "measured to cost 5× recall — see docs/eval.md" },
+      {
+        key: "initial_prompt_hint",
+        label: "Profanity prompt hint",
+        kind: "bool",
+      },
+      {
+        key: "vad_filter",
+        label: "Silero VAD (full passes only)",
+        kind: "bool",
+        help: "measured to cost 5× recall — see docs/eval.md",
+      },
       { key: "drift_check", label: "Subtitle drift check", kind: "bool" },
     ],
   },
@@ -56,33 +80,88 @@ const SECTIONS: Array<{ title: string; fields: Field[] }> = [
       { key: "pad_post_ms", label: "Pad after (ms)", kind: "number" },
       { key: "merge_gap_ms", label: "Merge gap (ms)", kind: "number" },
       { key: "fade_edges_ms", label: "Fade edges (ms)", kind: "number" },
-      { key: "mute_censored_tokens", label: "Mute censored tokens (f***)", kind: "bool" },
+      {
+        key: "mute_censored_tokens",
+        label: "Mute censored tokens (f***)",
+        kind: "bool",
+      },
       { key: "redact_subtitles", label: "Redact text subtitles", kind: "bool" },
     ],
   },
   {
     title: "Output",
     fields: [
-      { key: "clean_track_lossless", label: "Always use FLAC for the clean track", kind: "bool" },
-      { key: "extra_eac3_downmix", label: "Add an EAC3 5.1 downmix", kind: "bool" },
-      { key: "allow_cross_device_backup", label: "Allow a copy-and-delete backup", kind: "bool", help: "off means /backups must be on the library's filesystem" },
+      {
+        key: "clean_track_lossless",
+        label: "Always use FLAC for the clean track",
+        kind: "bool",
+      },
+      {
+        key: "extra_eac3_downmix",
+        label: "Add an EAC3 5.1 downmix",
+        kind: "bool",
+      },
+      {
+        key: "allow_cross_device_backup",
+        label: "Allow a copy-and-delete backup",
+        kind: "bool",
+        help: "off means /backups must be on the library's filesystem",
+      },
     ],
   },
   {
     title: "Scheduling & retention",
     fields: [
-      { key: "audit_pass", label: "Audit pass", kind: "choice", choices: ["off", "idle", "always"] },
-      { key: "backup_retention_days", label: "Keep backups (days)", kind: "number" },
-      { key: "mapping_check_delay_s", label: "Mapping re-check delay (s)", kind: "number" },
+      {
+        key: "audit_pass",
+        label: "Audit pass",
+        kind: "choice",
+        choices: ["off", "idle", "always"],
+        help: "Re-check cleaned files against the kept original with a full-file pass. 'idle' waits for an empty queue.",
+      },
+      {
+        key: "audit_min_confidence",
+        label: "Audit re-render threshold",
+        kind: "number",
+        help: "0 = re-render for any new word the audit finds.",
+      },
+      {
+        key: "backup_retention_days",
+        label: "Keep backups (days)",
+        kind: "number",
+      },
+      {
+        key: "mapping_check_delay_s",
+        label: "Mapping re-check delay (s)",
+        kind: "number",
+      },
       { key: "render_parallel", label: "Parallel renders", kind: "number" },
     ],
   },
 ];
 
 const APPS = [
-  { app: "sonarr", label: "Sonarr", url: "sonarr_url", key: "sonarr_api_key", webhook: true },
-  { app: "radarr", label: "Radarr", url: "radarr_url", key: "radarr_api_key", webhook: true },
-  { app: "jellyfin", label: "Jellyfin", url: "jellyfin_url", key: "jellyfin_api_key", webhook: false },
+  {
+    app: "sonarr",
+    label: "Sonarr",
+    url: "sonarr_url",
+    key: "sonarr_api_key",
+    webhook: true,
+  },
+  {
+    app: "radarr",
+    label: "Radarr",
+    url: "radarr_url",
+    key: "radarr_api_key",
+    webhook: true,
+  },
+  {
+    app: "jellyfin",
+    label: "Jellyfin",
+    url: "jellyfin_url",
+    key: "jellyfin_api_key",
+    webhook: false,
+  },
 ];
 
 function Input({
@@ -126,10 +205,20 @@ function Input({
   return (
     <input
       id={field.key}
-      type={field.kind === "password" ? "password" : field.kind === "number" ? "number" : "text"}
+      type={
+        field.kind === "password"
+          ? "password"
+          : field.kind === "number"
+            ? "number"
+            : "text"
+      }
       value={String(value ?? "")}
       onChange={(event) =>
-        onChange(field.kind === "number" ? Number(event.target.value) : event.target.value)
+        onChange(
+          field.kind === "number"
+            ? Number(event.target.value)
+            : event.target.value,
+        )
       }
       className={base}
     />
@@ -149,7 +238,9 @@ function FieldRow({
     <div className="grid grid-cols-[14rem_minmax(0,1fr)] items-center gap-3 py-1">
       <label htmlFor={field.key} className="text-sm text-slate-400">
         {field.label}
-        {field.help && <span className="block text-xs text-slate-600">{field.help}</span>}
+        {field.help && (
+          <span className="block text-xs text-slate-600">{field.help}</span>
+        )}
       </label>
       <Input field={field} value={value} onChange={onChange} />
     </div>
@@ -157,7 +248,10 @@ function FieldRow({
 }
 
 function WebhookPanel({ app, label }: { app: string; label: string }) {
-  const { data } = useQuery({ queryKey: ["webhook-setup", app], queryFn: () => getWebhookSetup(app) });
+  const { data } = useQuery({
+    queryKey: ["webhook-setup", app],
+    queryFn: () => getWebhookSetup(app),
+  });
   const install = useMutation({ mutationFn: () => installWebhook(app) });
 
   if (!data) return null;
@@ -187,7 +281,10 @@ function WebhookPanel({ app, label }: { app: string; label: string }) {
 
 function PathMappings() {
   const client = useQueryClient();
-  const { data } = useQuery({ queryKey: ["path-mappings"], queryFn: getPathMappings });
+  const { data } = useQuery({
+    queryKey: ["path-mappings"],
+    queryFn: getPathMappings,
+  });
   const [rows, setRows] = useState<PathMapping[] | null>(null);
   useEffect(() => {
     if (data) setRows(data);
@@ -203,7 +300,9 @@ function PathMappings() {
 
   const current = rows ?? [];
   const update = (index: number, patch: Partial<PathMapping>) =>
-    setRows(current.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+    setRows(
+      current.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    );
 
   return (
     <Card
@@ -215,12 +314,17 @@ function PathMappings() {
       }
     >
       <p className="mb-2 text-xs text-slate-500">
-        Empty means identical paths everywhere (§2). “Their path” is what the app reports; “our
-        path” is where we see the same file.
+        Empty means identical paths everywhere (§2). “Their path” is what the
+        app reports; “our path” is where we see the same file.
       </p>
-      {current.length === 0 && <Empty>No mappings — paths are identical.</Empty>}
+      {current.length === 0 && (
+        <Empty>No mappings — paths are identical.</Empty>
+      )}
       {current.map((row, index) => (
-        <div key={index} className="mb-2 grid grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)_3rem] gap-2">
+        <div
+          key={index}
+          className="mb-2 grid grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)_3rem] gap-2"
+        >
           <select
             value={row.app}
             aria-label={`App for mapping ${index + 1}`}
@@ -235,14 +339,18 @@ function PathMappings() {
             value={row.from_prefix}
             aria-label={`Their path ${index + 1}`}
             placeholder="/tv"
-            onChange={(event) => update(index, { from_prefix: event.target.value })}
+            onChange={(event) =>
+              update(index, { from_prefix: event.target.value })
+            }
             className="rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-sm"
           />
           <input
             value={row.to_prefix}
             aria-label={`Our path ${index + 1}`}
             placeholder="/media/tv"
-            onChange={(event) => update(index, { to_prefix: event.target.value })}
+            onChange={(event) =>
+              update(index, { to_prefix: event.target.value })
+            }
             className="rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-sm"
           />
           <button
@@ -256,7 +364,12 @@ function PathMappings() {
         </div>
       ))}
       <Button
-        onClick={() => setRows([...current, { app: "sonarr", from_prefix: "", to_prefix: "" }])}
+        onClick={() =>
+          setRows([
+            ...current,
+            { app: "sonarr", from_prefix: "", to_prefix: "" },
+          ])
+        }
       >
         Add mapping
       </Button>
@@ -267,7 +380,10 @@ function PathMappings() {
 
 export function SettingsPage() {
   const client = useQueryClient();
-  const { data, isPending, isError } = useQuery({ queryKey: ["settings"], queryFn: getSettings });
+  const { data, isPending, isError } = useQuery({
+    queryKey: ["settings"],
+    queryFn: getSettings,
+  });
   const [draft, setDraft] = useState<Partial<AppSettings>>({});
   const [tests, setTests] = useState<Record<string, TestResponse>>({});
   const [saved, setSaved] = useState(false);
@@ -297,14 +413,18 @@ export function SettingsPage() {
         url: String(value(app.url) ?? ""),
         api_key: String(value(app.key) ?? ""),
       }),
-    onSuccess: (result) => setTests((current) => ({ ...current, [result.app]: result })),
+    onSuccess: (result) =>
+      setTests((current) => ({ ...current, [result.app]: result })),
   });
 
   if (isError) return <Page title="Settings">Could not load settings.</Page>;
   if (isPending || !data) return <Page title="Settings">Loading…</Page>;
 
   return (
-    <Page title="Settings" subtitle="Integrations, STT models, codec policy and retention.">
+    <Page
+      title="Settings"
+      subtitle="Integrations, STT models, codec policy and retention."
+    >
       <div className="max-w-3xl space-y-6">
         <div className="flex items-center gap-3">
           <Button
@@ -314,8 +434,12 @@ export function SettingsPage() {
           >
             {save.isPending ? "Saving…" : "Save changes"}
           </Button>
-          {dirty && <span className="text-xs text-amber-300">unsaved changes</span>}
-          {saved && !dirty && <span className="text-xs text-emerald-300">Saved.</span>}
+          {dirty && (
+            <span className="text-xs text-amber-300">unsaved changes</span>
+          )}
+          {saved && !dirty && (
+            <span className="text-xs text-emerald-300">Saved.</span>
+          )}
           <ErrorNote error={save.error} />
         </div>
 
@@ -323,7 +447,9 @@ export function SettingsPage() {
           {APPS.map((app) => (
             <div key={app.app} className="mb-5 space-y-2 last:mb-0">
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-medium text-slate-200">{app.label}</h3>
+                <h3 className="text-sm font-medium text-slate-200">
+                  {app.label}
+                </h3>
                 {tests[app.app] && (
                   <Badge tone={tests[app.app].ok ? "ok" : "bad"}>
                     {tests[app.app].ok
@@ -333,7 +459,11 @@ export function SettingsPage() {
                 )}
               </div>
               <FieldRow
-                field={{ key: app.url, label: `${app.label} URL`, kind: "text" }}
+                field={{
+                  key: app.url,
+                  label: `${app.label} URL`,
+                  kind: "text",
+                }}
                 value={value(app.url)}
                 onChange={(next) => set(app.url, next)}
               />
@@ -342,12 +472,18 @@ export function SettingsPage() {
                   key: app.key,
                   label: `${app.label} API key`,
                   kind: "password",
-                  help: data[app.key] === "***" ? "a key is stored; type to replace it" : undefined,
+                  help:
+                    data[app.key] === "***"
+                      ? "a key is stored; type to replace it"
+                      : undefined,
                 }}
                 value={value(app.key)}
                 onChange={(next) => set(app.key, next)}
               />
-              <Button onClick={() => test.mutate(app)} disabled={test.isPending}>
+              <Button
+                onClick={() => test.mutate(app)}
+                disabled={test.isPending}
+              >
                 Test {app.label}
               </Button>
               {app.webhook && <WebhookPanel app={app.app} label={app.label} />}

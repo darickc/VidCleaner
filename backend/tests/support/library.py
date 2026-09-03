@@ -152,15 +152,25 @@ def add_detections(job_id: str, media_item_id: int, *words: str, **overrides) ->
     return ids
 
 
-def add_backup(media_item_id: int, *, job_id: str | None = None, state: str = "kept") -> int:
+def add_backup(
+    media_item_id: int,
+    *,
+    job_id: str | None = None,
+    state: str = "kept",
+    backup_path: str | None = None,
+    sha1_prefix: str | None = None,
+) -> int:
+    """``backup_path`` matters for M5's audit, which stats the file before enqueueing;
+    point it at something real (``tmp_path``) when that path is under test."""
     with session_scope() as session:
         item = session.get(MediaItem, media_item_id)
         backup = Backup(
             job_id=job_id,
             media_item_id=media_item_id,
             original_path=item.path,
-            backup_path=f"/backups{item.path}",
+            backup_path=backup_path or f"/backups{item.path}",
             size=item.size,
+            sha1_prefix=sha1_prefix,
             state=state,
         )
         session.add(backup)

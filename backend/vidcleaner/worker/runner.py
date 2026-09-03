@@ -29,6 +29,7 @@ from sqlalchemy import select, text
 from vidcleaner.config import Settings, get_settings
 from vidcleaner.db.constants import STAGE_TO_STATE
 from vidcleaner.db.models import Job
+from vidcleaner.db.queries import evidence_job_ids
 from vidcleaner.db.session import get_engine, session_scope, utcnow
 from vidcleaner.logging import get_logger
 from vidcleaner.pipeline.stages import (
@@ -133,13 +134,21 @@ class Worker:
             except Exception:
                 log.exception("worker.poll_failed")
                 did_work = False
-            if not did_work:
-                # Periodic work runs only when the queue is idle, which is exactly
-                # what §6 requires of the audit pass and costs the rest nothing.
-                try:
+            try:
+                if did_work:
+                    # `audit_pass="always"` means "enqueue regardless of queue depth".
+                    # Reaching the scheduler only on the idle path made it identical
+                    # to `"idle"`, which is not what the setting says. Priority 900
+                    # still keeps an audit strictly last, so this cannot starve
+                    # anything -- it only lets the row exist sooner.
+                    self.scheduler.tick(only=("audit",))
+                else:
+                    # Everything else runs only when the queue is idle, which is what
+                    # §6 requires of the audit pass and costs the rest nothing.
                     self.scheduler.tick()
-                except Exception:
-                    log.exception("worker.scheduler_failed")
+            except Exception:
+                log.exception("worker.scheduler_failed")
+            if not did_work:
                 self._stop.wait(self.poll_interval)
         log.info("worker.shutdown", worker_id=self.id)
 
@@ -153,7 +162,19 @@ class Worker:
             job = session.get(Job, claimed.job_id)
             if job is None:  # pragma: no cover - the row was deleted under us
                 return JobOutcome(claimed.job_id, "failed", error="the job row is gone")
-            _restore_before_reclean(session, job, timeline)
+            restored = _restore_before_reclean(session, job, timeline)
+            if restored == "failed" and job.trigger == "audit":
+                # Unattended, so there is no one to notice a second Clean track being
+                # rendered over the first. The library is untouched; stop here. The
+                # state is written now because this returns before `_record` -- which
+                # needs a work dir and a probe this job never got as far as making.
+                error = "could not restore the original before the audit re-render"
+                timeline.error("audit promotion abandoned", reason=error)
+                queue.set_state(
+                    session, job_id=claimed.job_id, state="failed", stage="swap", error=error
+                )
+                timeline.flush()
+                return JobOutcome(claimed.job_id, "failed", stage="swap", error=error)
             plan = plan_job(session, job, deploy=self.settings)
             item_id = plan.item.id
             arr_paths = (plan.title.arr_path,) if plan.title and plan.title.arr_path else ()
@@ -162,7 +183,7 @@ class Worker:
         if plan.invalidated:
             timeline.warning("work dir discarded", reason=plan.invalidated)
 
-        stages = list(DRY_RUN_STAGES if plan.spec.dry_run else M4_STAGES)
+        stages = _stages_for(plan)
         tracker = ProgressTracker(stages, completed=plan.completed)
         if plan.settings.render_parallel > 1:
             # §4 wants render of job N to overlap STT of N+1, which the stage driver
@@ -184,6 +205,9 @@ class Worker:
         )
         ctx.integrations = integrations
         ctx.arr_paths = arr_paths  # type: ignore[attr-defined]
+
+        if plan.spec.trigger == "audit" and not plan.spec.dry_run:
+            _seed_audit_detections(ctx, plan, timeline)
 
         # Deliberately `None` until `_drive` returns. An earlier version seeded it
         # with "done" and recorded it in `finally`, so anything that escaped the
@@ -244,12 +268,57 @@ class Worker:
                 _log_transcript(timeline, stt_stage.load(ctx.ws))
             elif stage == "detect":
                 _log_detections(timeline, result.result)
+                if plan.spec.trigger == "audit" and plan.spec.dry_run:
+                    self._after_audit_detect(ctx, plan, result.result, timeline)
             elif stage == "swap":
                 _log_swap(timeline, result.result)
             elif stage == "refresh":
                 _log_refresh(timeline, result.result)
 
         return JobOutcome(claimed.job_id, "done")
+
+    def _after_audit_detect(self, ctx, plan, found, timeline) -> None:
+        """Turn the audit's STT-only findings into §6's **union**, and record that.
+
+        ``detect(mode="audit")`` ignores subtitle hits entirely, and M2 measured what
+        that costs: full mode found 40 detections against windowed's 49, missing 22 of
+        them. Rendering from ``found`` alone would therefore make the file *worse*.
+        §6 says the audit "adds any detections the subtitles missed", so the result
+        written back here is ``prior | found`` -- and because `_record` reads
+        ``detections.json`` from disk, overwriting it is what makes the merged set the
+        one that reaches the database.
+        """
+        from vidcleaner.pipeline.audit import (  # noqa: PLC0415
+            AuditOptions,
+            compare,
+            merged_result,  # noqa: PLC0415
+        )
+        from vidcleaner.pipeline.detect import DetectOptions  # noqa: PLC0415
+        from vidcleaner.pipeline.persist import detections_for_job  # noqa: PLC0415
+
+        with session_scope() as session:
+            item = session.get(type(plan.item), plan.item.id)
+            evidence = evidence_job_ids(session, [item]).get(item.id) if item else None
+            prior = detections_for_job(session, evidence) if evidence else []
+
+        comparison = compare(
+            prior,
+            found.detections,
+            opts=AuditOptions(min_confidence=plan.settings.audit_min_confidence),
+        )
+        merged = merged_result(
+            comparison,
+            profile_hash=plan.spec.profile_hash,
+            duration_s=0.0,
+            detect_opts=DetectOptions.from_profile(plan.spec.profile),
+        )
+        merged.write(ctx.ws.detections_json)
+        timeline.info(
+            "audited against the backup original",
+            evidence_job=evidence,
+            **comparison.summary,
+            will_re_render=comparison.should_render,
+        )
 
     def _after_probe(self, ctx, claimed, plan, timeline) -> JobOutcome | None:
         from vidcleaner.pipeline import probe as probe_stage  # noqa: PLC0415
@@ -369,6 +438,12 @@ class Worker:
                     work_dir=ctx.ws.root,
                     media_item=session.get(type(plan.item), item_id),
                     count_attempt=False,
+                    # Phase 1 observes the backup and changes nothing on disk, so the
+                    # item stays `clean`. Letting it fall to `pending` would drop it
+                    # out of `sync.CLEAN_STATUSES` and have the hourly sync re-enqueue
+                    # a perfectly clean file forever -- the loop §6's audit must not
+                    # start. `last_job_id` still moves, which is what closes it.
+                    preserve_item_status=(plan.spec.trigger == "audit" and plan.spec.dry_run),
                 )
                 if swap is not None and outcome.state == "done":
                     persist_swap(
@@ -386,7 +461,78 @@ class Worker:
             prune_work_dir(ctx.ws)
 
 
-def _restore_before_reclean(session, job: Job, timeline) -> None:
+def _seed_audit_detections(ctx, plan, timeline) -> None:
+    """Hand the promotion the merged set phase 1 already computed.
+
+    Phase 1 spent ~30 minutes transcribing the whole file and persisted the merge; the
+    promotion must not pay that again to render the very same ranges. `seed_detections`
+    writes ``detections.json`` and marks `transcribe`/`detect` done, so `run_stage`
+    skips them -- the seam `vidcleaner clean --detections` has used since M1.
+
+    `extract` is deliberately left to run (``skip_extract=False``) because `snippets`
+    cuts from ``audio.wav``.
+    """
+    from vidcleaner.pipeline.audit import AuditComparison, merged_result  # noqa: PLC0415
+    from vidcleaner.pipeline.detect import DetectOptions  # noqa: PLC0415
+    from vidcleaner.pipeline.persist import detections_for_job  # noqa: PLC0415
+    from vidcleaner.pipeline.stages import seed_detections  # noqa: PLC0415
+
+    with session_scope() as session:
+        audit_job = _newest_audit_evidence(session, plan.item.id)
+        if audit_job is None:
+            timeline.warning("no audit evidence to render from")
+            return
+        detections = detections_for_job(session, audit_job)
+
+    result = merged_result(
+        AuditComparison(carried=tuple(detections)),
+        profile_hash=plan.spec.profile_hash,
+        duration_s=0.0,
+        detect_opts=DetectOptions.from_profile(plan.spec.profile),
+    )
+    seed_detections(ctx, result, skip_extract=False)
+    timeline.info(
+        "rendering from the audit's detections",
+        source_job=audit_job,
+        detections=len(result.detections),
+        ranges=len(result.mute_ranges),
+    )
+
+
+def _newest_audit_evidence(session, media_item_id: int) -> str | None:
+    """The most recent completed audit phase 1 for this item."""
+    return session.scalars(
+        select(Job.id)
+        .where(
+            Job.media_item_id == media_item_id,
+            Job.trigger == "audit",
+            Job.dry_run.is_(True),
+            Job.state == "done",
+        )
+        .order_by(Job.created_at.desc(), Job.id.desc())
+    ).first()
+
+
+def _stages_for(plan) -> list[str]:
+    """Which stages this job runs.
+
+    Three shapes. A dry run stops after `detect` -- and M5's audit **phase 1** is a
+    dry run, which is what keeps the library byte-identical while a 30-minute
+    transcription runs. An audit **promotion** already holds its detection set (seeded
+    from the database by :func:`_seed_audit_detections`) and so skips `transcribe` and
+    `detect` entirely: ~27 s of render and swap instead of another full pass. Everything
+    else runs the lot.
+    """
+    if plan.spec.dry_run:
+        return list(DRY_RUN_STAGES)
+    if plan.spec.trigger == "audit":
+        # `extract` stays: `snippets` cuts its review clips out of `audio.wav`, so
+        # skipping it would leave every detection on the Item page without audio.
+        return [s for s in M4_STAGES if s not in {"transcribe", "detect"}]
+    return list(M4_STAGES)
+
+
+def _restore_before_reclean(session, job: Job, timeline) -> str:
     """Put the original back before re-cleaning a file we already cleaned.
 
     Without this, a reprocess reads *our own output* as its source: the previous
@@ -402,31 +548,38 @@ def _restore_before_reclean(session, job: Job, timeline) -> None:
 
     Only for a job that will actually redo the work on the library: `force` (which
     the API sets for reprocess) and not `dry_run` (which must not touch anything).
+
+    Returns ``"skipped"``, ``"restored"`` or ``"failed"``. The caller cares because a
+    failed restore is only tolerable for a *user-clicked* reprocess: for an unattended
+    audit promotion, running on anyway would render a second Clean track over the first
+    -- the M4 demo's bug -- which is precisely what §6's "never re-encodes the clean
+    track twice" forbids.
     """
     from vidcleaner.db.models import Backup  # noqa: PLC0415
     from vidcleaner.pipeline.persist import restore_item  # noqa: PLC0415
 
     if not job.force or job.dry_run:
-        return
+        return "skipped"
     kept = session.scalars(
         select(Backup)
         .where(Backup.media_item_id == job.media_item_id, Backup.state == "kept")
         .order_by(Backup.created_at.desc(), Backup.id.desc())
     ).first()
     if kept is None:
-        return
+        return "skipped"
     try:
         report = restore_item(session, job.media_item_id)
     except (ValueError, RuntimeError, OSError) as exc:
         # The library file is still whatever it was; cleaning it again is worse than
-        # not, so say so loudly and let the job run on it rather than failing here.
+        # not, so say so loudly and let the caller decide.
         timeline.warning("could not restore the original before re-cleaning", error=str(exc)[:200])
-        return
+        return "failed"
     timeline.info(
         "restored the original before re-cleaning",
         path=report.restored_path,
         sidecars=report.sidecars,
     )
+    return "restored"
 
 
 def _timings(ws) -> dict[str, float]:

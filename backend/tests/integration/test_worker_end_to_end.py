@@ -20,7 +20,12 @@ from vidcleaner.config import Settings
 from vidcleaner.db.models import Backup, Detection, Job, JobLog, MediaItem, Title
 from vidcleaner.db.session import session_scope
 from vidcleaner.matching.profile import ensure_seed_data
-from vidcleaner.pipeline.artifacts import Transcript, TranscriptSegment, TranscriptWord
+from vidcleaner.pipeline.artifacts import (
+    TimeRange,
+    Transcript,
+    TranscriptSegment,
+    TranscriptWord,
+)
 from vidcleaner.pipeline.stt import ScriptedTranscriber
 from vidcleaner.pipeline.workspace import Workspace
 from vidcleaner.worker.claim import enqueue
@@ -241,3 +246,144 @@ def test_the_run_loop_drains_the_queue(migrated, queued, transcript) -> None:
         thread.join(10)
     with session_scope() as session:
         assert session.get(Job, job_id).state == "done"
+
+
+# ------------------------------------------------- §6's audit pass, on real audio
+
+
+@pytest.fixture
+def audit_transcript(tmp_path: Path) -> Path:
+    """What a full-file pass hears: everything the windowed run heard, **plus** the
+    `bullshit` at 8 s that no subtitle cue ever named.
+
+    This is §6's premise made concrete -- background or crowd dialogue the subtitles
+    omit -- and it is what M2 measured when full mode found 13 detections the windowed
+    run had missed.
+    """
+    extra = [*WORDS, ("bullshit", 8.10, 8.55)]
+    path = tmp_path / "audit-transcript.json"
+    Transcript(
+        mode="audit",
+        model="scripted-audit",
+        segments=[
+            TranscriptSegment(
+                start=extra[0][1],
+                end=extra[-1][2],
+                text=" ".join(w for w, _, _ in extra),
+                words=[TranscriptWord(word=w, start=s, end=e) for w, s, e in extra],
+            )
+        ],
+    ).write(path)
+    return path
+
+
+def audit_enqueue(item_id: int, *, promotion: bool = False) -> str:
+    with session_scope() as session:
+        return enqueue(
+            session,
+            media_item_id=item_id,
+            trigger="audit",
+            stt_mode="audit",
+            dry_run=not promotion,
+            force=promotion,
+        ).job_id
+
+
+def words_of(job_id: str) -> list[str]:
+    with session_scope() as session:
+        return [
+            d.word_canonical
+            for d in session.scalars(
+                select(Detection).where(Detection.job_id == job_id).order_by(Detection.start_s)
+            )
+        ]
+
+
+def test_the_audit_finds_a_word_the_subtitles_missed_and_re_renders_it(
+    migrated, queued, transcript, audit_transcript, runner
+) -> None:
+    """§6's audit pass end to end on real media, and the assertion that matters.
+
+    ``detect(mode="audit")`` is STT-only. If the promotion rendered from *that* set
+    instead of the union, the words the first run muted would come back audible -- M2
+    measured full mode missing 22 of windowed's 49 detections, so this is not a
+    hypothetical. The test therefore checks **both** ends: the new word goes silent,
+    and an original one stays silent.
+    """
+    job_id, item_id, source = queued
+    assert worker_for(migrated, transcript).poll_once() is True
+    cleaned_bytes = source.read_bytes()
+    first_words = words_of(job_id)
+    assert "shit" in first_words and "bullshit" not in first_words
+
+    # `bullshit` at 8.1 s is audible after the first clean: nothing muted it.
+    before = runner.measure_volume(source, stream="0:a:0", window=TimeRange(start=8.15, end=8.50))
+    assert before is not None and before.max_db > -50.0
+
+    # --- phase 1: detect against the backup, change nothing -------------------
+    audit_one = audit_enqueue(item_id)
+    assert worker_for(migrated, audit_transcript).poll_once() is True
+
+    with session_scope() as session:
+        job = session.get(Job, audit_one)
+        assert job.state == "done", job.error
+        assert job.dry_run is True
+        item = session.get(MediaItem, item_id)
+        assert item.status == "clean", "an observation must not disturb the status"
+        assert item.last_job_id == audit_one
+    assert source.read_bytes() == cleaned_bytes, "the library file is byte-identical"
+
+    merged = words_of(audit_one)
+    assert "bullshit" in merged, "the audit heard the missed word"
+    assert "shit" in merged, "and kept what the file already had -- §6's union"
+
+    # --- phase 2: restore, re-render from the merged set, swap ----------------
+    audit_two = audit_enqueue(item_id, promotion=True)
+    assert worker_for(migrated, audit_transcript).poll_once() is True
+
+    with session_scope() as session:
+        job = session.get(Job, audit_two)
+        assert job.state == "done", job.error
+    assert source.read_bytes() != cleaned_bytes, "the file was re-rendered"
+
+    after = runner.measure_volume(source, stream="0:a:0", window=TimeRange(start=8.15, end=8.50))
+    assert after is not None
+    assert after.max_db <= -80.0, "the newly found word is muted"
+
+    # The half a naive implementation gets wrong: the original mutes must survive.
+    original_word = runner.measure_volume(
+        source, stream="0:a:0", window=TimeRange(start=2.30, end=2.60)
+    )
+    assert original_word is not None
+    assert original_word.max_db <= -80.0, "'fucking' is still muted"
+
+    # A control window, the tripwire §12 relies on: not everything went silent.
+    # The fixture is 10 s long and the last mute ends at ~8.67 s, so this is clear.
+    control = runner.measure_volume(source, stream="0:a:0", window=TimeRange(start=9.0, end=9.8))
+    assert control is not None and control.max_db > -50.0
+
+    with session_scope() as session:
+        states = [b.state for b in session.scalars(select(Backup)).all()]
+    assert states.count("kept") == 1, "restore-then-swap leaves one original"
+
+
+def test_an_audit_that_confirms_the_file_enqueues_no_re_render(
+    migrated, queued, transcript
+) -> None:
+    """The common case. An arr rescan and a Jellyfin refresh per audited file would be
+    pure churn, so `promote_audits` has to find nothing to do here."""
+    from vidcleaner.settings_store import save_settings
+    from vidcleaner.worker.scheduler import promote_audits
+
+    _job_id, item_id, source = queued
+    assert worker_for(migrated, transcript).poll_once() is True
+    cleaned = source.read_bytes()
+
+    # The audit hears exactly what the first pass did.
+    audit_enqueue(item_id)
+    assert worker_for(migrated, transcript).poll_once() is True
+
+    with session_scope() as session:
+        save_settings(session, {"audit_pass": "always"})
+    assert promote_audits() == []
+    assert source.read_bytes() == cleaned

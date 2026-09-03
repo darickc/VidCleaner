@@ -98,6 +98,18 @@ class AppSettings(BaseModel):
 
     # --- scheduling & retention (§6) ---
     audit_pass: Literal["off", "idle", "always"] = "idle"
+    audit_min_confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Gates whether an audit's new hit is worth re-rendering for, never whether "
+            "it is recorded. 0 = promote anything muted. From M2's unresolved note that "
+            "three of its 13 full-only detections scored under 0.01, 'which looks like "
+            "recognition noise'; the right threshold is unmeasured, so the default does "
+            "not drop findings."
+        ),
+    )
     mapping_check_delay_s: float = Field(
         default=90.0,
         ge=0.0,

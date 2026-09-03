@@ -465,3 +465,214 @@ def test_a_first_clean_has_nothing_to_restore(worker, library) -> None:
 def _last_job(item_id: int) -> str:
     with session_scope() as session:
         return session.get(MediaItem, item_id).last_job_id
+
+
+# --------------------------------------------------------- §6's audit pass (M5)
+
+
+def audit_job(item_id: int, *, promotion: bool = False) -> str:
+    """Phase 1 is a dry run against the backup; phase 2 forces a re-render."""
+    with session_scope() as session:
+        return enqueue(
+            session,
+            media_item_id=item_id,
+            trigger="audit",
+            stt_mode="audit",
+            dry_run=not promotion,
+            force=promotion,
+        ).job_id
+
+
+def spec_of(job_id: str) -> dict:
+    import json
+
+    return json.loads((Path(job_row(job_id).work_dir or "") / "job.json").read_text())
+
+
+def detections_of(job_id: str) -> list[str]:
+    with session_scope() as session:
+        return [
+            d.word_canonical
+            for d in session.scalars(
+                select(Detection).where(Detection.job_id == job_id).order_by(Detection.start_s)
+            )
+        ]
+
+
+def test_phase_one_reads_the_backup_not_the_library_file(worker, library) -> None:
+    """§6 re-checks the *original* audio, and the library file no longer holds it:
+    `probe` picks the default audio stream, which after a clean is the muted Clean
+    track. So auditing the library file would transcribe silence where the words are.
+    """
+    item_id, source = library
+    queue_job(item_id)
+    worker.poll_once()
+
+    job_id = audit_job(item_id)
+    worker.poll_once()
+
+    backup = worker.settings.backups_dir / "tv/Show/S01E01.mkv"
+    assert spec_of(job_id)["source_path"] == str(backup)
+    assert spec_of(job_id)["source_path"] != str(source)
+
+
+def test_phase_one_needs_no_force_and_so_keeps_its_stage_markers(worker, library) -> None:
+    """The backup carries no `VIDCLEANER_PROFILE_HASH`, so `probe.already_clean` is
+    False without forcing -- and `force` disables marker skipping, which would make a
+    killed 30-minute transcription restart from nothing on every container bounce."""
+    item_id, _ = library
+    queue_job(item_id)
+    worker.poll_once()
+
+    job_id = audit_job(item_id)
+    worker.poll_once()
+    assert job_row(job_id).force is False
+    assert job_row(job_id).state == "done"
+
+
+def test_phase_one_stops_after_detect_and_touches_nothing(worker, library) -> None:
+    item_id, source = library
+    queue_job(item_id)
+    worker.poll_once()
+    cleaned = source.read_bytes()
+
+    audit_job(item_id)
+    worker.poll_once()
+
+    assert CONTROL.ran[-5:] == ["probe", "extract", "subtitles", "transcribe", "detect"]
+    assert "render" not in CONTROL.ran[-5:]
+    assert "swap" not in CONTROL.ran[-5:]
+    assert source.read_bytes() == cleaned, "the library file is byte-identical"
+
+
+def test_phase_one_leaves_the_item_clean(worker, library) -> None:
+    """`_item_status` would map this dry run to `pending`, which drops the item out of
+    `sync.CLEAN_STATUSES` and has the hourly sync re-enqueue a clean file forever --
+    the loop the M4 log says the audit must not start. `last_job_id` still moves,
+    which is what closes it."""
+    item_id, _ = library
+    queue_job(item_id)
+    worker.poll_once()
+
+    job_id = audit_job(item_id)
+    worker.poll_once()
+    with session_scope() as session:
+        item = session.get(MediaItem, item_id)
+        assert item.status == "clean"
+        assert item.last_job_id == job_id
+
+
+def test_phase_one_records_the_union_not_just_what_it_heard(worker, library) -> None:
+    """The heart of it. `detect(mode="audit")` is STT-only, and M2 measured full mode
+    missing 22 of windowed's 49 detections -- so recording only what this pass heard
+    would drop words the file already has muted."""
+    item_id, _ = library
+    CONTROL.detections = 3
+    clean_job = queue_job(item_id)
+    worker.poll_once()
+    assert len(detections_of(clean_job)) == 3
+
+    # The audit hears only one of them (a shorter fake transcript).
+    CONTROL.detections = 1
+    job_id = audit_job(item_id)
+    worker.poll_once()
+
+    assert len(detections_of(job_id)) == 3, "the three prior mutes survive the audit"
+
+
+def test_phase_one_reports_what_it_found_on_the_timeline(worker, library) -> None:
+    item_id, _ = library
+    queue_job(item_id)
+    worker.poll_once()
+    job_id = audit_job(item_id)
+    worker.poll_once()
+    assert any("audited against the backup original" in msg for msg in timeline(job_id))
+
+
+def test_the_promotion_skips_transcribe_and_detect(worker, library) -> None:
+    """It already holds the set phase 1 computed; re-running the pass would cost
+    another ~30 minutes to produce the same ranges."""
+    item_id, _ = library
+    queue_job(item_id)
+    worker.poll_once()
+    audit_job(item_id)
+    worker.poll_once()
+
+    CONTROL.ran.clear()
+    job_id = audit_job(item_id, promotion=True)
+    worker.poll_once()
+
+    assert "transcribe" not in CONTROL.ran
+    assert "detect" not in CONTROL.ran
+    assert "extract" in CONTROL.ran, "snippets cuts its review clips from audio.wav"
+    assert "render" in CONTROL.ran and "swap" in CONTROL.ran
+    assert job_row(job_id).state == "done"
+
+
+def test_the_promotion_renders_the_merged_set(worker, library) -> None:
+    item_id, _ = library
+    CONTROL.detections = 3
+    queue_job(item_id)
+    worker.poll_once()
+    CONTROL.detections = 1
+    audit_job(item_id)
+    worker.poll_once()
+
+    job_id = audit_job(item_id, promotion=True)
+    worker.poll_once()
+    assert len(detections_of(job_id)) == 3
+
+
+def test_the_promotion_leaves_exactly_one_kept_backup(worker, library) -> None:
+    """It restores first, so backups do not accumulate a chain per audit."""
+    item_id, _ = library
+    queue_job(item_id)
+    worker.poll_once()
+    audit_job(item_id)
+    worker.poll_once()
+    audit_job(item_id, promotion=True)
+    worker.poll_once()
+
+    with session_scope() as session:
+        states = [b.state for b in session.scalars(select(Backup)).all()]
+    assert states.count("kept") == 1
+
+
+def test_a_failed_restore_is_terminal_for_a_promotion(worker, library, monkeypatch) -> None:
+    """Unattended, so nobody would notice a second Clean track being rendered over the
+    first -- which is exactly what §6's "never re-encodes the clean track twice"
+    forbids. A user-clicked reprocess still warns and continues."""
+    item_id, source = library
+    queue_job(item_id)
+    worker.poll_once()
+    cleaned = source.read_bytes()
+
+    from vidcleaner.pipeline import persist as persist_mod
+
+    def boom(*_a, **_kw):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(persist_mod, "restore_item", boom)
+
+    job_id = audit_job(item_id, promotion=True)
+    worker.poll_once()
+
+    assert job_row(job_id).state == "failed"
+    assert source.read_bytes() == cleaned, "the library is untouched"
+
+
+def test_a_failed_restore_only_warns_for_a_user_reprocess(worker, library, monkeypatch) -> None:
+    item_id, _ = library
+    queue_job(item_id)
+    worker.poll_once()
+
+    from vidcleaner.pipeline import persist as persist_mod
+
+    monkeypatch.setattr(
+        persist_mod, "restore_item", lambda *_a, **_kw: (_ for _ in ()).throw(OSError("nope"))
+    )
+    job_id = queue_job(item_id, force=True)
+    worker.poll_once()
+
+    assert job_row(job_id).state == "done"
+    assert any("could not restore" in msg for msg in timeline(job_id))

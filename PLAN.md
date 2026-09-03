@@ -1881,6 +1881,123 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   constrains precisely the rows §5 meant it to. A migration test inserts both shapes and
   asserts the split.
 
+- 2026-09-03 — **M5 step 3 (§6's audit pass) complete, and it works quite differently from
+  what §6 describes.** `pipeline/audit.py`, `worker/spec.audit_source`, two runner hooks, a
+  rewritten `worker/scheduler`, `db/queries.py`, and `audit_min_confidence`. Verified: 1726
+  passed, including a real-ffmpeg end-to-end audit; `npm test` 46 passed, build clean.
+- 2026-09-03 — **The load-bearing discovery: `detect(mode="audit")` is STT-only, so the naive
+  audit would make files *worse*.** `mode="audit"` takes the `_full` branch —
+  `_stt_only(existing=())` — and ignores subtitle hits entirely. PLAN.md's own M2 demo already
+  measured that comparison: **windowed 49 detections, full 40, and "full mode missed 22
+  windowed detections and found 13 the windowed run missed… the union beats either mode
+  alone."** So "turn on `force` and re-render from the audit's detections" would have replaced a
+  49-word mute set with a 40-word one and made 22 previously-muted words audible again. §6's
+  word is "*adds* any detections the subtitles missed", and that requires a **union**. The
+  audit's output is therefore always `prior ∪ found`, never a replacement. The integration test
+  asserts both ends — the newly found word goes silent **and** an original one stays silent —
+  because only the second assertion catches this.
+- 2026-09-03 — **The audit is two jobs, both `trigger="audit"`, told apart by `dry_run`.**
+  §6 reads as one. Phase 1 is a dry run whose **source is the `kept` backup**, not the library
+  file; phase 2 restores and re-renders. Splitting it is what makes the library
+  byte-identical for the whole ~30-minute transcription instead of only at the end.
+- 2026-09-03 — **Auditing the *library* file is not merely wasteful, it is wrong.** After a
+  clean, the default audio stream — which `probe` selects — is the muted Clean track, so a
+  full pass over it would transcribe silence exactly where the words are.
+  `swap.backup_path_for` had already anticipated this in M3 ("keeps its real extension so the
+  audit pass can probe the backup"); `spec.audit_source` is the code that finally uses it.
+  Three further properties fall out: the backup carries no `VIDCLEANER_PROFILE_HASH`, so
+  `probe.already_clean` is False and **no `force` is needed** — which matters because `force`
+  disables marker skipping, and a killed transcription would otherwise restart from nothing on
+  every container bounce instead of resuming; `find_sidecars` looks beside the source, so the
+  audit reads the **un-redacted** original subtitles rather than the `****` we wrote; and a
+  failure costs nothing.
+- 2026-09-03 — **Phase 2 enters at `render` through M1's `--detections` seam** (now
+  `stages.seed_detections`), skipping `transcribe` and `detect`: ~27 s of probe/extract/render/
+  verify from the M1 demo's timings, against another ~30 minutes. `extract` is deliberately
+  **not** skipped, because `snippets` cuts its review clips from `audio.wav` and every
+  detection on the Item page would otherwise have no audio.
+- 2026-09-03 — **The alternative — `force=True` and let the normal pipeline run — was rejected,
+  and the CPU cost was not the reason** (27 s against ~1800 s of STT is ~1.5%). It still needs
+  the union, so it saves no work; `force` kills resume on the most expensive stage in the
+  system; `_restore_before_reclean` runs *before* `plan_job`, so **the library would hold the
+  un-cleaned original for the whole transcription**, unattended and library-wide, a window
+  `swap.plan.json` does not cover; and `_restore_before_reclean` *warns and continues* on
+  failure, which for an unattended pass means rendering a second Clean track over the first —
+  the M4 demo's bug, and precisely what §6's "never re-encodes the clean track twice" forbids.
+  Also rejected: an `install_path` on the spec (a second library-mutating transaction in
+  `swap.py`, with its own journal and EXDEV/ENOSPC matrix) and repointing `source_path`
+  mid-job (`_RESUME_KEYS` includes it, so `plan_job` would discard the transcript just paid
+  for — the M2 step 1 bug by a new route).
+- 2026-09-03 — **A failed pre-render restore is now terminal for an audit** and still
+  "warn and continue" for a user-clicked reprocess. `_restore_before_reclean` returns
+  `skipped|restored|failed` for exactly this. Nobody is watching an audit, so continuing would
+  stack tracks silently.
+- 2026-09-03 — **`same_finding` had to be split.** It bundles word identity with an *unpadded*
+  overlap test, and `covers` compares a found hit against the prior detection's **padded** span
+  — so delegating vetoed precisely the cases the padding exists to catch (found at 10.74 s
+  against a mute of 9.9–10.4 s, well inside M2's 0.74 s worst observed drift). `related_canonical`
+  is the identity half, still one copy of the `god` / `god damn` phrase rule.
+- 2026-09-03 — **`AUDIT_TIME_SLACK_S = 1.0`, from M2's measurements.** Median cross-mode drift
+  +0.009 s, mean +0.083 s, **max 0.74 s** — any slack under that reports the same word twice
+  whenever the two passes disagree at the tail.
+- 2026-09-03 — **Padding is applied once, and `finalize` grew a `preserved` argument to say so.**
+  Both sides of the comparison come out of a completed `detect`, so both are already guarded and
+  padded; re-padding would widen every mute by another `pad_pre + pad_post` per audit and
+  eventually swallow the surrounding dialogue. What the merge *does* redo is `merge_ranges`,
+  which has to run once over the union — two adjacent findings from different passes must become
+  one range, and `render` and `verify` must keep reading it from one place.
+- 2026-09-03 — **An improvement never triggers a re-render.** Where a precise STT hit overlaps a
+  prior `source="subtitle"` fallback, the audit prefers the tighter span (M2: those fallbacks
+  average +0.551 s error across 1.2–1.9 s for a ~0.3 s word) — but a swap, an arr rescan and a
+  Jellyfin refresh for 200 ms of precision is a bad trade. §6's trigger is new *hits*.
+- 2026-09-03 — **`audit_min_confidence` (default 0.0) gates promotion only, never recording.**
+  From M2's unresolved note that three of its 13 full-only detections scored under 0.01, "which
+  looks like recognition noise". The right threshold is unmeasured, so the default must not
+  drop findings.
+- 2026-09-03 — **`_has_audit` gave every item one attempt for the lifetime of the database.**
+  It matched any audit job in any state, and the aborted job was still a row — so after M4 each
+  item was permanently blocked from an audit that had never done anything. Replaced by a cache
+  key already in the schema: `(item, backup sha1_prefix, profile hash)`, both recorded by
+  `persist_run` and `swap._safe_fingerprint`. **No new column**, and each case falls out right —
+  a reprocess restores the same original so the fingerprint matches (no re-audit, correctly: the
+  same audio yields the same words for another 30 minutes); a word-list edit changes the hash
+  (re-audit); an upgrade replaces the file (re-audit). Two failures per key retire a poison file.
+- 2026-09-03 — **Promotion is recomputed from rows, never remembered.** `promote_audits` re-runs
+  `compare(evidence rows, audit rows)`, so a worker dying between phase 1 and the enqueue loses
+  nothing and running it twice enqueues once. It terminates because phase 2 becomes the evidence
+  job carrying the merged set, so the next comparison finds nothing new. This matches the
+  scheduler's existing stance on last-run times and needs no column.
+- 2026-09-03 — **No `kept` backup ⇒ no audit, and a missing backup file marks its row `purged`
+  inline.** §6's premise is the backup original; without one there is nothing to audit against
+  and the cleaned track is not a valid input, so enqueueing would only burn attempts and clutter
+  §9.1's Queue page. The inline `purged` is self-healing and far cheaper than
+  `reconcile_backups`, which rglobs the whole backups tree to learn the same thing about one row.
+- 2026-09-03 — **`stt_full_max_hours` now applies at the audit *enqueue* decision**, reversing
+  M2's rule that explicit modes ignore the cap. That rule exists so the cap cannot stop a user
+  who asked for a full pass; here nobody asked — the scheduler volunteered — and §13 lists a
+  ~6-hour audit of a 3-hour film as the top CPU risk.
+- 2026-09-03 — **`audit_pass="always"` finally differs from `"idle"`.** `Scheduler.tick` gained
+  an `only=` filter and `Worker.run` calls `tick(only=("audit",))` on the **busy** path too:
+  previously `tick` was reached only when `poll_once` found nothing, so the outer gate already
+  required an idle queue and the setting's third value did nothing at all. Priority 900 still
+  keeps an audit strictly last, so this cannot starve real work.
+- 2026-09-03 — **`evidence_job_ids` moved to `db/queries.py`** (re-exported from `api/views.py`,
+  so every M4 import site still works). The worker needs the same answer — "which run describes
+  the file on disk?" — and a worker importing `vidcleaner.api` is a layering the next reader
+  would rightly undo.
+- 2026-09-03 — **`evidence_job_ids` now excludes every dry run, not just `already_clean`.** The
+  real test is "reached `detect` **and** changed something". A dry run writes a full set of
+  detections and touches nothing, so it must not describe the file — which covers M5's audit
+  phase 1 by construction, and fixes a latent M4 bug the demo did not reach: the "dry run"
+  button forces past `already_clean`, so on a cleaned episode it detects over the muted Clean
+  track and would have become the evidence for a file it never touched, under-reporting the
+  Item page.
+- 2026-09-03 — **The `stale` → `pending` mapping in `persist._item_status` was a real trap.**
+  `pending` means "we intend to clean it" and `sync.backfill_title` does not skip it, so a job
+  that gave up on a vanished path left the item immediately re-enqueueable against that same
+  dead path. Now `stale` maps to `stale`, which is what §5/§6 already use and what backfill
+  skips.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
