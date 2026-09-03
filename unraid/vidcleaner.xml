@@ -1,30 +1,52 @@
 <?xml version="1.0"?>
+<!--
+  Community Applications template.
+
+  NOTE: Repository, Registry, Support, Project, Icon and TemplateURL below are
+  PLACEHOLDERS. This repository has no git remote and the image is not published
+  to any registry yet, so building locally with docker compose (see the README) is
+  the only working install path today. Point them at the real repository and
+  registry before submitting this to CA, which rejects a template whose Repository
+  is not a published, registry-qualified image, or whose Support/Project/Icon are
+  empty.
+-->
 <Container version="2">
   <Name>VidCleaner</Name>
-  <Repository>vidcleaner:latest</Repository>
-  <Registry/>
+  <Repository>ghcr.io/darickc/vidcleaner:latest</Repository>
+  <Registry>https://ghcr.io/darickc/vidcleaner</Registry>
   <Network>bridge</Network>
   <Privileged>false</Privileged>
-  <Support/>
-  <Project/>
+  <Support>https://github.com/darickc/VidCleaner/issues</Support>
+  <Project>https://github.com/darickc/VidCleaner</Project>
   <Overview>
     Mutes profanity in the audio of movies and TV episodes managed by Sonarr/Radarr and
     played through Jellyfin. Adds a "Clean" audio track as the new default and keeps the
     original track and an untouched backup of the source file, so every change is reversible.
+
+    Speech is located locally on the CPU (faster-whisper + whisperX) and muted with ffmpeg;
+    no cloud service and no GPU. Existing subtitles narrow the search to about 5% of an
+    episode's runtime, which is what makes CPU-only recognition practical. New downloads are
+    processed automatically via Sonarr/Radarr webhooks, and a web UI shows every word that
+    was removed with a five-second before/after clip so a false positive can be whitelisted
+    and the file reprocessed.
+
+    IMPORTANT: /media must be the SAME path Sonarr, Radarr and Jellyfin use, and PUID/PGID
+    must match whoever owns that share -- otherwise the swap cannot write. Keep /backups on
+    the media share so swaps are same-filesystem renames, and put /work on a cache pool.
+    The first job downloads a speech model (~1.5 GB) into /config, so it is much slower
+    than the ones after it.
   </Overview>
   <Category>MediaApp:Video Tools:Utilities</Category>
   <WebUI>http://[IP]:[PORT:8585]/</WebUI>
-  <Icon/>
+  <Icon>https://raw.githubusercontent.com/darickc/VidCleaner/main/unraid/vidcleaner.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>
+  <TemplateURL>https://raw.githubusercontent.com/darickc/VidCleaner/main/unraid/vidcleaner.xml</TemplateURL>
+  <Beta>true</Beta>
   <DateInstalled/>
   <DonateText/>
   <DonateLink/>
-  <Description>
-    Mutes profanity in the audio of movies and TV episodes managed by Sonarr/Radarr and
-    played through Jellyfin. Local CPU speech-to-text locates the words; ffmpeg mutes them.
-  </Description>
   <Networking>
     <Mode>bridge</Mode>
     <Publish>
@@ -65,6 +87,8 @@
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User id that owns the media share" Type="Variable" Display="advanced" Required="true" Mask="false">99</Config>
   <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group id that owns the media share" Type="Variable" Display="advanced" Required="true" Mask="false">100</Config>
   <Config Name="TZ" Target="TZ" Default="America/Denver" Mode="" Description="Timezone" Type="Variable" Display="advanced" Required="false" Mask="false">America/Denver</Config>
-  <Config Name="OMP_NUM_THREADS" Target="OMP_NUM_THREADS" Default="6" Mode="" Description="Threads for speech-to-text. Roughly CPU cores minus 2." Type="Variable" Display="advanced" Required="false" Mask="false">6</Config>
+  <Config Name="UMASK" Target="UMASK" Default="0002" Mode="" Description="File mode mask for everything VidCleaner writes. 0002 keeps the group bit so the arrs can still manage the files." Type="Variable" Display="advanced" Required="false" Mask="false">0002</Config>
+  <Config Name="OMP_NUM_THREADS" Target="OMP_NUM_THREADS" Default="" Mode="" Description="Threads for speech-to-text. Leave blank for CPU cores minus 2. Must be set here rather than in the web UI, because the threading library reads it once at start-up." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Log level" Target="VIDCLEANER_LOG_LEVEL" Default="INFO" Mode="" Description="DEBUG | INFO | WARNING | ERROR" Type="Variable" Display="advanced" Required="false" Mask="false">INFO</Config>
   <Config Name="Role" Target="VIDCLEANER_ROLE" Default="all" Mode="" Description="all | api | worker — split only for multi-host setups" Type="Variable" Display="advanced" Required="false" Mask="false">all</Config>
 </Container>

@@ -95,15 +95,12 @@ def ffmpeg_status() -> tuple[bool, str]:
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-mark everything under tests/integration/ and skip when ffmpeg is absent.
+    """Mark the two tiers by directory, so nobody has to remember a decorator.
 
-    Marking by directory means nobody has to remember the decorator. Setting
-    VIDCLEANER_TEST_REQUIRE_FFMPEG=1 turns the skips into failures, so CI cannot
-    go green by silently skipping the entire integration tier -- the classic way
-    an arrangement like this rots.
+    Whether a marked test then runs, skips or fails is
+    :func:`pytest_runtest_setup`'s decision -- see the note there about why it cannot
+    be made here.
     """
-    ok, why = ffmpeg_status()
-    required = os.environ.get("VIDCLEANER_TEST_REQUIRE_FFMPEG") == "1"
     for item in items:
         parts = Path(str(item.fspath)).parts
         if "integration" in parts:
@@ -112,8 +109,33 @@ def pytest_collection_modifyitems(config, items):
             # Marked by directory so `-m contract` selects the tier; it needs no
             # ffmpeg and no network, so it is never skipped.
             item.add_marker(pytest.mark.contract)
-        if "ffmpeg" in item.keywords and not ok:
-            if required:
-                item.add_marker(pytest.mark.fail(reason=why))
-            else:
-                item.add_marker(pytest.mark.skip(reason=f"ffmpeg unavailable: {why}"))
+
+
+def pytest_runtest_setup(item):
+    """Skip an ffmpeg test when ffmpeg is unusable -- or **fail** it if CI said so.
+
+    ``VIDCLEANER_TEST_REQUIRE_FFMPEG=1`` turns the skips into failures so a build
+    cannot go green while silently skipping the entire integration tier -- "the classic
+    way an arrangement like this rots", as this file has said since M1. It rotted
+    anyway, in two layers:
+
+    1. the guard used ``pytest.mark.fail``, which is **not a pytest marker** (there is
+       ``xfail``), and an unknown marker is ignored without ``--strict-markers``
+       (now set in `pyproject.toml`);
+    2. and it was applied in ``pytest_collection_modifyitems``, which is too late for
+       ``usefixtures`` -- the item's fixture closure is already computed by then, so
+       even a *correct* fixture marker added there does nothing.
+
+    This hook is the version that works: it runs per test, at setup, before any fixture,
+    and can call `pytest.fail` or `pytest.skip` directly. `tests/unit/test_ci_guard.py`
+    runs pytest in a subprocess to prove it, because that is the only way to assert
+    what the flag does to a *run*.
+    """
+    if "ffmpeg" not in item.keywords:
+        return
+    ok, why = ffmpeg_status()
+    if ok:
+        return
+    if os.environ.get("VIDCLEANER_TEST_REQUIRE_FFMPEG") == "1":
+        pytest.fail(f"VIDCLEANER_TEST_REQUIRE_FFMPEG=1 but ffmpeg is unusable: {why}")
+    pytest.skip(f"ffmpeg unavailable: {why}")

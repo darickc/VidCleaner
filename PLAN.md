@@ -2076,6 +2076,61 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   The stage failure is the interesting news, and a timeout in the diagnosis must never replace
   the diagnosis.
 
+- 2026-09-03 — **M5 step 6 (deployment, docs and thread tuning) complete.** Verified: 1766
+  passed; the image builds and was **run**, reporting `revision 0003`, ffmpeg 7.1.5 and the new
+  `/words`, `/profiles` and `/backups` endpoints answering over HTTP.
+- 2026-09-03 — **§10's "CPU threads" setting was half-connected, and the container silently
+  won.** `whisper_backend._prepare_env` used `os.environ.setdefault`, so the
+  `OMP_NUM_THREADS=6` shipped in `docker-compose.yml` and the unraid template beat the UI:
+  CTranslate2 got the setting (`cpu_threads=` is passed directly) while torch and whisperX
+  kept running at the container's number. The two halves of one pipeline disagreed and the
+  control looked broken. Fixed in three places, because one is not enough: assignment instead
+  of `setdefault`; **`torch.set_num_threads(threads)` in `_align`**, which is the only knob
+  that works after torch has loaded (libgomp reads `OMP_NUM_THREADS` once, at its own
+  initialisation); and the **entrypoint now exports it**, defaulting to `nproc - 2` — which is
+  what §10 meant by listing it in the entrypoint's env contract all along. The shipped value
+  is commented out in compose and blank in the template, so the UI is the normal way to change
+  it and the env var is the override.
+- 2026-09-03 — **`VIDCLEANER_TEST_REQUIRE_FFMPEG=1` was inert, so a green CI run proved
+  nothing.** `conftest.py` has said since M1 that this flag "turns the skips into failures, so
+  CI cannot go green by silently skipping the entire integration tier — the classic way an
+  arrangement like this rots". It rotted in two layers: it used **`pytest.mark.fail`, which is
+  not a pytest marker** (there is `xfail`), and an unknown marker is ignored without
+  `--strict-markers`; and even a *correct* fixture marker would have done nothing, because
+  `pytest_collection_modifyitems` runs after an item's fixture closure is computed, so
+  `usefixtures` added there is ignored — which cost a round of debugging to discover. The
+  working version is a `pytest_runtest_setup` hook that calls `pytest.fail` directly.
+  `--strict-markers` is now set as the second line of defence, and
+  `tests/unit/test_ci_guard.py` runs pytest in a **subprocess** to prove the flag changes the
+  exit code — the only way to assert what a flag does to a *run*. Measured before and after:
+  6 skipped → 6 errors.
+- 2026-09-03 — `UMASK` is now an env var (§10 hard-coded `umask 0002`, so the only way to
+  change it was rebuilding), `HF_HOME` is created and chowned like the other volumes (the
+  first job downloads a model into it, and on an existing appdata dir it would otherwise be
+  created by whoever got there first), and the entrypoint **logs the resolved
+  uid/gid/umask/threads/role/tz and warns when `/media` is not writable** — the first thing
+  anyone needs when a fresh install cannot swap, and the failure §11's M5 demo is most likely
+  to hit. Both verified by running the image.
+- 2026-09-03 — **The unraid template is now CA-shaped but its URLs are honest placeholders.**
+  Added `TemplateURL`, `Beta`, `UMASK`, `VIDCLEANER_LOG_LEVEL`, a much fuller `Overview`
+  (including the three things that decide whether the install works at all), and dropped the
+  duplicate `Description` that CA does not render. `Repository`, `Registry`, `Support`,
+  `Project` and `Icon` are filled in **but marked as placeholders in an XML comment**: this
+  repository has no git remote and the image is published nowhere, so a template claiming
+  otherwise would be worse than one that says so. Building locally with compose is the only
+  working install path today, and the README says that first.
+- 2026-09-03 — **The README now leads with installing rather than developing**, because §11's
+  M5 demo is "fresh install to first cleaned episode in < 15 min" and that walkthrough *is*
+  the deliverable: the three things that decide whether it works (matching `/media` paths,
+  `PUID`/`PGID` owning the share, `/backups` on the same filesystem), the six numbered
+  first-run steps, the warning that **the first job is much slower** because it downloads a
+  ~1.5 GB model, an env-vs-UI configuration table saying which wins, and tuning guidance drawn
+  from `docs/eval.md`.
+- 2026-09-03 — **The README says out loud that there is no user authentication**, which the M3
+  log flagged as owed: "a property of the whole design", making the webhook secret the entire
+  perimeter and `GET /api/webhooks/setup` acceptable only behind a reverse proxy. Stated in its
+  own section, next to what *is* authenticated.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

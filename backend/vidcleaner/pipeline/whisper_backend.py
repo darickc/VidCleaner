@@ -189,10 +189,27 @@ class WhisperTranscriber:
     # ------------------------------------------------------------- plumbing
 
     def _prepare_env(self, request: TranscribeRequest) -> int:
-        """Thread and cache settings must be in place before torch loads."""
+        """Thread and cache settings must be in place before torch loads.
+
+        **The thread count from settings wins, and it is applied twice.** This used
+        `setdefault`, which meant §10's shipped ``OMP_NUM_THREADS=6`` (in
+        `docker-compose.yml` and the unraid template) silently beat the UI's "CPU
+        threads": CTranslate2 got the setting, because `cpu_threads=` is passed
+        directly, while torch and whisperX kept running at whatever the container
+        said. The two halves of the same pipeline disagreed and the control looked
+        broken.
+
+        `setdefault` -> assignment fixes half of it. The other half is that libgomp
+        reads ``OMP_NUM_THREADS`` **once**, at its own initialisation, so an
+        in-process assignment is a no-op if anything has already pulled in torch --
+        which is exactly why §10 puts the variable in the *entrypoint's* env contract.
+        `torch.set_num_threads` is the API that works after the fact, and
+        :meth:`_align` calls it. Both are needed: the env var for a cold process, the
+        call for a warm one.
+        """
         threads = resolve_threads(request.cpu_threads)
-        os.environ.setdefault("OMP_NUM_THREADS", str(threads))
-        os.environ.setdefault("MKL_NUM_THREADS", str(threads))
+        os.environ["OMP_NUM_THREADS"] = str(threads)
+        os.environ["MKL_NUM_THREADS"] = str(threads)
         if request.model_cache_dir is not None:
             cache = str(request.model_cache_dir)
             request.model_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -234,6 +251,7 @@ class WhisperTranscriber:
         language: str,
         audio_path: Path,
         on_progress: Callable[[float], None] | None = None,
+        threads: int = 0,
     ) -> tuple[list[dict], str | None]:
         """whisperX forced alignment, batched, degrading gracefully per batch.
 
@@ -251,6 +269,19 @@ class WhisperTranscriber:
         except Exception as exc:  # ImportError, OSError from missing torch bits
             log.warning("stt.align_unavailable", error=str(exc))
             return segments, None
+
+        if threads > 0:
+            # The one thread control that works *after* torch has loaded. libgomp
+            # reads OMP_NUM_THREADS once at its own initialisation, so setting the
+            # env var in-process is a no-op by now -- which is why §10 puts it in the
+            # entrypoint. Without this, the UI's "CPU threads" moved CTranslate2 and
+            # left alignment running at whatever the container's env said.
+            try:
+                import torch  # noqa: PLC0415
+
+                torch.set_num_threads(threads)
+            except Exception as exc:  # noqa: BLE001 - never fail a job over a hint
+                log.info("stt.thread_hint_failed", error=str(exc)[:200])
 
         try:
             if language not in _ALIGN_CACHE:
@@ -361,7 +392,7 @@ class WhisperTranscriber:
                     on_progress(RECOGNITION_PROGRESS_SHARE + fraction * share)
 
             raw_segments, align_model = self._align(
-                raw_segments, language, request.audio_path, align_progress
+                raw_segments, language, request.audio_path, align_progress, threads=threads
             )
 
         segments, dropped = self._to_segments(raw_segments, request)

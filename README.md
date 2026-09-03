@@ -48,8 +48,98 @@ changed. The **Queue** page shows the running stage and log, the **Item** page s
 that was removed with a five-second *Original* and *Clean* clip for each, and a false positive can
 be whitelisted (this file / this title / everywhere) and the file reprocessed from that page.
 
-Still to come in **M5**: the Words & Profiles editor, per-title profile overrides, the audit pass,
-backup retention and purge, and the unraid template polish.
+**M5** adds the Words & Profiles editor, per-title profile overrides, the audit pass, backup
+retention and purge, and the install path below.
+
+## Security
+
+**VidCleaner has no user authentication.** Anyone who can reach the port can browse
+your library, queue work and read the webhook token. Put it behind a reverse proxy with
+authentication, or keep it on a trusted network — the same posture as an unprotected
+Sonarr.
+
+The webhook receiver *is* authenticated: it requires the `X-VidCleaner-Token` header on
+every delivery, the token is generated on first boot rather than left empty, and a bad
+token gets a 401 with nothing written to the database.
+
+## Install
+
+> **The image is not published to a registry yet**, so building it locally is the only
+> supported path today. `unraid/vidcleaner.xml` is a working Community Applications
+> template except for its `Repository`/`Support`/`Project`/`Icon` URLs, which are
+> placeholders until this repository has a home.
+
+```bash
+git clone <this repo> && cd VidCleaner && docker compose up --build -d
+```
+
+Then open `http://<host>:8585`.
+
+### Before you start
+
+Three things decide whether this works at all:
+
+| | Why it matters |
+|---|---|
+| **`/media` must be the same path Sonarr, Radarr and Jellyfin use** | VidCleaner replaces files in place. If the paths differ, configure a mapping in Settings → Path mappings; if they differ *and* you skip that, the arrs will not find the file afterwards. |
+| **`PUID`/`PGID` must own the media share** | The swap is a rename inside the library folder. The entrypoint warns on startup if `/media` is not writable, so check the container log first when a job fails at `swapping`. |
+| **`/backups` should be on the media share** | Then the swap is a same-filesystem rename rather than a copy. A cross-device backup is refused by default (`allow_cross_device_backup`), because it could not be done without deleting an original. |
+
+`/work` wants an SSD or cache pool and about 1.3x your largest file free; the worker
+pauses the queue rather than failing jobs when it drops below `min_free_gib`.
+
+### First run, in order
+
+1. **Settings → Sonarr / Radarr / Jellyfin.** Paste each URL and API key and press
+   **Test**. Jellyfin is optional.
+2. **Settings → Webhooks.** Press **Add to Sonarr** (and Radarr) to create the
+   notification, or copy the URL and `X-VidCleaner-Token` header in by hand. This is
+   what makes new downloads clean themselves.
+3. **Settings → Path mappings**, only if your containers disagree about paths.
+4. **Library → Sync now**, then toggle **Clean** on one series or movie. Its existing
+   files are queued immediately.
+5. **Queue** shows the running stage. **The first job is much slower than the rest**: it
+   downloads a speech model (~1.5 GB) into `/config/models`. A 45-minute episode with
+   usable subtitles takes a couple of minutes after that; one without subtitles is
+   transcribed whole and takes considerably longer (capped by `stt_full_max_hours`).
+6. **Item** page: every word removed, with a five-second *Original* and *Clean* clip.
+   Wrong one? Whitelist it (this file / this title / everywhere) and press reprocess.
+
+Nothing is destroyed at any point: the original audio stays in the file as track 2 and
+the untouched source file is kept under `/backups` until retention purges it.
+
+### Configuration: env vs. the web UI
+
+Deployment settings are environment variables, read once at start-up. Everything
+operational lives in the web UI and takes effect on the next job.
+
+| Env var | Default | Notes |
+|---|---|---|
+| `PUID` / `PGID` | `99` / `100` | unraid's `nobody:users`. Must own the media share. |
+| `UMASK` | `0002` | Keeps the group bit so the arrs can still manage what we write. |
+| `TZ` | `Etc/UTC` | |
+| `OMP_NUM_THREADS` | `nproc - 2` | **Set it here, not in the UI**: the threading library reads it once at process start. Leave it unset unless you want a different number. |
+| `VIDCLEANER_ROLE` | `all` | `api` / `worker` to split across hosts. |
+| `VIDCLEANER_LOG_LEVEL` | `INFO` | |
+| `VIDCLEANER_PORT` | `8585` | |
+
+In the UI: STT models, CPU threads, beam size, mute padding, codec policy, the audit
+pass, backup retention, and the disk floor.
+
+### Tuning
+
+Defaults are `large-v3-turbo` for subtitle-narrowed passes and `medium` for full-file
+ones, measured in [docs/eval.md](docs/eval.md). On an 8-core CPU the windowed default
+runs at roughly 2.8x real time, so most episodes cost a couple of minutes of
+recognition. Worth knowing before changing anything:
+
+- **CPU threads** defaults to cores − 2, leaving room for the API and ffmpeg. More is
+  not reliably faster.
+- **A bigger full-file model is the expensive choice**, not the windowed one — full
+  passes cover the entire runtime instead of ~5% of it.
+- **The audit pass** (`idle` by default) re-checks cleaned files against the kept
+  original with a full-file pass when the queue is empty, and re-renders only if it
+  finds something new. Set it to `off` if you would rather not spend the CPU.
 
 ## Development
 
@@ -84,20 +174,23 @@ speech-to-text stack is an optional extra: `uv sync --extra stt` (faster-whisper
 CPU-only torch). Without it everything except the `transcribe` stage still runs, and the
 integration tests that need speech recognition skip themselves.
 
-## Container
+The integration tier skips itself when ffmpeg is missing, which is convenient locally
+and dangerous in CI — so set `VIDCLEANER_TEST_REQUIRE_FFMPEG=1` there and a missing
+ffmpeg fails the run instead:
 
 ```bash
-docker compose up --build
+cd backend && VIDCLEANER_TEST_REQUIRE_FFMPEG=1 uv run pytest
 ```
 
-Volumes: `/config` (database, settings, STT models, logs), `/media` (the library — **must** be
-the same path Sonarr/Radarr/Jellyfin use), `/backups` (originals, kept on the media share so
-swaps are same-filesystem renames) and `/work` (scratch, put it on an SSD). On unraid, use
-`unraid/vidcleaner.xml`. Override the host paths with `MEDIA_DIR`, `BACKUPS_DIR`, `CONFIG_DIR`
-and `WORK_DIR` when running compose elsewhere.
+## The image
 
-The image is about 3 GB (Debian trixie + ffmpeg 7.1 + CPU-only torch) and has been built and
-exercised for both `linux/amd64` (unraid) and `linux/arm64`. The image runs both processes;
-`VIDCLEANER_ROLE=api|worker|all` splits them if you ever want
-them on different hosts. `GET /api/health` backs the healthcheck and reports the database
-revision, ffmpeg version and free disk per volume.
+Four volumes: `/config` (database, settings, STT models, logs), `/media` (the library),
+`/backups` (originals) and `/work` (scratch). See **Install** above for what each one
+needs. Override the host paths with `MEDIA_DIR`, `BACKUPS_DIR`, `CONFIG_DIR` and
+`WORK_DIR` when running compose outside unraid.
+
+About 3 GB (Debian trixie + ffmpeg 7.x + CPU-only torch), built and exercised for both
+`linux/amd64` (unraid) and `linux/arm64`. One image runs both processes and exits if
+either dies, so Docker's restart policy brings the pair back;
+`VIDCLEANER_ROLE=api|worker|all` splits them across hosts. `GET /api/health` backs the
+healthcheck and reports the database revision, ffmpeg version and free disk per volume.

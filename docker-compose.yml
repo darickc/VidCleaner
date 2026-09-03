@@ -13,10 +13,15 @@ services:
       PUID: "99"
       PGID: "100"
       TZ: "America/Denver"
+      # 0002 keeps the group bit so the arrs can still manage what we write.
+      UMASK: "0002"
       VIDCLEANER_ROLE: "all"
       VIDCLEANER_LOG_LEVEL: "INFO"
-      # CTranslate2/OMP threads; PLAN.md §4 suggests cores - 2.
-      OMP_NUM_THREADS: "6"
+      # CTranslate2/OMP threads. Leave it unset and the entrypoint uses `nproc - 2`
+      # (PLAN.md §4); set it only to override that. Note it must be set *here* rather
+      # than in the UI, because libgomp reads it once at process start -- the UI's
+      # "CPU threads" then moves both halves of the pipeline together.
+      # OMP_NUM_THREADS: "6"
     volumes:
       - ${CONFIG_DIR:-./.docker/config}:/config
       # Must be the SAME path Sonarr/Radarr/Jellyfin use (PLAN.md §2).

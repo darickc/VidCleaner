@@ -67,6 +67,9 @@ packages = ["vidcleaner"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Belt and braces for the same defect: an unknown marker is silently ignored
+# without this, which is how `pytest.mark.fail` sat in conftest.py doing nothing.
+addopts = "--strict-markers"
 markers = [
     "ffmpeg: needs a working ffmpeg/ffprobe >= 7.0 (auto-applied to tests/integration/)",
     "contract: mocked Sonarr/Radarr/Jellyfin (auto-applied to tests/contract/); no ffmpeg",
