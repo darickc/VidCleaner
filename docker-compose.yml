@@ -17,6 +17,8 @@ services:
       UMASK: "0002"
       VIDCLEANER_ROLE: "all"
       VIDCLEANER_LOG_LEVEL: "INFO"
+      # Inside /media, so the swap is a rename rather than a copy-and-delete.
+      VIDCLEANER_BACKUPS_DIR: "/media/.vidcleaner-backups"
       # CTranslate2/OMP threads. Leave it unset and the entrypoint uses `nproc - 2`
       # (PLAN.md §4); set it only to override that. Note it must be set *here* rather
       # than in the UI, because libgomp reads it once at process start -- the UI's
@@ -26,7 +28,10 @@ services:
       - ${CONFIG_DIR:-./.docker/config}:/config
       # Must be the SAME path Sonarr/Radarr/Jellyfin use (PLAN.md §2).
       - ${MEDIA_DIR:-/mnt/user/media}:/media
-      # Inside the media share so the swap is a same-filesystem rename (§10).
-      - ${BACKUPS_DIR:-/mnt/user/media/.vidcleaner-backups}:/backups
       # Scratch; put this on an SSD/cache pool.
       - ${WORK_DIR:-./.docker/work}:/work
+      # NOTE there is deliberately no /backups mount. Originals go to
+      # VIDCLEANER_BACKUPS_DIR below, which is a path *inside* /media -- `rename(2)`
+      # returns EXDEV across two mount points even when both are the same
+      # filesystem, so a separate volume could never be the same-filesystem rename
+      # §10 requires. Measured, not assumed: see the Decision Log.

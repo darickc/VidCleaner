@@ -14,9 +14,10 @@ and Jellyfin are refreshed afterwards.
 
 ## Status
 
-Milestones **M1** (core clean via CLI), **M2** (full-file STT, drift and evaluation),
-**M3** (job queue, backup/swap, Sonarr/Radarr/Jellyfin) and **M4** (the web UI) are complete.
-The pipeline runs end to end on a real file:
+**All five milestones are complete**: M1 (core clean via CLI), M2 (full-file STT, drift and
+evaluation), M3 (job queue, backup/swap, Sonarr/Radarr/Jellyfin), M4 (the web UI) and M5
+(profiles, the audit pass, retention and the install path below). The pipeline runs end to
+end on a real file:
 
 ```bash
 cd backend
@@ -48,8 +49,11 @@ changed. The **Queue** page shows the running stage and log, the **Item** page s
 that was removed with a five-second *Original* and *Clean* clip for each, and a false positive can
 be whitelisted (this file / this title / everywhere) and the file reprocessed from that page.
 
-**M5** adds the Words & Profiles editor, per-title profile overrides, the audit pass, backup
-retention and purge, and the install path below.
+Cleaned files are re-checked in the background: when the queue is idle the **audit pass**
+transcribes the whole file from the kept original — subtitles narrow the first pass, so they
+can also hide a word nobody wrote down — and re-renders only if that finds something new.
+Originals are purged on a retention clock you set, the **Words & Profiles** page controls what
+gets muted, and a series or movie can override the profile it uses.
 
 ## Security
 

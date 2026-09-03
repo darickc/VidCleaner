@@ -182,6 +182,24 @@ def _is_exdev(exc: OSError) -> bool:
     return exc.errno == errno.EXDEV
 
 
+def _cross_device_message(source: Path, backup: Path) -> str:
+    """The one actionable wording for "/backups is on another filesystem".
+
+    Shared by :func:`preflight` and by the execute-time EXDEV fallback, because
+    ``same_device`` only *plans*: on unraid's FUSE shfs -- and, as the M5 demo found,
+    inside Docker -- two separate mounts can report the same ``st_dev``, so the split
+    is discovered by the rename failing rather than by the plan. Both paths must say
+    the same thing, or the most likely misconfiguration on a fresh install surfaces as
+    a bare ``[Errno 18] Invalid cross-device link``.
+    """
+    return (
+        f"the backup directory {backup.parent} is on a different filesystem than "
+        f"{source.parent}, so the original cannot be moved there without deleting it. "
+        "Point /backups at the same share as the library, or set "
+        "allow_cross_device_backup."
+    )
+
+
 # --------------------------------------------------------------- planning
 
 
@@ -319,13 +337,7 @@ def preflight(
         raise StaleSourceError(NAME, "source was replaced since probe (inode changed)")
 
     if plan.backup_via == "copy" and not allow_cross_device_backup:
-        raise StageError(
-            NAME,
-            f"the backup directory {backup.parent} is on a different filesystem than "
-            f"{source.parent}, so the original cannot be moved there without deleting it. "
-            "Point /backups at the same share as the library, or set "
-            "allow_cross_device_backup.",
-        )
+        raise StageError(NAME, _cross_device_message(source, backup))
 
     if fs.exists(backup):
         raise StageError(NAME, f"backup path already exists: {backup}")
@@ -465,7 +477,13 @@ def recover(plan: SwapPlan, *, fs: FsOps | None = None) -> Recovery:
     return Recovery("stale", f"neither {source} nor {backup} holds the original")
 
 
-def execute(plan: SwapPlan, *, out_path: Path, fs: FsOps | None = None) -> SwapResult:
+def execute(
+    plan: SwapPlan,
+    *,
+    out_path: Path,
+    fs: FsOps | None = None,
+    allow_cross_device_backup: bool = False,
+) -> SwapResult:
     """Stage, back up, install. Raises before mutating anything it can."""
     import time  # noqa: PLC0415
 
@@ -535,6 +553,10 @@ def execute(plan: SwapPlan, *, out_path: Path, fs: FsOps | None = None) -> SwapR
         fs.rename(source, backup)
     except OSError as exc:
         unstage("could not move the original to the backup directory")
+        if _is_exdev(exc) and not allow_cross_device_backup:
+            # `preflight` says this when `same_device` saw the split; here the rename
+            # is what discovered it, and the user needs the same sentence either way.
+            raise StageError(NAME, _cross_device_message(source, backup)) from exc
         raise StageError(NAME, f"could not back up {source} to {backup}: {exc}") from exc
 
     try:
@@ -822,7 +844,12 @@ def run(ctx) -> None:
     # The journal, fsynced, after staging is planned and before anything moves.
     plan.write(ctx.ws.swap_plan_json, fsync=True)
 
-    result = execute(plan, out_path=out_path, fs=fs)
+    result = execute(
+        plan,
+        out_path=out_path,
+        fs=fs,
+        allow_cross_device_backup=ctx.settings.allow_cross_device_backup,
+    )
     result.write(ctx.ws.swap_json)
     ctx.progress(NAME, 1.0)
     ctx.log.info(

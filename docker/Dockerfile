@@ -28,7 +28,7 @@ ENV PYTHONUNBUFFERED=1 \
     VIDCLEANER_ROLE=all \
     VIDCLEANER_CONFIG_DIR=/config \
     VIDCLEANER_MEDIA_DIR=/media \
-    VIDCLEANER_BACKUPS_DIR=/backups \
+    VIDCLEANER_BACKUPS_DIR=/media/.vidcleaner-backups \
     VIDCLEANER_WORK_DIR=/work \
     VIDCLEANER_STATIC_DIR=/app/static
 
@@ -60,7 +60,11 @@ RUN chmod +x /entrypoint.sh
 
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra stt
 
-VOLUME ["/config", "/media", "/backups", "/work"]
+# NOT /backups: the default backups directory lives *inside* the /media mount,
+# because `rename(2)` fails with EXDEV across two mount points even when they are
+# the same filesystem -- so a separate /backups volume can never be a rename.
+# Mount /backups yourself only alongside `allow_cross_device_backup`.
+VOLUME ["/config", "/media", "/work"]
 EXPOSE 8585
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

@@ -203,7 +203,7 @@ VidCleaner/
 - [x] **M2 — Full-file STT + drift + robustness**: full mode (**VAD removed — see the Decision Log; it was inert in windowed mode and cost 5.5x the recall in full mode**), drift check, censored-token handling, suspicious guards, resumable stage markers, eval set with precision/recall in `docs/eval.md`. *Demo: movie with no subs processed overnight; timing error report.*
 - [x] **M3 — Worker, swap, integrations**: job queue/claiming, backup/swap/rollback, Sonarr/Radarr clients + sync + backfill, webhook receivers with dedupe/upgrade handling, arr rescan + Jellyfin refresh + mapping check. *Demo: enable a series → existing episodes cleaned; Sonarr imports a new episode → auto-cleaned → Jellyfin shows Clean default.*
 - [x] **M4 — UI**: Queue, Library (toggle/profile), Title, Item (counts, detections, snippet players, whitelist + reprocess, restore original), Settings with Test buttons and webhook setup. *Demo: mark a false positive, reprocess, word audible again.*
-- [ ] **M5 — Profiles, audit pass, retention, hardening**: Words & Profiles page, per-title override, audit jobs, backup retention/purge, disk guards, stale-path handling, PUID/PGID, unraid template, README, thread/model tuning. *Demo: fresh unraid install from template to first cleaned episode in < 15 min of setup.*
+- [x] **M5 — Profiles, audit pass, retention, hardening**: Words & Profiles page, per-title override, audit jobs, backup retention/purge, disk guards, stale-path handling, PUID/PGID, unraid template, README, thread/model tuning. *Demo: fresh unraid install from template to first cleaned episode in < 15 min of setup.*
 
 Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU encoder, extra EAC3 downmix track, Bazarr integration to fetch subs before STT, notifications (Discord/Pushover), multi-language word lists.
 
@@ -2167,6 +2167,87 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   was noticed and reverted — those files now show additions only. Even `--print-width 100`
   disagrees with the existing style, so **do not run Prettier on `frontend/`**; format new code
   by hand to match its neighbours.
+
+- 2026-09-03 — **The M5 demo found the most important bug of the milestone: the shipped
+  container layout could never swap a file.** `docker-compose.yml` and the unraid template both
+  mounted `/backups` as its **own volume**, and §10's premise — "backups inside the media share
+  so swaps are same-filesystem renames" — cannot hold that way. Measured inside the running
+  container:
+
+  ```
+  /run/host_mark/private /media    fakeowner rw,...   st_dev 50
+  /run/host_mark/private /backups  fakeowner rw,...   st_dev 50
+  os.rename("/media/…", "/backups/…") -> [Errno 18] Invalid cross-device link
+  ```
+
+  Same device, **different mounts** — and `rename(2)` refuses across mount points even when both
+  are the same filesystem. unraid is no different: `/mnt/user/media:/media` and
+  `/mnt/user/media/.vidcleaner-backups:/backups` are still two bind mounts. So **every install
+  would have failed at `swapping`**, on the first episode, with `allow_cross_device_backup`
+  refusing the copy-and-delete fallback exactly as designed. The M3 swap work was right; the
+  plumbing under it was not.
+  **Fix:** there is no `/backups` volume any more. `VIDCLEANER_BACKUPS_DIR` defaults to
+  `/media/.vidcleaner-backups` — a path *inside* the `/media` mount, so the rename is within one
+  mount — and the Dockerfile's `VOLUME` list, compose, the unraid template (now a variable, not
+  a path mapping) and the README all say why. Verified by rename, then by a real clean.
+- 2026-09-03 — **A second defect the same failure exposed: the actionable message never
+  reached the user.** `preflight` has a good one ("Point /backups at the same share as the
+  library, or set allow_cross_device_backup"), but it only fires when `same_device` *planned* a
+  copy — and `same_device` returned True here, because both mounts report `st_dev` 50. So the
+  rename raised, and what surfaced was a bare `[Errno 18] Invalid cross-device link`. The
+  M3 note that "`st_dev` only plans, never decides" was right; nobody had checked that the
+  fallback path produced a usable error. `_cross_device_message` is now shared by `preflight`
+  and by the execute-time EXDEV branch, with three tests (the refusal, the allowed case
+  reporting the raw cause, and a non-EXDEV failure staying unchanged).
+- 2026-09-03 — **A third: a cleaned file that vanishes was still reported `clean`.** M5 step 5
+  made `persist._item_status` map a `stale` job to a `stale` item — but a vanished source fails
+  *inside* `probe`, so there is no `probe.json` and `persist_run` never runs; `_record`'s
+  no-probe branch only wrote the job row. So the Library page went on claiming a file that was
+  not there. Found by renaming an episode behind the worker. Two tests, one of them the demo's
+  exact sequence.
+- 2026-09-03 — **M5 COMPLETE. Demo recorded.** §11 asks for "fresh unraid install from template
+  to first cleaned episode in < 15 min of setup". Run in the **real container** (`docker compose
+  up -d --build`, real ffmpeg 7.1.5, real faster-whisper `large-v3-turbo` then `medium` +
+  whisperX, uid 99:100, umask 0002, 14 threads) over a 12-second episode synthesized with
+  `say` — real speech, an AC-3 track and an English sidecar — in a `/media`-shaped tree. Sonarr
+  itself is simulated by seeding the title, which M3 already proved against a real HTTP server;
+  everything else is a live API call or a measurement of the file on disk.
+
+  | step | result |
+  |---|---|
+  | `docker compose up -d` → `/api/health` | **7 s** (15 s including the image build); `revision 0003`, ffmpeg 7.1.5 |
+  | startup line | `uid=99 gid=100 umask=0002 threads=14 role=all tz=America/Denver` |
+  | README steps 1–3 (test, webhook token, path mappings) | **< 1 s** of API calls |
+  | `PATCH /library/titles/1 {"enabled": true}` | 1 backfill job, in the same request |
+  | **first cleaned episode** | **92 s**, including the model download — total setup **well under 15 min** |
+  | detections | 4: `shit`, `fuck`, `god damn`, `bullshit`, all `source=both`, 4 review clips |
+  | mute measurement | each word **−90.3 dB** on `a:0` vs **−5.6 to −7.3 dB** on `a:1` |
+  | control window (9.9–11.0 s) | **−6.7 dB on both tracks** — §12's tripwire: not everything went silent |
+  | file layout | `a:0 ac3 Clean eng default=1` / `a:1 ac3 Original`, all five `VIDCLEANER*` tags |
+  | sidecar | `Oh ****, I dropped it.` · `You ******* idiot` · `*** **** it` |
+  | library folder | exactly the `.mkv` and its `.srt`; originals under `/media/.vidcleaner-backups` with the `.ignore` marker |
+  | **audit pass** (`always`) | enqueued at priority 900, `dry_run=True`, `force=False`, `stt_mode=audit`, `model=medium` |
+  | what it read | the **backup's un-redacted sidecar** — 6 cues, **4 hits**; the library's redacted copy would have given 0 |
+  | after it | library file byte-identical, item still `clean`, `last_job_id` = the audit, **evidence job still the clean run** |
+  | its detections | the **union**: the same 4 words, so nothing new and **no promotion enqueued** — the correct common case |
+  | **whitelist mode** | global `suppress` on `shit` + item `allow` → `is_suppressed` False for this item, True for any other, different hashes |
+  | after removing the `allow` and reprocessing | `shit` **−7.3 dB (audible again)**, `fucking` and `bullshit` still −90.3 dB, sidecar un-redacted for that line, streams still exactly `Clean/Original`, one `kept` backup pair |
+  | **per-title profile** | created `Strict`, assigned it: 131 entries / `v1:eac0f9d2…` against the default's 120 / `v1:ad4a003d…` |
+  | **retention** | back-dated the clock → `expired 2 (272 KiB)` → purge reclaimed **273 KiB**; `restored` rows correctly untouched |
+  | reconcile → purge | the two `.cleaned` leftovers adopted as `orphaned`, then reclaimed (**538 KiB**) — closing the loop M3 promised |
+  | **the purge guard** | a row pointing at the library was **refused** ("outside /media/.vidcleaner-backups") and the file survived |
+  | **disk gate** | floor above free space → job stayed `queued`, **0 attempts burned**, `worker.paused` logged once; restoring the floor drained it in 4 s |
+  | **stale path** | renamed the file away → job `stale`, timeline `asked the arr where the file went`, item `stale` (not `clean`, not `pending`) |
+
+  Three bugs were found by running this rather than by review, all fixed above with tests: the
+  cross-device `/backups` mount (which would have broken **every** install), the unusable EXDEV
+  error message, and a vanished file still reported clean.
+
+  **Still owed**, as with M3 and M4 and per this session's agreement: the run on the **unraid box
+  itself** — the CA template installed for real, against the real Sonarr, Radarr and Jellyfin,
+  confirming Jellyfin shows *Clean* as the default track and Infuse plays it. Everything up to
+  the hardware is proven here, and the fresh-install timing (7 s to a UI, 92 s to a cleaned
+  episode) leaves the 15-minute budget almost entirely to typing in URLs and API keys.
 
 ## 15. Working agreement for future sessions
 

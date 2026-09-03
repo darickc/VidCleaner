@@ -767,11 +767,38 @@ def test_a_moved_file_is_re_resolved_and_the_retry_succeeds(worker, library, mon
 
 def test_a_stale_job_leaves_the_item_stale(worker, library) -> None:
     """`pending` means "we intend to clean it" and `sync.backfill_title` does not skip
-    it, so the item would be instantly re-enqueueable against a path that is gone."""
+    it, so the item would be instantly re-enqueueable against a path that is gone.
+
+    Note this runs through the *no-probe* recording branch: a vanished source fails
+    inside `probe`, so there is no `probe.json` and `persist_run` -- which normally
+    owns the item's status -- never runs. Found by the M5 demo, which renamed a file
+    behind the worker and watched an already-`clean` item stay `clean` while the
+    Library page claimed a file that was not there.
+    """
     item_id, source = library
     source.unlink()
     job_id = queue_job(item_id)
 
+    worker.poll_once()
+    with session_scope() as session:
+        session.get(Job, job_id).retry_at = None
+    worker.poll_once()
+
+    assert job_row(job_id).state == "stale"
+    with session_scope() as session:
+        assert session.get(MediaItem, item_id).status == "stale"
+
+
+def test_a_cleaned_file_that_vanishes_stops_being_reported_clean(worker, library) -> None:
+    """The M5 demo's exact sequence: clean it, rename it away, process it again."""
+    item_id, source = library
+    queue_job(item_id)
+    worker.poll_once()
+    with session_scope() as session:
+        assert session.get(MediaItem, item_id).status == "clean"
+
+    source.rename(source.with_name("GONE.mkv"))
+    job_id = queue_job(item_id)
     worker.poll_once()
     with session_scope() as session:
         session.get(Job, job_id).retry_at = None

@@ -493,6 +493,16 @@ class Worker:
                         stage=outcome.stage,
                         error=outcome.error,
                     )
+                    if outcome.state == "stale":
+                        # `persist_run` normally owns the item's status, but a source
+                        # that vanished fails *inside* `probe`, so there is no
+                        # `probe.json` and this branch is the only one that runs. The
+                        # item's recorded path is known-bad; leaving it `clean` shows
+                        # a file the Library page claims is cleaned and is not there.
+                        # Found by the M5 demo, which renamed a file behind the worker.
+                        item = session.get(MediaItem, item_id)
+                        if item is not None:
+                            item.status = "stale"
                 return
 
             detections = (

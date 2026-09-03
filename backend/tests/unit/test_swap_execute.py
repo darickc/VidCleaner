@@ -330,3 +330,54 @@ def test_a_missing_redacted_sidecar_only_warns(world, tmp_path: Path) -> None:
     assert result.sidecars == []
     assert any("missing" in w for w in result.warnings)
     assert original.read_text() == "Oh shit."
+
+
+# ------------------------------------- the split /backups the planner cannot see
+
+
+def test_an_unforeseen_cross_device_backup_says_how_to_fix_it(world) -> None:
+    """The message `preflight` gives must also come out of the *rename*.
+
+    `same_device` only ever **plans** which operation to attempt: on unraid's FUSE
+    shfs, and -- as M5's demo found -- inside Docker, two separate mounts can report
+    the same `st_dev`. So the split is discovered when the rename raises EXDEV, and
+    before this that surfaced as a bare `[Errno 18] Invalid cross-device link`: no
+    mention of `/backups`, of the media share, or of the setting that overrides it.
+    This is the most likely misconfiguration on a fresh install, so both paths have to
+    say the same actionable sentence.
+    """
+    world.fs.fail("backup", OSError(errno.EXDEV, "Invalid cross-device link"))
+
+    with pytest.raises(StageError) as caught:
+        execute(world.plan(), out_path=world.out, fs=world.fs)
+
+    message = str(caught.value)
+    assert "different filesystem" in message
+    assert "Point /backups at the same share" in message
+    assert "allow_cross_device_backup" in message
+    # And the library is untouched: the staged file was renamed back out of the way.
+    assert world.source.read_bytes() == b"o" * SOURCE_SIZE
+    assert world.video_files() == ["S01E01.mkv"]
+
+
+def test_an_allowed_cross_device_backup_reports_the_real_error(world) -> None:
+    """With the setting on, the EXDEV is not a policy refusal any more, so the raw
+    cause is the useful thing to report."""
+    world.fs.fail("backup", OSError(errno.EXDEV, "Invalid cross-device link"))
+
+    with pytest.raises(StageError) as caught:
+        execute(world.plan(), out_path=world.out, fs=world.fs, allow_cross_device_backup=True)
+
+    assert "could not back up" in str(caught.value)
+    assert "Point /backups" not in str(caught.value)
+
+
+def test_a_non_exdev_backup_failure_is_unchanged(world) -> None:
+    """A permission problem must not be described as a filesystem split."""
+    world.fs.fail("backup", OSError(errno.EACCES, "Permission denied"))
+
+    with pytest.raises(StageError) as caught:
+        execute(world.plan(), out_path=world.out, fs=world.fs)
+
+    assert "Permission denied" in str(caught.value)
+    assert "different filesystem" not in str(caught.value)
