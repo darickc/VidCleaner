@@ -360,11 +360,16 @@ def backfill_title(
     session: Session,
     title: Title,
     *,
-    client: Any,
-    pathmap: PathMap,
+    client: Any = None,
+    pathmap: PathMap | None = None,
     settings: AppSettings | None = None,
 ) -> list[str]:
-    """Enqueue every item of an enabled title that is not clean for its own hash."""
+    """Enqueue every item of an enabled title that is not clean for its own hash.
+
+    ``client`` and ``pathmap`` are accepted but unused: the gate is pure database
+    (see the Decision Log) and they are optional so the Clean toggle in the UI can
+    backfill without a reachable arr.
+    """
     if not title.enabled or title.arr_id is None or title.arr_id < 0:
         return []
     settings = settings or load_settings(session)

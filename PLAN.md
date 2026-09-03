@@ -1667,6 +1667,27 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   (`db.session.utcnow`); serialised unqualified, every time in the UI would be silently wrong by the
   viewer's offset. `api/views.utc()` tags without shifting.
 
+- 2026-09-02 — **M4 step 3 (the write API) complete.** `api/actions.py`: the Clean toggle and
+  profile dropdown (`PATCH /library/titles/{id}`), the four buttons (`POST .../actions` with
+  `process|reprocess|dry_run|restore`, on a title or one item), the whitelist flow
+  (`POST /items/{id}/whitelist`, `DELETE /whitelist/{id}`) and the queue rows
+  (`POST /jobs/{id}/cancel`, `/retry`, `PATCH /jobs/{id}` for the reorder). 26 tests.
+- 2026-09-02 — **`reprocess` and `dry-run` set `jobs.force`; `process now` does not.** A user
+  pressing "reprocess" is asking for work on a file we already consider done, so without `force`
+  §4's `already_clean` tag answers instead and the button looks broken. "Process now" is the
+  ordinary path and should still be able to short-circuit.
+- 2026-09-02 — **Enabling a title backfills immediately**, in the same request, rather than leaving
+  it to the hourly sync — an hour of apparently nothing happening is how this gets reported as
+  broken. `backfill_title`'s `client`/`pathmap` parameters are now optional (they were already
+  unused: the gate is pure database), so the toggle works with no reachable arr.
+- 2026-09-02 — **Restoring notifies the arrs and Jellyfin.** Neither the CLI's `restore` nor
+  `persist.restore_item` did, so Jellyfin kept advertising a Clean track that no longer existed —
+  the exact failure §12's "restore original and confirm reversal" is looking for. Best effort, with
+  warnings on the response, exactly like the `refresh` stage.
+- 2026-09-02 — **Retry creates a new job rather than reviving the old row.** `jobs` is the record of
+  what ran (and its work dir may already be pruned), so the failed row stands and a fresh
+  `reprocess` job is queued.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
