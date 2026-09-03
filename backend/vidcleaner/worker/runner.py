@@ -33,7 +33,7 @@ from vidcleaner.db.session import get_engine, session_scope, utcnow
 from vidcleaner.logging import get_logger
 from vidcleaner.pipeline.stages import (
     DRY_RUN_STAGES,
-    M3_STAGES,
+    M4_STAGES,
     StageError,
     build_context,
 )
@@ -161,7 +161,7 @@ class Worker:
         if plan.invalidated:
             timeline.warning("work dir discarded", reason=plan.invalidated)
 
-        stages = list(DRY_RUN_STAGES if plan.spec.dry_run else M3_STAGES)
+        stages = list(DRY_RUN_STAGES if plan.spec.dry_run else M4_STAGES)
         tracker = ProgressTracker(stages, completed=plan.completed)
         if plan.settings.render_parallel > 1:
             # §4 wants render of job N to overlap STT of N+1, which the stage driver
@@ -318,6 +318,7 @@ class Worker:
     def _record(self, ctx, claimed, plan, outcome: JobOutcome, item_id: int, timeline) -> None:
         """Write the job row, detections and backups. Never fails the job."""
         from vidcleaner.pipeline import probe as probe_stage  # noqa: PLC0415
+        from vidcleaner.pipeline import snippets as snippets_stage  # noqa: PLC0415
         from vidcleaner.pipeline import stt as stt_stage  # noqa: PLC0415
         from vidcleaner.pipeline import subtitles as subs_stage  # noqa: PLC0415
         from vidcleaner.pipeline import swap as swap_stage  # noqa: PLC0415
@@ -349,6 +350,7 @@ class Worker:
             transcript = stt_stage.load(ctx.ws)
             subs = subs_stage.load(ctx.ws) if ctx.ws.subs_json.is_file() else None
             swap = swap_stage.load(ctx.ws)
+            clips = snippets_stage.load(ctx.ws)
 
             with session_scope() as session:
                 persist_run(
@@ -356,6 +358,7 @@ class Worker:
                     plan.spec,
                     probe=probe,
                     detections=detections,
+                    snippets=clips,
                     state=outcome.state,
                     stage=outcome.stage,
                     error=outcome.error,

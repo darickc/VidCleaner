@@ -1621,6 +1621,28 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   `vidcleaner titles enable --name "<series>"`, `vidcleaner queue list`, and
   `vidcleaner restore --path <file>`.
 
+- 2026-09-02 — **M4 step 1 (the `snippets` stage) complete.** `pipeline/snippets.py` cuts two
+  5 s AAC clips per detection from `audio.wav` — `orig.m4a` and `clean.m4a`, the latter with
+  only *that* detection's mute applied — plus a `wave.png` waveform with the muted span
+  highlighted, in one ffmpeg invocation per detection. `M4_STAGES = M3_STAGES + snippets` and the
+  worker runs it last. Verified by `tests/integration/test_snippets.py`: `volumedetect` inside the
+  mute window of `clean.m4a` is inaudible while the same window of `orig.m4a` is not, and a control
+  window outside it survives — the same tripwire §12 uses for the render.
+- 2026-09-02 — **Snippets live in `/config/snippets/<job id>/`, not `/work`.** `gc.py` deletes a
+  finished job's whole work dir after 7 days, and the detections those clips illustrate live in the
+  database forever; the review UI is the entire point of M4, so a play button that dies after a week
+  is not acceptable. Cost is a few MB per movie. `detections.snippet_path` therefore stores a path
+  *relative to `Settings.snippets_dir`* (`<job id>/<nnnn>`), so moving the root does not invalidate
+  the rows. Consequences: the stage is **not** a pure function of its `/work` inputs — like `swap`
+  and `refresh` it is idempotent instead — and `Workspace.snippets_dir` is gone.
+- 2026-09-02 — **`snippets` is the third module allowed to cross clocks**, because it cuts from
+  0-based `audio.wav` using container-time detections. `artifacts.py`'s ONE CLOCK note,
+  `pipeline/__init__.py` and CLAUDE.md now say so; the list is `stt` (applies), `render` and
+  `snippets` (undo).
+- 2026-09-02 — **A snippet failure is a warning, never a job failure.** The stage runs after `swap`
+  has committed, so the library file is already correct and refusing the job would strand a good
+  clean. A pruned work dir (no `audio.wav`) records `skipped=["no_audio"]` for the same reason.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

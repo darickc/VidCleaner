@@ -107,6 +107,7 @@ def test_a_queued_job_runs_every_stage_and_lands_done(worker, library) -> None:
         "verify",
         "swap",
         "refresh",
+        "snippets",
     ]
     job = job_row(job_id)
     assert job.state == "done"
@@ -164,7 +165,7 @@ def test_the_big_artifacts_are_pruned_but_the_evidence_stays(worker, library) ->
     assert not ws.graph_txt.exists()
     assert ws.detections_json.is_file(), "M4 reads this back"
     assert ws.job_spec.is_file() and ws.probe_json.is_file()
-    assert ws.snippets_dir.is_dir()
+    assert (worker.settings.snippets_dir / job_id).is_dir(), "review clips are not in /work"
 
 
 def test_an_empty_queue_is_no_work(worker) -> None:

@@ -25,6 +25,7 @@ STAGES = (
     "verify",
     "swap",
     "refresh",
+    "snippets",
 )
 
 REGISTRY = {stage: f"tests.support.stages.{stage}" for stage in STAGES}

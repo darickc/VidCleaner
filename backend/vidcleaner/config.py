@@ -106,6 +106,16 @@ class Settings(BaseSettings):
         return self.db_url or f"sqlite+pysqlite:///{self.config_dir / 'vidcleaner.db'}"
 
     @property
+    def snippets_dir(self) -> Path:
+        """Review clips for the Item page (§6 step 10).
+
+        Under ``/config`` rather than ``/work`` because ``/work`` is reclaimed a week
+        after a job finishes and the detections it illustrates live in the database
+        forever. Derived rather than configurable: it is small (a few MB per movie)
+        and belongs with the database it is keyed to."""
+        return self.config_dir / "snippets"
+
+    @property
     def runs_api(self) -> bool:
         return self.role in ("api", "all")
 

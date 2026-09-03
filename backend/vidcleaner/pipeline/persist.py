@@ -32,7 +32,13 @@ from vidcleaner.db.models import Backup, Job, MediaItem, Title
 from vidcleaner.db.models import Detection as DetectionRow
 from vidcleaner.db.session import utcnow
 from vidcleaner.logging import get_logger
-from vidcleaner.pipeline.artifacts import DetectionResult, JobSpec, ProbeResult, SwapResult
+from vidcleaner.pipeline.artifacts import (
+    DetectionResult,
+    JobSpec,
+    ProbeResult,
+    SnippetsResult,
+    SwapResult,
+)
 
 __all__ = [
     "LOCAL_TITLE_ARR_ID",
@@ -118,6 +124,7 @@ def persist_run(
     *,
     probe: ProbeResult,
     detections: DetectionResult | None,
+    snippets: SnippetsResult | None = None,
     state: str,
     stage: str | None = None,
     error: str | None = None,
@@ -175,9 +182,16 @@ def persist_run(
         job.heartbeat = None
     session.flush()
 
+    # `snippets` is keyed by the detection's index in `detections.json`, which is the
+    # order they are written in here -- the two artifacts are read from one work dir.
+    clips = snippets.by_index() if snippets else {}
     count = 0
-    for detection in detections.detections if detections else []:
+    for index, detection in enumerate(detections.detections if detections else []):
         payload = detection.model_dump(exclude={"suspicious_reason"})
+        clip = clips.get(index)
+        if clip is not None:
+            # Relative to `Settings.snippets_dir`, which the stage keys by job id.
+            payload["snippet_path"] = f"{job.id}/{clip.rel_dir}"
         session.add(DetectionRow(job_id=job.id, media_item_id=item.id, **payload))
         count += 1
 

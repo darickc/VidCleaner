@@ -4,10 +4,11 @@ PLAN.md never mentions this, and it is the failure that would actually take the 
 down: `out.mkv` is source-sized -- 4.57 GiB in the M1 demo -- plus roughly 110 MB per
 hour of `audio.wav`, and §10 puts `/work` on a cache SSD. Twenty episodes fills it.
 
-The directory cannot simply be deleted, because §6 step 10 puts the UI's snippet audio
-in `snippets/` and M4 reads `detections.json` back from here. So a finished job is
-*pruned* -- the big regenerable files go, the small evidence stays -- and whole
-directories are removed only once the job is well past.
+The directory cannot simply be deleted, because M4 reads `detections.json` back from
+here. So a finished job is *pruned* -- the big regenerable files go, the small evidence
+stays -- and whole directories are removed only once the job is well past. The UI's
+snippet audio is not part of that calculus: it lives under `/config` precisely so this
+collector cannot take it (see the Decision Log).
 """
 
 from __future__ import annotations

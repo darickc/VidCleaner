@@ -97,7 +97,7 @@ class Workspace:
         return hash((self.job_id, self.root))
 
     def ensure(self) -> Workspace:
-        for path in (self.root, self.subs_dir, self.redacted_dir, self.snippets_dir):
+        for path in (self.root, self.subs_dir, self.redacted_dir):
             path.mkdir(parents=True, exist_ok=True)
         return self
 
@@ -189,8 +189,8 @@ class Workspace:
         return self.root / "redacted"
 
     @property
-    def snippets_dir(self) -> Path:
-        return self.root / "snippets"
+    def snippets_json(self) -> Path:
+        return self.root / "snippets.json"
 
     # --------------------------------------------------------------- markers
 

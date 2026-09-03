@@ -21,7 +21,7 @@ def test_for_job_uses_the_configured_work_dir(settings):
 
 
 def test_ensure_creates_the_subdirectories(ws):
-    for path in (ws.root, ws.subs_dir, ws.redacted_dir, ws.snippets_dir):
+    for path in (ws.root, ws.subs_dir, ws.redacted_dir):
         assert path.is_dir()
 
 

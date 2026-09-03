@@ -49,6 +49,7 @@ __all__ = [
     "DRY_RUN_STAGES",
     "M1_STAGES",
     "M3_STAGES",
+    "M4_STAGES",
     "PipelineResult",
     "StageContext",
     "StageError",
@@ -75,9 +76,10 @@ M1_STAGES: Final[tuple[str, ...]] = (
     "render",
     "verify",
 )
-#: What a worker job runs: M1's stages plus the two that touch the library and the
-#: outside world. ``snippets`` joins in M4.
+#: M1's stages plus the two that touch the library and the outside world.
 M3_STAGES: Final[tuple[str, ...]] = (*M1_STAGES, "swap", "refresh")
+#: What a worker job runs: everything, ending with the Item page's review clips.
+M4_STAGES: Final[tuple[str, ...]] = (*M3_STAGES, "snippets")
 #: PLAN.md §6: "dry_run jobs stop after detecting".
 DRY_RUN_STAGES: Final[tuple[str, ...]] = M1_STAGES[: M1_STAGES.index("detect") + 1]
 
@@ -93,6 +95,7 @@ _STAGE_MODULES: Final[dict[str, str]] = {
         ("verify", "verify"),
         ("swap", "swap"),
         ("refresh", "refresh"),
+        ("snippets", "snippets"),
     )
 }
 

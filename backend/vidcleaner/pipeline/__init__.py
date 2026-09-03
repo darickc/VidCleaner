@@ -13,6 +13,7 @@ the detector and half of verification testable without ffmpeg or torch.
 
 **One clock.** Every time value written to ``subs.json``, ``transcript.json`` and
 ``detections.json`` is in *source container time*. ``audio.wav`` is 0-based;
-``stt`` is the only place that applies the audio stream's ``start_time``, and
-``render`` is the only place that converts back. See ``artifacts`` for detail.
+``stt`` is the only place that applies the audio stream's ``start_time``;
+``render`` and ``snippets`` are the only two that convert back. See ``artifacts``
+for detail.
 """

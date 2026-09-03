@@ -17,7 +17,9 @@ Every time field in ``probe.json``, ``subs.json``, ``transcript.json`` and
 ``detections.json`` is in **source container time**. ``stt`` is the only module
 that adds ``probe.source_audio.start_time`` (recording exactly what it added in
 ``Transcript.audio_start_offset_s``), and ``render`` is the only module that
-converts back. Nothing else does time arithmetic across clocks.
+converts back. ``snippets`` also cuts from ``audio.wav`` and so subtracts it
+again -- that is the complete list. Nothing else does time arithmetic across
+clocks.
 
 The runtime tripwire is verification's ``volumedetect`` check inside the mute
 windows plus its control-window check outside them: together they catch a sign
@@ -60,6 +62,8 @@ __all__ = [
     "ProfileSnapshot",
     "RedactedSubtitle",
     "RenderResult",
+    "Snippet",
+    "SnippetsResult",
     "SubtitleCue",
     "SubtitleHit",
     "SubtitleSource",
@@ -580,6 +584,41 @@ class RenderResult(Artifact):
     redacted: list[RedactedSubtitle] = Field(default_factory=list)
     tags: dict[str, str] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+
+
+# ------------------------------------------------------------------- snippets
+
+
+class Snippet(BaseModel):
+    """The review clips for one detection (§6 step 10).
+
+    ``rel_dir`` is relative to the snippet root, so a row survives the root moving
+    between deployments; the files inside always have the same names.
+    """
+
+    detection_index: int
+    rel_dir: str
+    word_canonical: str
+    clip_start_s: float
+    """Where the clip begins, in **source container time** -- the same clock as the
+    detection it belongs to."""
+    clip_duration_s: float
+    mute_start_s: float
+    mute_end_s: float
+    files: list[str] = Field(default_factory=list)
+
+
+class SnippetsResult(Artifact):
+    root: str = ""
+    """The snippet root as it was when this was written. Informational: the API
+    resolves ``rel_dir`` against the current deployment's root."""
+    snippets: list[Snippet] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    elapsed_s: float = 0.0
+
+    def by_index(self) -> dict[int, Snippet]:
+        return {s.detection_index: s for s in self.snippets}
 
 
 # --------------------------------------------------------------------- verify
