@@ -281,6 +281,7 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
         build_context,
         build_spec,
         run_pipeline,
+        seed_detections,
     )
     from vidcleaner.settings_store import AppSettings  # noqa: PLC0415
 
@@ -357,14 +358,9 @@ def run_clean(args: argparse.Namespace, *, detect_only: bool = False) -> int:
     if in_place:
         stages.append("swap")
     if args.detections:
-        # Enter at the render stage with a supplied detections file. Also the
-        # mechanism behind "reprocess after a whitelist edit" in M4.
-        DetectionResult.read(args.detections.expanduser()).write(ctx.ws.detections_json)
-        # `probe` and `subtitles` are deliberately NOT marked: render needs
-        # probe.json for the plan and subs.json for the redaction list, and a
-        # fresh work dir has neither. Both are cheap and need no STT.
-        for stage in ("extract", "transcribe", "detect"):
-            ctx.ws.mark_done(stage)
+        # Enter at the render stage with a supplied detections file (also M4's
+        # "reprocess after a whitelist edit"). Shared with the audit promotion.
+        seed_detections(ctx, DetectionResult.read(args.detections.expanduser()))
         stages = [s for s in stages if s in {"probe", "subtitles", "render", "verify"}]
 
     state, error, failed_stage = "done", None, None

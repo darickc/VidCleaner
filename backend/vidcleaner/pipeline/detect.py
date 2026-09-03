@@ -54,7 +54,16 @@ from vidcleaner.pipeline.workspace import Workspace
 
 NAME = "detect"
 
-__all__ = ["NAME", "DetectOptions", "detect", "load", "run", "tokens_from_transcript"]
+__all__ = [
+    "NAME",
+    "DetectOptions",
+    "detect",
+    "finalize",
+    "load",
+    "run",
+    "same_finding",
+    "tokens_from_transcript",
+]
 
 #: §7's fuzzy threshold for choosing the *timing* token. Never used to expand
 #: the word list -- every comparison target is an authored form.
@@ -434,7 +443,7 @@ def _windowed(
     return out, fallbacks
 
 
-def _same_finding(existing: Detection, canonical: str, start: float, end: float) -> bool:
+def same_finding(existing: Detection, canonical: str, start: float, end: float) -> bool:
     """Is this STT match already covered by an existing detection?
 
     Overlap alone would be too aggressive: a subtitle fallback span can be a
@@ -481,7 +490,7 @@ def _stt_only(
             continue
         start = timed[first].start_s or 0.0
         end = timed[last].end_s or 0.0
-        if any(_same_finding(d, match.canonical, start, end) for d in existing):
+        if any(same_finding(d, match.canonical, start, end) for d in existing):
             continue
         probs = [t.prob for t in timed[first : last + 1] if t.prob is not None]
         out.append(
@@ -580,6 +589,71 @@ def _counts(detections: Sequence[Detection]) -> list[WordCount]:
     return rows
 
 
+def finalize(
+    detections: Sequence[Detection],
+    fallbacks: Sequence[TimeRange | None] = (),
+    *,
+    preserved: Sequence[Detection] = (),
+    cues: Sequence[SubtitleCue] | None = None,
+    drift_offset_s: float = 0.0,
+    duration_s: float = 0.0,
+    opts: DetectOptions | None = None,
+    profile_hash: str = "",
+) -> DetectionResult:
+    """Guards, padding, merging, counts, stats -- the tail every detector shares.
+
+    Extracted from :func:`detect` so M5's audit pass builds its **merged** set through
+    exactly this code. `render`'s ``mute_ranges`` and `verify`'s ``volumedetect``
+    windows both come from here, and a second copy of the merge arithmetic is the last
+    place this project wants one.
+
+    ``preserved`` are detections that are **already finished** -- guarded and padded by
+    an earlier run -- and are carried through untouched. Only ``detections`` are guarded
+    and padded. That split is the audit's whole requirement: padding a carried detection
+    a second time would widen its mute by another 200 ms on every pass.
+    """
+    opts = opts or DetectOptions()
+    fallbacks = list(fallbacks) or [None] * len(detections)
+    by_cue = {cue.index: cue for cue in (cues or [])}
+
+    finished: list[Detection] = list(preserved)
+    for detection, fallback in zip(detections, fallbacks, strict=True):
+        cue = (
+            by_cue.get(detection.subtitle_cue_idx)
+            if detection.subtitle_cue_idx is not None
+            else None
+        )
+        guarded = _apply_guards(detection, cue, drift_offset_s, opts, fallback)
+        finished.append(_pad(guarded, duration_s, opts))
+
+    finished.sort(key=lambda d: (d.start_s, d.end_s, d.word_canonical))
+
+    mutable = [d for d in finished if d.muted and not d.whitelisted]
+    ranges = merge_ranges(
+        [TimeRange(start=d.mute_start_s, end=d.mute_end_s) for d in mutable],
+        opts.merge_gap_ms / 1000.0,
+    )
+
+    stats = {
+        "detections": len(finished),
+        "muted": len(mutable),
+        "suspicious": sum(1 for d in finished if d.suspicious),
+        "whitelisted": sum(1 for d in finished if d.whitelisted),
+        "ranges": len(ranges),
+    }
+    for detection in finished:
+        stats[detection.source] = stats.get(detection.source, 0) + 1
+
+    return DetectionResult(
+        profile_hash=profile_hash,
+        detections=finished,
+        mute_ranges=ranges,
+        counts=_counts(finished),
+        total_muted_s=round(sum(r.duration for r in ranges), 3),
+        stats=stats,
+    )
+
+
 def detect(
     *,
     matcher: Matcher,
@@ -619,42 +693,14 @@ def detect(
     detections = [*detections, *extra]
     fallbacks = [*fallbacks, *([None] * len(extra))]
 
-    by_cue = {cue.index: cue for cue in (cues or [])}
-    finished: list[Detection] = []
-    for detection, fallback in zip(detections, fallbacks, strict=True):
-        cue = (
-            by_cue.get(detection.subtitle_cue_idx)
-            if detection.subtitle_cue_idx is not None
-            else None
-        )
-        guarded = _apply_guards(detection, cue, drift_offset_s, opts, fallback)
-        finished.append(_pad(guarded, duration_s, opts))
-
-    finished.sort(key=lambda d: (d.start_s, d.end_s, d.word_canonical))
-
-    mutable = [d for d in finished if d.muted and not d.whitelisted]
-    ranges = merge_ranges(
-        [TimeRange(start=d.mute_start_s, end=d.mute_end_s) for d in mutable],
-        opts.merge_gap_ms / 1000.0,
-    )
-
-    stats = {
-        "detections": len(finished),
-        "muted": len(mutable),
-        "suspicious": sum(1 for d in finished if d.suspicious),
-        "whitelisted": sum(1 for d in finished if d.whitelisted),
-        "ranges": len(ranges),
-    }
-    for detection in finished:
-        stats[detection.source] = stats.get(detection.source, 0) + 1
-
-    return DetectionResult(
+    return finalize(
+        detections,
+        fallbacks,
+        cues=cues,
+        drift_offset_s=drift_offset_s,
+        duration_s=duration_s,
+        opts=opts,
         profile_hash=matcher.profile_hash,
-        detections=finished,
-        mute_ranges=ranges,
-        counts=_counts(finished),
-        total_muted_s=round(sum(r.duration for r in ranges), 3),
-        stats=stats,
     )
 
 

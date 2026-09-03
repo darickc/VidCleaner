@@ -62,6 +62,7 @@ __all__ = [
     "get_stage",
     "run_pipeline",
     "run_stage",
+    "seed_detections",
 ]
 
 log = get_logger(__name__)
@@ -310,6 +311,36 @@ def build_context(
         matcher=matcher,
         on_progress=on_progress or _noop_progress,
     )
+
+
+def seed_detections(
+    ctx: StageContext,
+    result: Any,
+    *,
+    skip_extract: bool = True,
+) -> list[str]:
+    """Enter the pipeline at ``render`` with a detection set already decided.
+
+    Writes ``detections.json`` and marks the stages that produced it done, so
+    ``run_stage``'s marker check skips them. Returns the stage names it marked.
+
+    ``probe`` and ``subtitles`` are deliberately **not** marked: ``render`` needs
+    ``probe.json`` for its plan and ``subs.json`` for the redaction list, a fresh work
+    dir has neither, and both are cheap and need no STT.
+
+    ``skip_extract=False`` keeps ``extract`` in play, which M5's audit promotion needs:
+    ``snippets`` cuts its review clips out of ``audio.wav``, so skipping the extract
+    would leave every detection on the Item page without audio.
+
+    Two callers: ``vidcleaner clean --detections`` (and through it M4's "reprocess after
+    a whitelist edit") and the audit promotion, which has just spent ~30 minutes
+    computing this set and must not compute it again.
+    """
+    result.write(ctx.ws.detections_json)
+    marked = ["extract", "transcribe", "detect"] if skip_extract else ["transcribe", "detect"]
+    for stage in marked:
+        ctx.ws.mark_done(stage)
+    return marked
 
 
 def run_stage(ctx: StageContext, stage: str, *, force: bool = False) -> StageOutcome:
