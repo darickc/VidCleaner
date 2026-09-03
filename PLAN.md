@@ -1643,6 +1643,30 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   has committed, so the library file is already correct and refusing the job would strand a good
   clean. A pruned work dir (no `audio.wav`) records `skipped=["no_audio"]` for the same reason.
 
+- 2026-09-02 — **M4 step 2 (the read API) complete.** `api/views.py` (shared item/job shapes),
+  `api/jobs.py` (`GET /jobs` = running + queued + recent in one poll, `GET /jobs/{id}` with the log
+  tail and stage timings), `api/library.py` (`GET /library/titles` with per-title clean/failed/pending
+  counts computed in SQL, `GET /library/titles/{id}` with §5's word rollup), `api/items.py`
+  (`GET /items/{id}`: the file, its runs, counts, every detection, whitelist in scope, backups) and
+  `api/media.py` (the snippet files). 33 tests in `tests/unit/test_api_read.py` and
+  `test_api_media.py`.
+- 2026-09-02 — **Rollups count only the item's *last* job.** A reprocess writes a second set of
+  detections and the first set stays as the record of what that run did, so summing all of them
+  double-counts every reprocessed episode. Whitelisted hits are excluded everywhere a count is
+  shown, per §5's query.
+- 2026-09-02 — **The queue is three bounded lists, not one.** The Queue page polls every few
+  seconds; a single ordered list would let a backfill of 300 episodes push the running job off the
+  end, and the client would have to bucket by state anyway. `queued` is returned in the *claim*
+  order (priority ascending, then age), because a page that sorts the other way tells the user the
+  opposite of what happens next.
+- 2026-09-02 — **`GET /media/snippets/...` is the only route that maps a URL to a path**, and it has
+  two independent guards: the segments must match what `snippets.py` writes (a job-id-shaped string,
+  a numeric index, one of three fixed file names) and the resolved path must still be inside
+  `Settings.snippets_dir` — which is what catches a symlink planted under the root.
+- 2026-09-02 — **Timestamps leave the API tagged UTC.** The database stores naive UTC
+  (`db.session.utcnow`); serialised unqualified, every time in the UI would be silently wrong by the
+  viewer's offset. `api/views.utc()` tags without shifting.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

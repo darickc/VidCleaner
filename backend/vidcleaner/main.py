@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
 from vidcleaner import __version__
-from vidcleaner.api import health, integrations, webhooks
+from vidcleaner.api import health, integrations, items, jobs, library, media, webhooks
 from vidcleaner.api import settings as settings_api
 from vidcleaner.config import get_settings
 from vidcleaner.db.migrate import upgrade_to_head
@@ -122,6 +122,10 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health.router, prefix="/api")
+    app.include_router(jobs.router, prefix="/api")
+    app.include_router(library.router, prefix="/api")
+    app.include_router(items.router, prefix="/api")
+    app.include_router(media.router, prefix="/api")
     app.include_router(settings_api.router, prefix="/api")
     app.include_router(integrations.router, prefix="/api")
     app.include_router(webhooks.router, prefix="/api")
