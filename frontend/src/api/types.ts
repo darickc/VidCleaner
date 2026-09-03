@@ -209,6 +209,13 @@ export interface TestResponse {
   latency_ms: number;
 }
 
+export interface WebhookSetup {
+  url: string;
+  header_name: string;
+  token: string;
+  note: string;
+}
+
 export interface PathMapping {
   app: string;
   from_prefix: string;

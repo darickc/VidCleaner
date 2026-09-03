@@ -1716,6 +1716,18 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   only fills `snippet` when the files are actually on disk, so a dry run, a resume onto a pruned
   work dir, or a purge degrades to a row with no audio rather than a control that 404s.
 
+- 2026-09-02 — **M4 step 7 (Settings) complete.** §9.6: Sonarr/Radarr/Jellyfin URL + key with a
+  Test button each, the webhook URL and header to paste plus M3's one-click "Add to Sonarr", the
+  path-mapping editor, and the operational settings grouped into STT / detection / output /
+  scheduling. 9 tests.
+- 2026-09-02 — **The settings form PATCHes only the fields that changed.** Secrets read back as
+  `***`, so sending the whole object would overwrite a stored API key with the mask the form was
+  handed — the round-trip `settings_store` already guards against, made impossible from the client
+  side too. The Test button deliberately sends the values *on screen*, so a key can be checked
+  before it is saved.
+- 2026-09-02 — **Field labels are per-integration ("Sonarr URL", not "URL").** Three sections with
+  identically labelled inputs are ambiguous to a screen reader and to a test; found by the test.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

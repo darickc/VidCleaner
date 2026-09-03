@@ -18,6 +18,7 @@ import type {
   TitleDetail,
   TitleList,
   TitlePatchResult,
+  WebhookSetup,
   WhitelistResult,
 } from "./types";
 
@@ -132,6 +133,11 @@ export const patchSettings = (patch: Partial<AppSettings>) =>
 
 export const testIntegration = (app: string, body?: { url?: string; api_key?: string }) =>
   apiPost<TestResponse>(`/integrations/${app}/test`, body ?? {});
+
+export const getWebhookSetup = (app: string) =>
+  apiGet<WebhookSetup>(`/webhooks/setup?app=${app}`);
+export const installWebhook = (app: string) =>
+  apiPost<{ created: boolean; id: number; url: string }>(`/webhooks/install?app=${app}`);
 
 export const getPathMappings = () => apiGet<PathMapping[]>("/path-mappings");
 export const putPathMappings = (mappings: PathMapping[]) =>
