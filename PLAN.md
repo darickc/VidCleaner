@@ -1699,6 +1699,14 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   inventing a tier below the constants table, and leaving room under it means two "run next"
   presses do not silently tie.
 
+- 2026-09-02 — **M4 step 5 (Library and Title) complete.** §9.2: Series/Movies tabs, search, an
+  "only enabled" filter, the Clean toggle and "Sync now". §9.3: the file list with status badges and
+  per-file detection counts, the per-word rollup, and the four buttons (process / reprocess all /
+  dry run / restore originals), the destructive two behind a confirm. 14 tests.
+- 2026-09-02 — **Every action reports what it did, including what it did *not* do.** `ActionResult`
+  carries `skipped` counts keyed by reason, and the page renders them ("2 skipped (already
+  active)"): the failure mode of a button that enqueues nothing is looking like it did nothing.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
