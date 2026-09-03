@@ -21,6 +21,7 @@ from vidcleaner.api.views import (
     ItemRef,
     JobSummary,
     TitleRef,
+    episode_spans,
     evidence_job_ids,
     item_ref,
     job_summary,
@@ -70,6 +71,7 @@ class WhitelistRow(BaseModel):
     scope_id: int | None = None
     canonical_word: str
     context_text: str | None = None
+    mode: str = "suppress"
 
 
 class BackupRow(BaseModel):
@@ -181,7 +183,7 @@ def read_item(item_id: int, db: DbSession, job_id: str | None = None) -> ItemDet
     ).all()
 
     return ItemDetail(
-        item=item_ref(item, title),
+        item=item_ref(item, title, episode_spans(db, [item]).get(item.id, ())),
         title=title_ref(title),
         job=job_summary(chosen, item, title, detections=len(detections)) if chosen else None,
         jobs=[job_summary(run) for run in runs],
@@ -213,6 +215,7 @@ def read_item(item_id: int, db: DbSession, job_id: str | None = None) -> ItemDet
                 scope_id=w.scope_id,
                 canonical_word=w.canonical_word,
                 context_text=w.context_text,
+                mode=w.mode,
             )
             for w in whitelist
         ],

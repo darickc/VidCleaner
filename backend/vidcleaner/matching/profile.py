@@ -224,12 +224,13 @@ def effective_entries(session: Session) -> tuple[WordEntry, ...]:
 def load_whitelist(
     session: Session, *, title_id: int | None = None, item_id: int | None = None
 ) -> tuple[WhitelistRule, ...]:
-    """Global, title- and item-scoped rules, as a **union**.
+    """Global, title- and item-scoped rules that could apply to this item.
 
-    PLAN.md §7 writes "global -> title -> item", which reads like an override
-    chain, but the schema has no negative form: a narrower scope can only add
-    suppression, never restore a word. Recorded in the Decision Log; add a
-    `mode` column in M5 if override semantics are ever wanted.
+    Rules are returned, not resolved: which one *wins* depends on the cue text a
+    context rule is matched against, so `Matcher.is_suppressed` decides per call
+    (see `compiler._resolve_rule`). Since M5's `mode` column this is genuinely
+    §7's "global -> title -> item" override chain rather than the union it had to
+    be while `suppress` was the only expressible outcome.
     """
     rows = session.scalars(select(WhitelistEntry)).all()
     rules: list[WhitelistRule] = []
@@ -249,9 +250,10 @@ def load_whitelist(
                     scope=row.scope,
                     scope_id=row.scope_id,
                     context_text=row.context_text,
+                    mode=row.mode,
                 )
             )
-    return tuple(sorted(rules, key=lambda r: (r.scope, r.scope_id or -1, r.canonical)))
+    return tuple(sorted(rules, key=lambda r: (r.scope, r.scope_id or -1, r.canonical, r.mode)))
 
 
 def profile_spec(

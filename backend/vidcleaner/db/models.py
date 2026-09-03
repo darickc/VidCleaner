@@ -99,6 +99,10 @@ class MediaItem(Base):
         UniqueConstraint("title_id", "season", "episode", name="uq_media_items_title_s_e"),
         Index("ix_media_items_path", "path"),
         Index("ix_media_items_status", "status"),
+        # `ux_media_items_one_movie_per_title` is a *partial* unique index and lives
+        # only in migration 0003: SQLite treats NULLs as distinct, so the constraint
+        # above does not touch movie rows, and the predicate has to exclude the CLI
+        # sentinel title's rows (no `arr_file_id`) or a second local clean would fail.
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -120,6 +124,37 @@ class MediaItem(Base):
     )
 
     title: Mapped[Title] = relationship(back_populates="items")
+    episodes: Mapped[list[MediaItemEpisode]] = relationship(
+        back_populates="item", cascade="all, delete-orphan"
+    )
+
+
+class MediaItemEpisode(Base):
+    """The episodes a multi-episode file covers (§5 cannot represent them).
+
+    One Sonarr ``episodeFile`` can map to several ``episodes[]``, which scalar
+    ``season``/``episode`` columns cannot hold. Those columns keep the **lowest**
+    pair -- M3's stable natural key, which ``uq_media_items_title_s_e`` and every
+    sync path depend on -- and the full set lives here. Purely additive: nothing
+    reads this to identify a file, only to label it.
+    """
+
+    __tablename__ = "media_item_episodes"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_item_id", "season", "episode", name="uq_media_item_episodes_item_s_e"
+        ),
+        Index("ix_media_item_episodes_media_item_id", "media_item_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    media_item_id: Mapped[int] = mapped_column(ForeignKey("media_items.id", ondelete="CASCADE"))
+    season: Mapped[int] = mapped_column(Integer, nullable=False)
+    episode: Mapped[int] = mapped_column(Integer, nullable=False)
+    episode_title: Mapped[str | None] = mapped_column(Text)
+    arr_episode_id: Mapped[int | None] = mapped_column(Integer)
+
+    item: Mapped[MediaItem] = relationship(back_populates="episodes")
 
 
 class Job(Base):
@@ -253,6 +288,17 @@ class WhitelistEntry(Base):
     scope_id: Mapped[int | None] = mapped_column(Integer)
     canonical_word: Mapped[str] = mapped_column(Text, nullable=False)
     context_text: Mapped[str | None] = mapped_column(Text)
+    mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="suppress", server_default="suppress"
+    )
+    """``suppress`` (do not mute) or ``allow`` (mute after all).
+
+    §7 words the scopes as "global -> title -> item", which reads as an override
+    chain, but until M5 the schema had no negative form and a narrower scope could
+    only *add* suppression. ``allow`` is that missing form: an item rule can restore
+    a word a global rule suppressed. Precedence is item > title > global; see
+    ``matching.compiler.Matcher``.
+    """
 
 
 class Backup(Base):

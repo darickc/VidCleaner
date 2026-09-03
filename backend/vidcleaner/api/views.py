@@ -16,18 +16,20 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from vidcleaner.db.models import Job, MediaItem, Title
+from vidcleaner.db.models import Job, MediaItem, MediaItemEpisode, Title
 
 __all__ = [
     "EVIDENCE_STATES",
     "ItemRef",
     "JobSummary",
     "TitleRef",
+    "episode_spans",
     "evidence_job_ids",
+    "episode_code",
     "item_label",
     "item_ref",
     "job_summary",
@@ -80,6 +82,26 @@ def evidence_job_ids(session: Session, items: Sequence[MediaItem]) -> dict[int, 
     return chosen
 
 
+def episode_spans(session: Session, items: Sequence[MediaItem]) -> dict[int, list[tuple[int, int]]]:
+    """item id -> every (season, episode) it covers. One query, not one per row."""
+    ids = [item.id for item in items]
+    if not ids:
+        return {}
+    out: dict[int, list[tuple[int, int]]] = {}
+    rows = session.execute(
+        select(
+            MediaItemEpisode.media_item_id,
+            MediaItemEpisode.season,
+            MediaItemEpisode.episode,
+        )
+        .where(MediaItemEpisode.media_item_id.in_(ids))
+        .order_by(MediaItemEpisode.season, MediaItemEpisode.episode)
+    ).all()
+    for item_id, season, episode in rows:
+        out.setdefault(item_id, []).append((season, episode))
+    return out
+
+
 def utc(value: datetime | None) -> datetime | None:
     """Tag a naive database timestamp as UTC. Never shifts the instant."""
     if value is None:
@@ -87,17 +109,38 @@ def utc(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def item_label(item: MediaItem, title: Title | None) -> str:
+def episode_code(item: MediaItem, spans: Sequence[tuple[int, int]] = ()) -> str:
+    """``S01E01``, or ``S01E01-E02`` for a multi-episode file (M5's join table).
+
+    ``spans`` comes from `media_item_episodes`; with none given this falls back to
+    the scalar columns, which hold the **lowest** pair. Contiguous runs in one season
+    collapse to a range; anything else is listed, because "S01E01-E05" would be a lie
+    about a file holding E01 and E05 only.
+    """
+    if item.season is None or item.episode is None:
+        return ""
+    pairs = sorted(set(spans)) or [(item.season, item.episode)]
+    if len(pairs) == 1:
+        return f"S{pairs[0][0]:02d}E{pairs[0][1]:02d}"
+    seasons = {s for s, _ in pairs}
+    episodes = [e for _, e in pairs]
+    contiguous = len(seasons) == 1 and episodes == list(
+        range(episodes[0], episodes[0] + len(episodes))
+    )
+    if contiguous:
+        return f"S{pairs[0][0]:02d}E{episodes[0]:02d}-E{episodes[-1]:02d}"
+    return "+".join(f"S{s:02d}E{e:02d}" for s, e in pairs)
+
+
+def item_label(item: MediaItem, title: Title | None, spans: Sequence[tuple[int, int]] = ()) -> str:
     """One line naming the file the way the user thinks of it."""
     name = title.title if title is not None else "Unknown"
     if item.kind == "movie":
         year = f" ({title.year})" if title is not None and title.year else ""
         return f"{name}{year}"
-    code = ""
-    if item.season is not None and item.episode is not None:
-        code = f" S{item.season:02d}E{item.episode:02d}"
+    code = episode_code(item, spans)
     suffix = f" — {item.episode_title}" if item.episode_title else ""
-    return f"{name}{code}{suffix}"
+    return f"{name}{' ' + code if code else ''}{suffix}"
 
 
 class TitleRef(BaseModel):
@@ -132,6 +175,9 @@ class ItemRef(BaseModel):
     label: str
     season: int | None = None
     episode: int | None = None
+    episodes: list[list[int]] = Field(default_factory=list)
+    """Every ``[season, episode]`` a multi-episode file covers (M5's join table).
+    Empty for a movie, and for an episode file covering just its scalar pair."""
     episode_title: str | None = None
     path: str
     size: int | None = None
@@ -141,13 +187,16 @@ class ItemRef(BaseModel):
     cleaned_at: datetime | None = None
 
 
-def item_ref(item: MediaItem, title: Title | None) -> ItemRef:
+def item_ref(
+    item: MediaItem, title: Title | None, spans: Sequence[tuple[int, int]] = ()
+) -> ItemRef:
     return ItemRef(
         id=item.id,
         title_id=item.title_id,
         title=title.title if title is not None else "Unknown",
         kind=item.kind,
-        label=item_label(item, title),
+        label=item_label(item, title, spans),
+        episodes=[[s, e] for s, e in sorted(set(spans))] if len(set(spans)) > 1 else [],
         season=item.season,
         episode=item.episode,
         episode_title=item.episode_title,

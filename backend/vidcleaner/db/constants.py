@@ -114,6 +114,12 @@ WORD_CATEGORIES: Final = ("strong", "mild", "religious", "slurs", "sexual")
 # whitelist.scope
 WHITELIST_SCOPES: Final = ("global", "title", "item")
 
+# whitelist.mode -- `allow` is §7's missing negative form (see the model docstring).
+WHITELIST_MODES: Final = ("suppress", "allow")
+
+#: Narrowest wins. Used by `matching.compiler` to resolve a word two rules claim.
+WHITELIST_SCOPE_RANK: Final = {"global": 0, "title": 1, "item": 2}
+
 # backups.state
 BACKUP_STATES: Final = ("kept", "purged", "restored", "orphaned")
 

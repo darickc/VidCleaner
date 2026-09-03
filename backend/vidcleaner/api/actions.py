@@ -86,6 +86,9 @@ class WhitelistRequest(BaseModel):
     canonical_word: str = Field(min_length=1, max_length=200)
     scope: Literal["global", "title", "item"] = "item"
     context_text: str | None = None
+    mode: Literal["suppress", "allow"] = "suppress"
+    """§9.4's button always suppresses; ``allow`` exists so a narrower scope can undo
+    a broader rule (M5). Narrowest scope wins."""
     reprocess: bool = True
     """§9.4's flow is "false positive -> whitelist -> reprocess"; the checkbox exists
     so a user cleaning up a dozen words at once can queue one job at the end."""
@@ -97,6 +100,7 @@ class WhitelistResult(BaseModel):
     scope_id: int | None
     canonical_word: str
     context_text: str | None = None
+    mode: str = "suppress"
     created: bool = True
     job_id: str | None = None
 
@@ -283,6 +287,7 @@ def add_whitelist(
         select(WhitelistEntry).where(
             WhitelistEntry.scope == request.scope,
             WhitelistEntry.canonical_word == word,
+            WhitelistEntry.mode == request.mode,
             WhitelistEntry.scope_id.is_(scope_id)
             if scope_id is None
             else WhitelistEntry.scope_id == scope_id,
@@ -290,7 +295,11 @@ def add_whitelist(
     ).first()
     created = existing is None
     entry = existing or WhitelistEntry(
-        scope=request.scope, scope_id=scope_id, canonical_word=word, context_text=context
+        scope=request.scope,
+        scope_id=scope_id,
+        canonical_word=word,
+        context_text=context,
+        mode=request.mode,
     )
     if created:
         db.add(entry)
@@ -316,6 +325,7 @@ def add_whitelist(
         scope_id=entry.scope_id,
         canonical_word=entry.canonical_word,
         context_text=entry.context_text,
+        mode=entry.mode,
         created=created,
         job_id=job_id,
     )

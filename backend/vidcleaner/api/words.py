@@ -455,6 +455,9 @@ class WhitelistRow(BaseModel):
     scope_id: int | None = None
     canonical_word: str
     context_text: str | None = None
+    mode: str = "suppress"
+    """``suppress`` = do not mute; ``allow`` = mute after all, overriding a broader
+    rule. Narrowest scope wins; see ``matching.compiler._resolve_rule``."""
     label: str | None = None
     """What the scope points at, resolved for display ("Pluribus", "S01E01")."""
 
@@ -464,6 +467,7 @@ class WhitelistCreate(BaseModel):
     scope: Literal["global", "title", "item"] = "global"
     scope_id: int | None = None
     context_text: str | None = None
+    mode: Literal["suppress", "allow"] = "suppress"
 
 
 def _whitelist_labels(session: Session, rows: list[WhitelistEntry]) -> dict[int, str]:
@@ -511,6 +515,7 @@ def list_whitelist(db: DbSession) -> list[WhitelistRow]:
             scope_id=row.scope_id,
             canonical_word=row.canonical_word,
             context_text=row.context_text,
+            mode=row.mode,
             label=labels.get(row.id),
         )
         for row in rows
@@ -544,18 +549,23 @@ def create_whitelist(request: Annotated[WhitelistCreate, Body()], db: DbSession)
         select(WhitelistEntry).where(
             WhitelistEntry.scope == request.scope,
             WhitelistEntry.canonical_word == word,
+            WhitelistEntry.mode == request.mode,
             WhitelistEntry.scope_id.is_(None)
             if scope_id is None
             else WhitelistEntry.scope_id == scope_id,
         )
     ).first()
     row = existing or WhitelistEntry(
-        scope=request.scope, scope_id=scope_id, canonical_word=word, context_text=context
+        scope=request.scope,
+        scope_id=scope_id,
+        canonical_word=word,
+        context_text=context,
+        mode=request.mode,
     )
     if existing is None:
         db.add(row)
         db.flush()
-        _edited("whitelisted", word=word, scope=request.scope, scope_id=scope_id)
+        _edited("whitelisted", word=word, scope=request.scope, scope_id=scope_id, mode=request.mode)
     labels = _whitelist_labels(db, [row])
     return WhitelistRow(
         id=row.id,
@@ -563,5 +573,6 @@ def create_whitelist(request: Annotated[WhitelistCreate, Body()], db: DbSession)
         scope_id=row.scope_id,
         canonical_word=row.canonical_word,
         context_text=row.context_text,
+        mode=row.mode,
         label=labels.get(row.id),
     )

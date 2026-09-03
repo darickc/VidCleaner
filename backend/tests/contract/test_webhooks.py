@@ -14,7 +14,15 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from vidcleaner.db.models import Backup, Job, MediaItem, PathMapping, Title, WebhookEvent
+from vidcleaner.db.models import (
+    Backup,
+    Job,
+    MediaItem,
+    MediaItemEpisode,
+    PathMapping,
+    Title,
+    WebhookEvent,
+)
 from vidcleaner.db.session import session_scope
 from vidcleaner.settings_store import load_settings
 
@@ -268,6 +276,21 @@ def test_a_multi_episode_file_produces_one_job(
         item = session.scalars(select(MediaItem)).one()
         assert (item.season, item.episode) == (1, 1)
         assert item.episode_title == "Part One + Part Two"
+        # M5's join table carries what the scalar columns cannot. Still exactly one
+        # `media_items` row -- the spans label the file, they never identify it.
+        spans = sorted(
+            (r.season, r.episode)
+            for r in session.scalars(
+                select(MediaItemEpisode).where(MediaItemEpisode.media_item_id == item.id)
+            )
+        )
+        assert spans == [(1, 1), (1, 2)]
+
+    # And the Title page reads it as a range rather than as E01 alone.
+    title_id = client.get("/api/library/titles").json()["titles"][0]["id"]
+    row = client.get(f"/api/library/titles/{title_id}").json()["items"][0]
+    assert "S01E01-E02" in row["label"]
+    assert row["episodes"] == [[1, 1], [1, 2]]
 
 
 def test_an_upgrade_supersedes_the_running_job_and_orphans_the_backup(

@@ -35,7 +35,12 @@ from vidcleaner.db.models import Backup, Job, MediaItem, Title, WebhookEvent
 from vidcleaner.db.session import get_db, utcnow
 from vidcleaner.integrations.pathmap import load_path_map
 from vidcleaner.integrations.payloads import parse_webhook
-from vidcleaner.integrations.sync import SyncReport, resolve_item
+from vidcleaner.integrations.sync import (
+    EpisodeSpan,
+    SyncReport,
+    resolve_item,
+    set_episode_spans,
+)
 from vidcleaner.logging import get_logger
 from vidcleaner.settings_store import load_settings
 from vidcleaner.worker.claim import cancel, enqueue
@@ -344,6 +349,14 @@ def _on_download(hook: Any, db: Session, title: Title) -> tuple[str, str | None]
         size=file.size,
         report=SyncReport(),
     )
+    if episodes:
+        # M5's join table: §5's scalar columns hold the lowest pair (above), these
+        # hold every episode the file actually covers, for labelling.
+        set_episode_spans(
+            db,
+            item,
+            [EpisodeSpan(e.season_number, e.episode_number, e.title, e.id) for e in episodes],
+        )
     if item.status == "stale":
         item.status = "pending"
 

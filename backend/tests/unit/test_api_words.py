@@ -324,3 +324,57 @@ def test_a_whitelist_rule_can_be_deleted(client: TestClient) -> None:
     assert all(
         r["id"] != entry_id or r["scope"] != "global" for r in client.get("/api/whitelist").json()
     )
+
+
+# --------------------------------------------------------------- whitelist mode
+
+
+def test_a_rule_can_be_created_in_allow_mode(client: TestClient) -> None:
+    """M5's negative form: `allow` cancels a broader `suppress` (§7's chain)."""
+    title_id, _ = make_series()
+    body = client.post(
+        "/api/whitelist",
+        json={
+            "canonical_word": "god",
+            "scope": "title",
+            "scope_id": title_id,
+            "mode": "allow",
+        },
+    ).json()
+    assert body["mode"] == "allow"
+    assert (
+        next(r for r in client.get("/api/whitelist").json() if r["id"] == body["id"])["mode"]
+        == "allow"
+    )
+
+
+def test_suppress_and_allow_for_one_word_are_separate_rows(client: TestClient) -> None:
+    """They are not duplicates of each other: the pair *is* the override."""
+    title_id, _ = make_series()
+    a = client.post("/api/whitelist", json={"canonical_word": "god"}).json()
+    b = client.post(
+        "/api/whitelist",
+        json={
+            "canonical_word": "god",
+            "scope": "title",
+            "scope_id": title_id,
+            "mode": "allow",
+        },
+    ).json()
+    assert a["id"] != b["id"]
+
+
+def test_an_unknown_mode_is_refused(client: TestClient) -> None:
+    refused = client.post("/api/whitelist", json={"canonical_word": "god", "mode": "sometimes"})
+    assert refused.status_code == 422
+
+
+def test_the_item_page_reports_the_mode_of_a_rule_in_scope(client: TestClient) -> None:
+    """§9.4 has to show it, or "why is this word still muted?" is unanswerable."""
+    _title_id, episodes = make_series()
+    client.post(
+        f"/api/items/{episodes[0]}/whitelist",
+        json={"canonical_word": "god", "scope": "item", "reprocess": False},
+    )
+    rows = client.get(f"/api/items/{episodes[0]}").json()["whitelist"]
+    assert next(r for r in rows if r["canonical_word"] == "god")["mode"] == "suppress"

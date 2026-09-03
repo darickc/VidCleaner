@@ -1835,6 +1835,52 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   a user works through the page. `api/words.py` says so in a comment so the next reader does not
   "fix" it into a fence it never was.
 
+- 2026-09-03 — **M5 step 2 (migration `0003`) complete.** Three additions M1–M4 deferred by
+  name: `whitelist.mode`, the `media_item_episodes` join table, and a real uniqueness
+  constraint for movie rows. Verified: 1665 passed.
+- 2026-09-03 — **`whitelist.mode` finally makes §7's "global → title → item" an override
+  chain.** Until now `load_whitelist` returned a *union* and the schema had no negative form,
+  so a narrower scope could only ever **add** suppression (recorded 2026-09-01). `mode` is
+  `suppress` (do not mute) or `allow` (mute after all). `compiler._resolve_rule` picks a winner
+  among the rules that *apply*, highest key first: (1) narrowest scope, (2) a context rule beats
+  a bare one at the same scope, (3) `allow` beats `suppress` at the same specificity.
+  Rule 3 is a genuine choice: contradictory input, and the tie-break goes to **muting**, because
+  a word wrongly muted appears in §9.4's review UI and is one click from fixed, while a word
+  wrongly *audible* is the failure the user installed VidCleaner to avoid.
+- 2026-09-03 — **`mode` enters `profile_hash` only when it is `allow`.** The obvious
+  implementation — a fifth element on every whitelist tuple — would change the hash of every
+  install that has ever whitelisted anything, so §4's `already_clean` tag would stop matching
+  and the hourly sync would re-enqueue **the entire library**, paying a full STT pass per file
+  to produce byte-identical output. Appending the element only for `allow` means an install
+  with no `allow` rules (every install before M5) hashes exactly as it did before the column
+  existed. Two tests pin both halves: the default is hash-invisible, and flipping a rule to
+  `allow` does change the hash.
+- 2026-09-03 — **The suppression maps became one `canonical → rules` map, resolved per call.**
+  `Matcher._suppress_all`/`_suppress_ctx` could not express precedence. Resolution has to be
+  per call anyway, because whether a *context* rule applies depends on the cue text it is
+  matched against — so `load_whitelist` now returns rules unresolved and `is_suppressed` decides.
+- 2026-09-03 — **`media_item_episodes` closes §5's multi-episode gap, additively.**
+  `media_items.season`/`episode` still hold the **lowest** pair — M3's stable natural key, which
+  `uq_media_items_title_s_e` and every resolve path depend on — and `arr_file_id` is still the
+  real identity. The new rows are **labelling only**: nothing identifies a file by them.
+  `sync.set_episode_spans` writes them from both callers (`_episode_files` now yields the whole
+  group rather than discarding it, and the `Download` webhook already had the full `episodes[]`),
+  and prunes rows the arr no longer reports, so a re-cut file that used to cover E01–E02 stops
+  claiming E02.
+- 2026-09-03 — **`views.episode_code` collapses a contiguous run and lists anything else.**
+  `S01E01-E02` for a double episode, but `S01E01+S01E05` for a file holding only those two —
+  a range there would be a lie about what is in the file. A season boundary is listed for the
+  same reason.
+- 2026-09-03 — **The movie partial unique index needed a third predicate term, and finding out
+  why was the interesting part.** The obvious
+  `(title_id) WHERE season IS NULL AND episode IS NULL` **would have broken `vidcleaner clean`**:
+  `persist.ensure_local_title` hangs *every* CLI run's file off one sentinel title as exactly
+  that shape, keyed on `path`, so the second distinct local file of a session would have
+  violated it. Adding `AND arr_file_id IS NOT NULL` separates the two populations — Radarr
+  movie files always carry the id, `persist.ensure_media_item` never sets it — so the index
+  constrains precisely the rows §5 meant it to. A migration test inserts both shapes and
+  asserts the split.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

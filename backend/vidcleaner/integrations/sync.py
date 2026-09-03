@@ -30,6 +30,7 @@ Two things to keep in mind while reading:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -37,7 +38,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from vidcleaner.db.models import Backup, Detection, Job, MediaItem, Title
+from vidcleaner.db.models import Backup, Detection, Job, MediaItem, MediaItemEpisode, Title
 from vidcleaner.db.session import session_scope, utcnow
 from vidcleaner.integrations.models import Episode, EpisodeFile, poster_url
 from vidcleaner.integrations.pathmap import PathMap
@@ -155,6 +156,59 @@ def sync_titles(
 
 
 # -------------------------------------------------------------------- items
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeSpan:
+    """One episode a file covers. Both arr shapes carry exactly these four fields."""
+
+    season: int
+    episode: int
+    title: str | None = None
+    arr_episode_id: int | None = None
+
+
+def set_episode_spans(session: Session, item: MediaItem, spans: Sequence[EpisodeSpan]) -> int:
+    """Mirror `media_item_episodes` for one file. Returns the number of rows now held.
+
+    §5's scalar `season`/`episode` cannot hold a multi-episode file, and M3 dealt with
+    that by keying on the lowest pair and treating `arr_file_id` as the real identity.
+    That is still true -- these rows are **labelling only**, never identity -- so this
+    is purely additive and a caller that does not know the spans (a `Rename`, a movie)
+    simply does not call it.
+
+    Rows the arr no longer reports are deleted, because a re-cut file that used to
+    cover E01-E02 and now covers only E01 would otherwise keep claiming both.
+    """
+    if item.kind != "episode":
+        return 0
+    wanted = {(s.season, s.episode): s for s in spans}
+    existing = {
+        (row.season, row.episode): row
+        for row in session.scalars(
+            select(MediaItemEpisode).where(MediaItemEpisode.media_item_id == item.id)
+        )
+    }
+    for key, row in existing.items():
+        if key not in wanted:
+            session.delete(row)
+    for key, span in wanted.items():
+        row = existing.get(key)
+        if row is None:
+            session.add(
+                MediaItemEpisode(
+                    media_item_id=item.id,
+                    season=span.season,
+                    episode=span.episode,
+                    episode_title=span.title or None,
+                    arr_episode_id=span.arr_episode_id,
+                )
+            )
+        else:
+            row.episode_title = span.title or row.episode_title
+            row.arr_episode_id = span.arr_episode_id or row.arr_episode_id
+    session.flush()
+    return len(wanted)
 
 
 def resolve_item(
@@ -278,8 +332,9 @@ def sync_title_items(
     live: set[int] = set()
     if title.kind == "series":
         files = {f.id: f for f in client.list_episode_files(title.arr_id)}
-        for episode, file in _episode_files(client.list_episodes(title.arr_id), files):
+        for group, file in _episode_files(client.list_episodes(title.arr_id), files):
             report.items_seen += 1
+            episode = group[0]
             item = resolve_item(
                 session,
                 title,
@@ -291,6 +346,11 @@ def sync_title_items(
                 arr_file_id=file.id,
                 size=file.size,
                 report=report,
+            )
+            set_episode_spans(
+                session,
+                item,
+                [EpisodeSpan(e.season_number, e.episode_number, e.title, e.id) for e in group],
             )
             live.add(item.id)
     else:
@@ -334,13 +394,14 @@ def sync_title_items(
 
 def _episode_files(
     episodes: list[Episode], files: dict[int, EpisodeFile]
-) -> list[tuple[Episode, EpisodeFile]]:
-    """One row per *file*, keyed on the lowest episode that shares it.
+) -> list[tuple[list[Episode], EpisodeFile]]:
+    """One row per *file*, with every episode that shares it, lowest first.
 
     §5 cannot represent a multi-episode file: one `episodeFile` maps to several
-    `episodes[]` under scalar `season`/`episode`. Keying on the lowest episode keeps
-    the natural key stable across syncs and treats `arr_file_id` as the real identity.
-    A join table is an M5 item.
+    `episodes[]` under scalar `season`/`episode`. The scalar columns still take the
+    lowest pair -- that keeps the natural key stable across syncs and `arr_file_id`
+    the real identity -- and since M5 the rest of the group is kept in
+    `media_item_episodes` for labelling (:func:`set_episode_spans`).
     """
     grouped: dict[int, list[Episode]] = {}
     for episode in episodes:
@@ -349,7 +410,7 @@ def _episode_files(
     out = []
     for file_id, group in grouped.items():
         group.sort(key=lambda e: (e.season_number, e.episode_number))
-        out.append((group[0], files[file_id]))
+        out.append((group, files[file_id]))
     return out
 
 

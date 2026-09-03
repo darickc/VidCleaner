@@ -15,7 +15,16 @@ from sqlalchemy import select
 
 from tests.support import fake_arr
 from vidcleaner.config import Settings
-from vidcleaner.db.models import Backup, Detection, Job, MediaItem, Profile, Title, WhitelistEntry
+from vidcleaner.db.models import (
+    Backup,
+    Detection,
+    Job,
+    MediaItem,
+    MediaItemEpisode,
+    Profile,
+    Title,
+    WhitelistEntry,
+)
 from vidcleaner.db.session import session_scope
 from vidcleaner.integrations import Integrations
 from vidcleaner.integrations.pathmap import PathMap, PathRule
@@ -315,7 +324,12 @@ def test_a_vanished_file_makes_the_item_stale_and_orphans_its_backup(sonarr) -> 
 
 
 def test_a_movie_never_accumulates_duplicate_rows(radarr) -> None:
-    """§5's unique constraint does not constrain `(title_id, NULL, NULL)`."""
+    """§5's unique constraint does not constrain `(title_id, NULL, NULL)`.
+
+    Guarded in code since M3 (a movie resolves by `title_id` alone) and, since
+    migration 0003, by `ux_media_items_one_movie_per_title` as well -- so this now
+    proves the code path *and* would fail on the constraint if the code regressed.
+    """
     service, client = radarr
     with session_scope() as session:
         sync_titles(session, client=client, kind="movie", pathmap=MOVIE_MAP)
@@ -545,3 +559,40 @@ def test_json_snapshots_stay_parseable(sonarr) -> None:
         item = session.get(MediaItem, item_id)
         payload = json.loads(session.get(Job, item.last_job_id).profile_snapshot_json)
         assert payload["profile_hash"].startswith("v1:")
+
+
+def test_a_multi_episode_file_gets_one_row_and_two_spans(sonarr) -> None:
+    """§5 cannot represent one `episodeFile` covering several `episodes[]`.
+
+    The scalar columns keep the **lowest** pair -- M3's stable natural key, which
+    `uq_media_items_title_s_e` and every resolve path depend on -- and migration
+    0003's join table carries the rest, for labelling only.
+    """
+    service, client = sonarr
+    episodes = fake_arr.fixture("sonarr_episodes")
+    # Make E01 and E02 share file 501, which is what a double episode looks like.
+    for episode in episodes:
+        if episode["episodeNumber"] in (1, 2):
+            episode["episodeFileId"] = 501
+    service.route("GET", "/api/v3/episode", episodes)
+
+    with session_scope() as session:
+        sync_titles(session, client=client, kind="series", pathmap=TV_MAP)
+    title_id = enable("series", 42)
+    for _ in range(2):  # twice: the spans must not accumulate
+        with session_scope() as session:
+            sync_title_items(session, session.get(Title, title_id), client=client, pathmap=TV_MAP)
+
+    with session_scope() as session:
+        items = session.scalars(
+            select(MediaItem).where(MediaItem.title_id == title_id).order_by(MediaItem.id)
+        ).all()
+        assert len(items) == 1, "one file, one row"
+        assert (items[0].season, items[0].episode) == (1, 1), "keyed on the lowest"
+        spans = sorted(
+            (row.season, row.episode)
+            for row in session.scalars(
+                select(MediaItemEpisode).where(MediaItemEpisode.media_item_id == items[0].id)
+            )
+        )
+        assert spans == [(1, 1), (1, 2)]

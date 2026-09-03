@@ -239,7 +239,7 @@ def test_context_matching_is_folded_and_case_insensitive():
 
 
 def test_title_and_item_scopes_both_suppress():
-    """Scopes are a union: a narrower scope can only add suppression."""
+    """Two rules naming different words: each applies in its own scope."""
     m = matcher(
         whitelist=[
             WhitelistRule("fuck", scope="title", scope_id=7),
@@ -247,6 +247,76 @@ def test_title_and_item_scopes_both_suppress():
         ]
     )
     assert all(m.suppressed(h) for h in m.finditer("fuck and shit"))
+
+
+# ----------------------------------------------------- whitelist mode (M5, §7)
+
+
+def test_a_narrower_allow_overrides_a_broader_suppress():
+    """§7's "global -> title -> item" is an override chain at last.
+
+    Before M5 the schema had no negative form, so `load_whitelist` could only union
+    suppressions and a title could never re-enable a word the global list had let
+    through.
+    """
+    m = matcher(
+        whitelist=[
+            WhitelistRule("god", scope="global"),
+            WhitelistRule("god", scope="item", scope_id=3, mode="allow"),
+        ]
+    )
+    (hit,) = list(m.finditer("god help us"))
+    assert m.suppressed(hit) is False
+
+
+def test_a_broader_allow_does_not_override_a_narrower_suppress():
+    """The chain runs one way: narrowest wins, whichever mode it carries."""
+    m = matcher(
+        whitelist=[
+            WhitelistRule("god", scope="global", mode="allow"),
+            WhitelistRule("god", scope="item", scope_id=3),
+        ]
+    )
+    (hit,) = list(m.finditer("god help us"))
+    assert m.suppressed(hit) is True
+
+
+def test_a_context_rule_beats_a_bare_rule_at_the_same_scope():
+    """More specific wins: "thank god" stays audible, a bare `god` does not."""
+    m = matcher(
+        whitelist=[
+            WhitelistRule("god", scope="global", mode="allow"),
+            WhitelistRule("god", scope="global", context_text="thank god"),
+        ]
+    )
+    (hit,) = list(m.finditer("thank god for that"))
+    assert m.suppressed(hit, "thank god for that") is True
+    (other,) = list(m.finditer("god help us"))
+    assert m.suppressed(other, "god help us") is False
+
+
+def test_allow_wins_a_tie_at_the_same_specificity():
+    """Contradictory input, so the tie-break goes the safe way for this app: mute.
+
+    A word wrongly muted shows up in §9.4's review UI and is one click from fixed; a
+    word wrongly *audible* is the failure the user installed VidCleaner to avoid.
+    """
+    m = matcher(
+        whitelist=[
+            WhitelistRule("god", scope="title", scope_id=7),
+            WhitelistRule("god", scope="title", scope_id=7, mode="allow"),
+        ]
+    )
+    (hit,) = list(m.finditer("god help us"))
+    assert m.suppressed(hit) is False
+
+
+def test_an_allow_rule_alone_changes_nothing():
+    """`allow` only ever cancels a suppression; it never adds a word to the list."""
+    m = matcher(whitelist=[WhitelistRule("fuck", mode="allow")])
+    (hit,) = list(m.finditer("what the fuck"))
+    assert m.suppressed(hit) is False
+    assert list(matcher().finditer("what the fuck"))
 
 
 # --------------------------------------------------------------- profile hash
@@ -290,6 +360,28 @@ def test_profile_hash_changes_for_an_item_scoped_whitelist():
     a = _hash(whitelist=(WhitelistRule("fuck", scope="global"),))
     b = _hash(whitelist=(WhitelistRule("fuck", scope="item", scope_id=3),))
     assert a != b
+
+
+def test_profile_hash_is_unchanged_by_the_new_mode_column_at_its_default():
+    """Migration 0003 must not make every already-cleaned file in the library stale.
+
+    `mode` enters the hash only for `allow`, so an install with no `allow` rules --
+    every install before M5 -- hashes exactly as it did before the column existed.
+    Without this, upgrading would re-enqueue the whole library and pay a full STT
+    pass per file to produce byte-identical output.
+    """
+    entries = select_entries(load_builtin_entries(), ProfileSpec())
+    explicit = profile_hash(ProfileSpec(), entries, (WhitelistRule("fuck", mode="suppress"),))
+    implied = profile_hash(ProfileSpec(), entries, (WhitelistRule("fuck"),))
+    assert explicit == implied
+
+
+def test_profile_hash_changes_when_a_rule_flips_to_allow():
+    """It changes the mute set, so §4's `already_clean` must not answer for it."""
+    entries = select_entries(load_builtin_entries(), ProfileSpec())
+    suppress = profile_hash(ProfileSpec(), entries, (WhitelistRule("fuck"),))
+    allow = profile_hash(ProfileSpec(), entries, (WhitelistRule("fuck", mode="allow"),))
+    assert suppress != allow
 
 
 def test_profile_hash_ignores_the_profile_name():

@@ -29,7 +29,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-from vidcleaner.db.constants import WORD_CATEGORIES
+from vidcleaner.db.constants import WHITELIST_SCOPE_RANK, WORD_CATEGORIES
 from vidcleaner.matching.normalize import (
     CensorCandidate,
     fold,
@@ -142,7 +142,14 @@ class WhitelistRule:
     scope: Literal["global", "title", "item"] = "global"
     scope_id: int | None = None
     context_text: str | None = None
-    """``None`` suppresses the canonical outright within the scope."""
+    """``None`` applies to the canonical outright within the scope."""
+    mode: Literal["suppress", "allow"] = "suppress"
+    """``suppress`` = do not mute (a false positive); ``allow`` = mute after all.
+
+    §7 words the scopes as "global -> title -> item", an override chain, but until
+    M5 there was no negative form and a narrower scope could only *add* suppression.
+    ``allow`` is that form. Resolution is in :func:`_resolve_rule`.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,8 +163,9 @@ class Matcher:
     never_match: frozenset[str]
     _by_group: Mapping[str, WordEntry] = field(repr=False, default_factory=dict)
     _by_canonical: Mapping[str, WordEntry] = field(repr=False, default_factory=dict)
-    _suppress_all: frozenset[str] = field(repr=False, default_factory=frozenset)
-    _suppress_ctx: Mapping[str, tuple[str, ...]] = field(repr=False, default_factory=dict)
+    _rules: Mapping[str, tuple[WhitelistRule, ...]] = field(repr=False, default_factory=dict)
+    """canonical -> every rule naming it, at any scope. Resolved per call, because
+    the answer depends on the cue text a context rule is matched against."""
     by_letter_len: Mapping[tuple[str, int], tuple[CensorCandidate, ...]] = field(
         repr=False, default_factory=dict
     )
@@ -206,14 +214,53 @@ class Matcher:
         The detector needs this: subtitle hits arrive as serialized
         ``SubtitleHit`` records rather than live matches, and whitelisted words
         are deliberately still *matched* so §5's rollup can show and undo them.
+
+        With ``mode`` (M5) this is an override chain rather than a union: of the
+        rules that *apply*, the narrowest wins. See :func:`_resolve_rule`.
         """
-        if canonical in self._suppress_all:
-            return True
-        needles = self._suppress_ctx.get(canonical)
-        if not needles:
+        rules = self._rules.get(canonical)
+        if not rules:
             return False
-        haystack = fold(context)
-        return any(n in haystack for n in needles)
+        return _resolve_rule(rules, context) == "suppress"
+
+
+def _applies(rule: WhitelistRule, haystack: str) -> bool:
+    """A bare rule always applies; a context rule only where its text is present."""
+    if not rule.context_text:
+        return True
+    return fold(rule.context_text) in haystack
+
+
+def _resolve_rule(rules: Sequence[WhitelistRule], context: str) -> str:
+    """Which mode wins for one canonical. Returns ``suppress``, ``allow`` or ``""``.
+
+    ``""`` means no rule applied, so the word mutes normally -- the same outcome as
+    ``allow``, but distinguished because callers log the two differently.
+
+    The ordering, highest wins:
+
+    1. **Narrowest scope** (item > title > global). This is §7's override chain,
+       finally expressible now that ``mode`` exists.
+    2. **A context rule beats a bare one** at the same scope, being more specific.
+    3. **``allow`` beats ``suppress``** at the same specificity. Contradictory input,
+       so the tie-break goes to the safe direction for a profanity filter: mute. A
+       word wrongly muted is visible in the review UI and one click from fixed; a
+       word wrongly *audible* is the failure the user installed this to avoid.
+    """
+    haystack = fold(context)
+    best: tuple[int, int, int] | None = None
+    winner = ""
+    for rule in rules:
+        if not _applies(rule, haystack):
+            continue
+        key = (
+            WHITELIST_SCOPE_RANK.get(rule.scope, 0),
+            1 if rule.context_text else 0,
+            1 if rule.mode == "allow" else 0,
+        )
+        if best is None or key > best:
+            best, winner = key, rule.mode
+    return winner
 
 
 def select_entries(entries: Iterable[WordEntry], profile: ProfileSpec) -> tuple[WordEntry, ...]:
@@ -264,6 +311,11 @@ def profile_hash(
         "entries": sorted(
             [e.canonical, e.category, sorted(e.forms), sorted(e.focus)] for e in entries
         ),
+        # The fifth element is appended only for `allow`, so an install with no
+        # `allow` rules -- i.e. every install before M5 -- hashes exactly as it did
+        # before the column existed. Otherwise adding the column would have made
+        # every already-cleaned file in the library stale and re-enqueued the lot,
+        # paying for a full STT pass each to produce byte-identical output.
         "whitelist": sorted(
             [
                 r.scope,
@@ -271,6 +323,7 @@ def profile_hash(
                 r.canonical,
                 r.context_text or "",
             ]
+            + ([r.mode] if r.mode != "suppress" else [])
             for r in whitelist
         ),
         "never_match": _sha1(sorted(never_match))[:8],
@@ -325,13 +378,9 @@ def build_matcher(
     by_group = {f"w{i}": e for i, e in enumerate(ordered)}
     by_canonical = {e.canonical: e for e in active}
 
-    suppress_all: set[str] = set()
-    suppress_ctx: dict[str, list[str]] = {}
+    rules: dict[str, list[WhitelistRule]] = {}
     for rule in whitelist:
-        if rule.context_text:
-            suppress_ctx.setdefault(rule.canonical, []).append(fold(rule.context_text))
-        else:
-            suppress_all.add(rule.canonical)
+        rules.setdefault(rule.canonical, []).append(rule)
 
     by_letter_len, by_letter = _censor_indexes(active)
     return Matcher(
@@ -342,8 +391,7 @@ def build_matcher(
         never_match=blocked,
         _by_group=by_group,
         _by_canonical=by_canonical,
-        _suppress_all=frozenset(suppress_all),
-        _suppress_ctx={k: tuple(v) for k, v in suppress_ctx.items()},
+        _rules={k: tuple(v) for k, v in rules.items()},
         by_letter_len=by_letter_len,
         by_letter=by_letter,
     )

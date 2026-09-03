@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from vidcleaner.api.views import (
     ItemRef,
     TitleRef,
+    episode_spans,
     evidence_job_ids,
     item_ref,
     title_ref,
@@ -190,11 +191,15 @@ def read_title(title_id: int, db: DbSession) -> TitleDetail:
     ]
 
     profile = db.get(Profile, title.profile_id) if title.profile_id else None
+    spans = episode_spans(db, items)
     return TitleDetail(
         title=_title_row(title, tuple(row[1:])),
         profile_name=profile.name if profile else None,
         items=[
-            ItemRow(**item_ref(item, title).model_dump(), detection_count=per_item.get(item.id, 0))
+            ItemRow(
+                **item_ref(item, title, spans.get(item.id, ())).model_dump(),
+                detection_count=per_item.get(item.id, 0),
+            )
             for item in items
         ],
         counts=counts,
