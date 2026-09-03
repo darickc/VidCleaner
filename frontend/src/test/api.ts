@@ -44,9 +44,14 @@ export function mockApi({ routes, status = 200 }: MockOptions): MockedApi {
       });
       const route = match(path);
       if (route === undefined) {
-        return new Response(JSON.stringify({ detail: `no stub for ${path}` }), { status: 404 });
+        return new Response(JSON.stringify({ detail: `no stub for ${path}` }), {
+          status: 404,
+        });
       }
-      const body = typeof route === "function" ? (route as (i?: RequestInit) => unknown)(init) : route;
+      const body =
+        typeof route === "function"
+          ? (route as (i?: RequestInit) => unknown)(init)
+          : route;
       return new Response(JSON.stringify(body), { status });
     }),
   );
@@ -62,14 +67,39 @@ export const HEALTH = {
   database: { ok: true, error: null, revision: "0001" },
   ffmpeg: { present: false, version: null, path: null },
   disk: {
-    config: { path: "/config", exists: true, free_bytes: 2 ** 30, total_bytes: 2 ** 40 },
-    media: { path: "/media", exists: true, free_bytes: 2 ** 30, total_bytes: 2 ** 40 },
-    backups: { path: "/backups", exists: true, free_bytes: 2 ** 30, total_bytes: 2 ** 40 },
-    work: { path: "/work", exists: true, free_bytes: 2 ** 30, total_bytes: 2 ** 40 },
+    config: {
+      path: "/config",
+      exists: true,
+      free_bytes: 2 ** 30,
+      total_bytes: 2 ** 40,
+    },
+    media: {
+      path: "/media",
+      exists: true,
+      free_bytes: 2 ** 30,
+      total_bytes: 2 ** 40,
+    },
+    backups: {
+      path: "/backups",
+      exists: true,
+      free_bytes: 2 ** 30,
+      total_bytes: 2 ** 40,
+    },
+    work: {
+      path: "/work",
+      exists: true,
+      free_bytes: 2 ** 30,
+      total_bytes: 2 ** 40,
+    },
   },
 };
 
-export const EMPTY_QUEUE = { running: [], queued: [], recent: [], queued_total: 0 };
+export const EMPTY_QUEUE = {
+  running: [],
+  queued: [],
+  recent: [],
+  queued_total: 0,
+};
 
 export function item(overrides: Record<string, unknown> = {}) {
   return {
@@ -161,3 +191,23 @@ export function detection(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+/** §9.6's backups panel. Overrides spread last, as everywhere in this module. */
+export const backups = (overrides: Record<string, unknown> = {}) => ({
+  summary: {
+    total: 3,
+    total_bytes: 6 * 1024 ** 3,
+    by_state: { kept: 3 },
+    bytes_by_state: { kept: 6 * 1024 ** 3 },
+    expired: 1,
+    expired_bytes: 2 * 1024 ** 3,
+    orphaned: 0,
+    orphaned_bytes: 0,
+    retention_days: 30,
+    keeps_forever: false,
+    backups_dir: "/backups",
+    ...((overrides.summary as Record<string, unknown>) ?? {}),
+  },
+  backups: [],
+  ...overrides,
+});

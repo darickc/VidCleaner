@@ -223,4 +223,46 @@ export interface PathMapping {
 }
 
 /** `/api/settings` is a flat bag of scalars; the form knows the field names. */
+/** §9.6's "backup retention + purge". */
+export interface BackupSummary {
+  total: number;
+  total_bytes: number;
+  by_state: Record<string, number>;
+  bytes_by_state: Record<string, number>;
+  expired: number;
+  expired_bytes: number;
+  orphaned: number;
+  orphaned_bytes: number;
+  retention_days: number;
+  keeps_forever: boolean;
+  backups_dir: string;
+}
+
+export interface BackupRow {
+  id: number;
+  media_item_id: number;
+  label: string;
+  original_path: string;
+  backup_path: string;
+  size: number | null;
+  state: string;
+  exists: boolean;
+  created_at: string | null;
+  purge_after: string | null;
+  expired: boolean;
+}
+
+export interface BackupList {
+  summary: BackupSummary;
+  backups: BackupRow[];
+}
+
+export interface PurgeResult {
+  scope: string;
+  purged: number;
+  freed_bytes: number;
+  missing: number;
+  warnings: string[];
+}
+
 export type AppSettings = Record<string, string | number | boolean>;

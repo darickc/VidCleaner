@@ -9,10 +9,12 @@ import type {
   ActionName,
   ActionResult,
   AppSettings,
+  BackupList,
   Health,
   ItemDetail,
   JobDetail,
   PathMapping,
+  PurgeResult,
   QueueView,
   TestResponse,
   TitleDetail,
@@ -138,6 +140,11 @@ export const getWebhookSetup = (app: string) =>
   apiGet<WebhookSetup>(`/webhooks/setup?app=${app}`);
 export const installWebhook = (app: string) =>
   apiPost<{ created: boolean; id: number; url: string }>(`/webhooks/install?app=${app}`);
+
+export const getBackups = (state?: string) =>
+  apiGet<BackupList>(state ? `/backups?state=${state}` : "/backups");
+export const purgeBackups = (scope: "expired" | "orphaned") =>
+  apiPost<PurgeResult>("/backups/purge", { scope });
 
 export const getPathMappings = () => apiGet<PathMapping[]>("/path-mappings");
 export const putPathMappings = (mappings: PathMapping[]) =>

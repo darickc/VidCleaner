@@ -676,3 +676,58 @@ def test_a_failed_restore_only_warns_for_a_user_reprocess(worker, library, monke
 
     assert job_row(job_id).state == "done"
     assert any("could not restore" in msg for msg in timeline(job_id))
+
+
+# ------------------------------------------------------------ the disk gate (M5)
+
+
+def test_a_full_work_volume_pauses_the_queue_instead_of_failing_jobs(
+    worker, library, monkeypatch
+) -> None:
+    """`_after_probe`'s per-job guard is right but arrives too late to be kind: a full
+    `/work` would fail three hundred backfill jobs one at a time, burning an attempt
+    each and filling §9.1's Queue page with identical failures. The honest answer is
+    "the disk is full, nothing can run"."""
+    import shutil
+
+    item_id, _ = library
+    job_id = queue_job(item_id)
+
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda _p: type("U", (), {"free": 1 << 20, "total": 1 << 30})()
+    )
+    assert worker.poll_once() is False, "nothing was claimed"
+
+    job = job_row(job_id)
+    assert job.state == "queued", "the queue survives intact"
+    assert job.attempts == 0, "and no attempt was burned"
+
+
+def test_the_queue_drains_once_space_appears(worker, library, monkeypatch) -> None:
+    import shutil
+
+    item_id, _ = library
+    queue_job(item_id)
+    real = shutil.disk_usage
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda _p: type("U", (), {"free": 1 << 20, "total": 1 << 30})()
+    )
+    assert worker.poll_once() is False
+
+    monkeypatch.setattr(shutil, "disk_usage", real)
+    assert worker.poll_once() is True
+
+
+def test_the_gate_can_be_turned_off(worker, library, monkeypatch) -> None:
+    import shutil
+
+    from vidcleaner.settings_store import save_settings
+
+    item_id, _ = library
+    queue_job(item_id)
+    with session_scope() as session:
+        save_settings(session, {"min_free_gib": 0})
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda _p: type("U", (), {"free": 0, "total": 1 << 30})()
+    )
+    assert worker.poll_once() is True, "0 disables the gate"

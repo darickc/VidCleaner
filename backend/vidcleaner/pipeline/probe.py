@@ -268,7 +268,14 @@ def wait_for_stable(
 
 
 def check_free_space(probe: ProbeResult, work_dir: Path, backups_dir: Path | None) -> list[str]:
-    """§6.1: /work needs 1.3x the source, the backup volume 1.0x."""
+    """§6.1: /work needs 1.3x the source, the backup volume 1.0x.
+
+    An unreadable volume is reported as a **problem**, not swallowed. It used to be
+    ignored, which meant an unmounted `/work` or `/backups` passed the guard silently
+    and the job failed several stages later with something that looked nothing like
+    "your volume is not mounted" -- the single most likely misconfiguration on a fresh
+    install.
+    """
     problems: list[str] = []
     needed_work = int(probe.size * WORK_HEADROOM)
     try:
@@ -277,14 +284,14 @@ def check_free_space(probe: ProbeResult, work_dir: Path, backups_dir: Path | Non
                 f"/work has less than {needed_work / 2**30:.1f} GiB free "
                 f"(needs {WORK_HEADROOM:g}x the source)"
             )
-    except OSError:
-        pass
+    except OSError as exc:
+        problems.append(f"cannot read free space on {work_dir} ({exc.strerror or exc})")
     if backups_dir is not None:
         try:
             if shutil.disk_usage(backups_dir).free < probe.size:
                 problems.append(f"backups volume has less than {probe.size / 2**30:.1f} GiB free")
-        except OSError:
-            pass
+        except OSError as exc:
+            problems.append(f"cannot read free space on {backups_dir} ({exc.strerror or exc})")
     return problems
 
 

@@ -1998,6 +1998,51 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   dead path. Now `stale` maps to `stale`, which is what §5/§6 already use and what backfill
   skips.
 
+- 2026-09-03 — **M5 step 4 (retention, purge and disk guards) complete.** `worker/purge.py`,
+  `api/backups.py`, a `retention` scheduler task, a queue-level disk gate, and §9.6's Backups
+  panel. Verified: 1748 passed; 52 frontend tests; build clean.
+- 2026-09-03 — **`backups.purge_after` had three writers and no readers.** Every swap, upgrade
+  and reconcile filled the column, §9.6 has offered an editable retention number since M0, and
+  nothing ever deleted a byte — so §13's stated mitigation for "backups double storage" did not
+  exist. It does now, and it is the **only code in the project that deletes a file the user
+  might still want**, which is why it is written narrowly.
+- 2026-09-03 — **The purge acts on rows, never on a directory walk, and `reconcile_backups`
+  therefore has to run first.** A crash between the rename and the SQLite commit leaves a file
+  in `/backups` that no row knows about (recorded in M3), and a row-driven purge can never see
+  it. The `retention` task reconciles, then purges, in that order — which is also what finally
+  gives `reconcile_backups` a caller outside the CLI.
+- 2026-09-03 — **Four refusals, each with a test.** A `backup_path` that resolves outside
+  `backups_dir` is refused (a row is *data*; one pointing into the library must cost nothing,
+  and `resolve()` is what makes a planted symlink fail rather than be followed); a `restored`
+  row is not purgeable (its file went back into the library); a **NULL `purge_after` is never
+  purged**, which is how `backup_retention_days = 0` expresses "keep forever" and must not be
+  reinterpretable as "expired long ago"; and a missing file is reconciled to `purged` rather
+  than raised, exactly as `reconcile_backups` already models.
+- 2026-09-03 — **Turning retention off has to be re-checked at purge time, not only at write
+  time.** Rows written while the setting was non-zero keep their date, so a purge that only
+  looked at `purge_after` would go on deleting after the user set the number to 0. The
+  scheduler task checks the live setting; a test asserts the file survives.
+- 2026-09-03 — **`scope="orphaned"` ignores the clock**, because §13's orphans (an upgrade's or
+  a delete's leftover) back a file that is not in the library any more and nothing will ever
+  restore them — waiting thirty days to reclaim that space serves nobody. It is a separate,
+  separately-confirmed button for exactly that reason.
+- 2026-09-03 — **A queue-level disk gate, because the per-job guard arrives too late to be
+  kind.** `_after_probe`'s `check_free_space` is correct but per job: a full `/work` would fail
+  three hundred backfill jobs one at a time, burn an attempt on each and fill §9.1's Queue page
+  with identical failures, when the honest answer is "the disk is full, nothing can run".
+  `Worker.poll_once` now checks `min_free_gib` (new setting, default 5) **before** claiming and
+  pauses instead, logging once on the way in and once on the way out; the queue survives intact
+  and drains when space appears. 0 disables it.
+- 2026-09-03 — **`check_free_space` no longer swallows `OSError`.** An unmounted `/work` or
+  `/backups` passed the guard silently and the job then failed several stages later with
+  something that looked nothing like "your volume is not mounted" — the most likely
+  misconfiguration on a fresh install, and precisely what §11's M5 demo is about.
+- 2026-09-03 — **§9.6's Backups panel leads with the cost, not the mechanism.** Totals, what
+  would be reclaimed, and where the originals live; both purge buttons behind a confirm that
+  names the count and the size, because the action is irreversible and makes that episode's
+  clean permanent. A refusal comes back as a warning on the response rather than an error, so a
+  misconfigured `backup_path` is visible instead of silently meaning "nothing to purge".
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

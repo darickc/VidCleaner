@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from vidcleaner import __version__
 from vidcleaner.api import (
     actions,
+    backups,
     health,
     integrations,
     items,
@@ -137,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(items.router, prefix="/api")
     app.include_router(media.router, prefix="/api")
     app.include_router(actions.router, prefix="/api")
+    app.include_router(backups.router, prefix="/api")
     app.include_router(words.router, prefix="/api")
     app.include_router(settings_api.router, prefix="/api")
     app.include_router(integrations.router, prefix="/api")

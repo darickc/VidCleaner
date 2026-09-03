@@ -38,6 +38,7 @@ log = get_logger(__name__)
 
 RECOVER_INTERVAL_S: Final = 30.0
 GC_INTERVAL_S: Final = 3600.0
+RETENTION_INTERVAL_S: Final = 3600.0
 AUDIT_INTERVAL_S: Final = 300.0
 #: How many recent audits `promote_audits` looks at per tick.
 AUDIT_PROMOTE_SCAN: Final = 50
@@ -60,6 +61,29 @@ def _recover_stale(_settings: Settings) -> None:
 def _collect(settings: Settings) -> None:
     with session_scope() as session:
         collect_work_dirs(session, settings)
+
+
+def _retention(settings: Settings) -> None:
+    """§13's retention, in the order that makes it safe.
+
+    `reconcile_backups` runs **first** so a file whose row was lost to a crash between
+    the rename and the commit is adopted (as `orphaned`, with a clock) before anything
+    deletes by row -- otherwise that file would sit in `/backups` forever, since the
+    purge deliberately never walks the directory. It was CLI-only until now.
+    """
+    from vidcleaner.pipeline.persist import reconcile_backups  # noqa: PLC0415
+    from vidcleaner.settings_store import load_settings  # noqa: PLC0415
+    from vidcleaner.worker.purge import purge_backups  # noqa: PLC0415
+
+    with session_scope() as session:
+        days = load_settings(session).backup_retention_days
+        reconcile_backups(session, settings.backups_dir, retention_days=days)
+        if days:
+            # 0 means keep forever, and `purge_after` is NULL for those rows -- but
+            # rows written while the setting was non-zero still carry a date, so the
+            # switch has to be checked here too or turning retention off would not
+            # actually stop the deletions.
+            purge_backups(session, settings)
 
 
 def enqueue_audit_pass(settings: Settings | None = None) -> list[str]:
@@ -313,6 +337,7 @@ class Scheduler:
                 PeriodicTask("recover_stale", RECOVER_INTERVAL_S, _recover_stale),
                 PeriodicTask("audit", AUDIT_INTERVAL_S, _audit),
                 PeriodicTask("gc_work_dirs", GC_INTERVAL_S, _collect),
+                PeriodicTask("retention", RETENTION_INTERVAL_S, _retention),
             )
 
     def tick(self, only: tuple[str, ...] | None = None) -> list[str]:

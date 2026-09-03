@@ -81,6 +81,8 @@ class Worker:
         drive a real job without downloading a 2 GB model."""
         self.id = worker_id()
         self._stop = threading.Event()
+        self._paused_reason: str | None = None
+        """Set while the disk gate is holding the queue, so the log says it once."""
         self.scheduler = Scheduler(self.settings)
         _register_swap_reconciler()
 
@@ -100,6 +102,22 @@ class Worker:
 
     def poll_once(self) -> bool:
         """Claim and run one job. Returns True if work was done."""
+        paused = self._disk_pause()
+        if paused is not None:
+            # Deliberately before `claim_next`: the per-job guard in `_after_probe`
+            # is right but arrives too late to be kind. A full `/work` would fail
+            # three hundred backfill jobs one at a time, burning an attempt each and
+            # filling §9.1's Queue page with identical failures, when the honest
+            # answer is "the disk is full, nothing can run". This pauses instead, so
+            # the queue survives intact and drains once space appears.
+            if paused != self._paused_reason:
+                log.warning("worker.paused", reason=paused)
+                self._paused_reason = paused
+            return False
+        if self._paused_reason is not None:
+            log.info("worker.resumed", after=self._paused_reason)
+            self._paused_reason = None
+
         claimed = queue.claim_next(worker_id=self.id, settings=self.settings)
         if claimed is None:
             return False
@@ -114,6 +132,27 @@ class Worker:
             with session_scope() as session:
                 queue.release(session, job_id=claimed.job_id, error="worker error")
         return True
+
+    def _disk_pause(self) -> str | None:
+        """Why the queue should not claim anything right now, if it should not."""
+        import shutil  # noqa: PLC0415
+
+        from vidcleaner.settings_store import load_settings  # noqa: PLC0415
+
+        try:
+            with session_scope() as session:
+                floor_gib = load_settings(session).min_free_gib
+        except Exception:  # noqa: BLE001 - a settings read must never stop the worker
+            return None
+        if floor_gib <= 0:
+            return None
+        try:
+            free = shutil.disk_usage(self.settings.work_dir).free
+        except OSError as exc:
+            return f"cannot read free space on {self.settings.work_dir} ({exc.strerror or exc})"
+        if free < floor_gib * 2**30:
+            return f"/work has {free / 2**30:.1f} GiB free, below the {floor_gib:g} GiB floor"
+        return None
 
     def run(self) -> None:
         self.check_database()

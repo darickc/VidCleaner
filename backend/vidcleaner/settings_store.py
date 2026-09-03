@@ -121,6 +121,14 @@ class AppSettings(BaseModel):
     )
     render_parallel: int = Field(default=1, ge=1, le=4)
     backup_retention_days: int = Field(default=30, ge=0)
+    min_free_gib: float = Field(
+        default=5.0,
+        ge=0.0,
+        description=(
+            "Pause the queue while /work has less than this free, instead of failing "
+            "each job in turn at `probe`. 0 disables the gate."
+        ),
+    )
 
 
 SECRET_FIELDS: frozenset[str] = frozenset(
