@@ -1707,6 +1707,15 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   carries `skipped` counts keyed by reason, and the page renders them ("2 skipped (already
   active)"): the failure mode of a button that enqueues nothing is looking like it did nothing.
 
+- 2026-09-02 — **M4 step 6 (the Item page) complete.** §9.4: the run summary (mode, model,
+  subtitle source, status, timings), the per-word counts, and every detection as a row that expands
+  into its waveform and both players — Original and Clean — with the whitelist control (this file /
+  this title / everywhere) on the row itself rather than in a separate form the word must be typed
+  into again. Earlier runs are selectable via `?job=`. 12 tests.
+- 2026-09-02 — **A detection with no clips says so instead of rendering a dead player.** The API
+  only fills `snippet` when the files are actually on disk, so a dry run, a resume onto a pruned
+  work dir, or a purge degrades to a row with no audio rather than a control that 404s.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
