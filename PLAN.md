@@ -202,7 +202,7 @@ VidCleaner/
 - [x] **M1 — Core clean via CLI**: word lists + matcher (tests), probe/extract/subtitles/windowed STT (faster-whisper + whisperX)/detect/render/verify on a local file; `vidcleaner clean <file> --dry-run|--out`; codec policy; subtitle redaction. *Demo: before/after MKV with Clean/Original tracks plays in Infuse; word counts printed.*
 - [x] **M2 — Full-file STT + drift + robustness**: full mode (**VAD removed — see the Decision Log; it was inert in windowed mode and cost 5.5x the recall in full mode**), drift check, censored-token handling, suspicious guards, resumable stage markers, eval set with precision/recall in `docs/eval.md`. *Demo: movie with no subs processed overnight; timing error report.*
 - [x] **M3 — Worker, swap, integrations**: job queue/claiming, backup/swap/rollback, Sonarr/Radarr clients + sync + backfill, webhook receivers with dedupe/upgrade handling, arr rescan + Jellyfin refresh + mapping check. *Demo: enable a series → existing episodes cleaned; Sonarr imports a new episode → auto-cleaned → Jellyfin shows Clean default.*
-- [ ] **M4 — UI**: Queue, Library (toggle/profile), Title, Item (counts, detections, snippet players, whitelist + reprocess, restore original), Settings with Test buttons and webhook setup. *Demo: mark a false positive, reprocess, word audible again.*
+- [x] **M4 — UI**: Queue, Library (toggle/profile), Title, Item (counts, detections, snippet players, whitelist + reprocess, restore original), Settings with Test buttons and webhook setup. *Demo: mark a false positive, reprocess, word audible again.*
 - [ ] **M5 — Profiles, audit pass, retention, hardening**: Words & Profiles page, per-title override, audit jobs, backup retention/purge, disk guards, stale-path handling, PUID/PGID, unraid template, README, thread/model tuning. *Demo: fresh unraid install from template to first cleaned episode in < 15 min of setup.*
 
 Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU encoder, extra EAC3 downmix track, Bazarr integration to fetch subs before STT, notifications (Discord/Pushover), multi-language word lists.
@@ -1749,6 +1749,46 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   `force=False`, so it reaches `probe`, sees §4's tag and ends `already_clean` without transcribing.
   §6's "re-render from the backup original if new hits appear" needs a detect-then-decide path that
   is not M4's business; the M4 demo runs with `audit_pass=off`.
+
+- 2026-09-02 — **The restored redacted sidecar was left in the library folder** as
+  `<name>.srt.cleaned`. `restore_item` gave the *video* a `displace_to` under `/backups` ("rather
+  than staying in the library as a source-sized file nothing will ever clean up") and forgot to give
+  the sidecar one. Same rule now applies to both. Also found by the demo.
+- 2026-09-02 — **M4 COMPLETE. Demo recorded.** §11 asks for "mark a false positive, reprocess, word
+  audible again". Run against the **real stack** — `uvicorn` on :8599, a separate worker process,
+  real ffmpeg 9.0, real faster-whisper `large-v3-turbo` + whisperX — over a generated episode in a
+  `/media`-shaped tree, driven entirely through the HTTP API the UI calls. `audit_pass=off` (it is
+  M5's). Every step below is an API call or a measurement of the file on disk:
+
+  | step | result |
+  |---|---|
+  | `GET /api/library/titles?kind=series` | 1 title, `enabled=false`, `0/1 clean` |
+  | `PATCH /api/library/titles/1 {"enabled": true}` | `queued: [1 job]` — §2's backfill, in the same request |
+  | `GET /api/jobs` | `queued` shows *Demo Show S01E01 — Pilot*, trigger `backfill`, priority 200; then `running` at stage `snippets`, 97% |
+  | worker | `done` in 3m14s (windowed, `large-v3-turbo`, `sidecar_untagged` subs); **5 detections, 5 muted** |
+  | `GET /api/items/1` | counts `shit×2, bullshit, fuck, god damn`; five detection rows each with a `snippet` URL |
+  | library file | `a:0 Clean · a:1 Original · a:2 Commentary`, both subtitle streams intact |
+  | clean track at cue 1 | **−91.0 dB** (muted) |
+  | `GET /api/media/snippets/<job>/0000/{orig,clean}.m4a`, `wave.png` | `200 audio/mp4` 34.7 kB / 26.4 kB, `200 image/png` 735 B |
+  | those two clips, inside the mute | `orig −32.0 dB`, `clean −91.0 dB` — the review pair a user actually hears |
+  | `.../0000/../../../vidcleaner.db` | **404** |
+  | `POST /api/items/1/whitelist {"canonical_word":"shit","scope":"item","reprocess":true}` | entry created, reprocess job queued |
+  | worker | **restored the original before re-cleaning** (video + 1 sidecar), then `done` in 12 s |
+  | `GET /api/items/1` | counts `bullshit, fuck, god damn`; both `shit` rows now `muted=false, whitelisted=true` |
+  | **clean track at cue 1** | **−28.9 dB — the word is audible again** |
+  | clean track at "fucking" | −91.0 dB, still muted |
+  | sidecar | `Oh shit, that hurt.` — un-redacted along with the audio |
+  | streams after the reprocess | still exactly `Clean / Original / Commentary` — no stacking |
+  | library folder | exactly the `.mkv` and its `.srt`; one `kept` backup pair in `/backups` |
+  | `GET /api/library/titles/1` | `1/1 clean`, rollup `bullshit, fuck, god damn`, item detection count 3 |
+
+  Two bugs were found by running this rather than by review (both fixed above, with tests): the
+  reprocess reading our own output, and the audit pass blanking the Item page. A third, cosmetic,
+  was the redacted sidecar left in the library folder.
+
+  **Still owed** (as with M3): the browser half — the SPA is exercised by 46 vitest tests against a
+  path-keyed fetch stub and `npm run build` is clean, but nobody has yet clicked through it against
+  a live backend on the unraid box.
 
 ## 15. Working agreement for future sessions
 

@@ -367,12 +367,18 @@ def restore_item(session: Session, media_item_id: int, *, fs: Any = None) -> Res
     restored_sidecars = 0
     warnings = list(result.warnings)
     for backup in sidecars:
+        original = Path(backup.original_path)
         try:
             restore_backup(
                 RestorePlan(
                     backup_path=Path(backup.backup_path),
-                    target_path=Path(backup.original_path),
-                    displace_path=Path(backup.original_path),
+                    target_path=original,
+                    displace_path=original,
+                    # Same reasoning as the video above: the redacted copy goes to
+                    # `/backups`, not back into the library as `<name>.srt.cleaned`
+                    # for nobody to ever clean up. Found by the M4 demo.
+                    # (`_free_name` appends the `.cleaned` suffix itself.)
+                    displace_to=Path(backup.backup_path).with_name(original.name),
                 ),
                 fs=fs,
             )

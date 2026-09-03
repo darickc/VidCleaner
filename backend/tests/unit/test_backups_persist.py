@@ -222,6 +222,10 @@ def test_restore_brings_the_sidecar_back_too(library) -> None:
 
     assert report.sidecars == 1
     assert sidecar.read_text() == "Oh shit."
+    # The redacted copy is displaced to /backups, not left in the library folder as
+    # `S01E01.srt.cleaned` for nobody to clean up (the same rule as the video).
+    assert not list(library.folder.glob("*.cleaned"))
+    assert (library.backups / "S01E01.srt.cleaned").read_text() == "Oh ****."
 
 
 def test_restoring_without_a_backup_is_an_error(library) -> None:
