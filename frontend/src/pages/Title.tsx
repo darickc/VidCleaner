@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getTitle, patchTitle, titleAction } from "../api/client";
+import { getProfiles, getTitle, patchTitle, titleAction } from "../api/client";
 import type { ActionName, ActionResult } from "../api/types";
 import { Page } from "../components/Page";
 import {
@@ -71,6 +71,17 @@ export function TitlePage() {
     onSuccess: refresh,
   });
 
+  // §2's per-title profile override. The backend has honoured `titles.profile_id` since
+  // M3 -- `worker/spec.plan_job` passes it into `matcher_for` and the hourly sync
+  // compares the resulting hash -- but nothing listed the profiles, so there was no way
+  // to set it.
+  const profiles = useQuery({ queryKey: ["profiles"], queryFn: getProfiles });
+  const setProfile = useMutation({
+    mutationFn: (value: string) =>
+      patchTitle(id, value === "" ? { clear_profile: true } : { profile_id: Number(value) }),
+    onSuccess: refresh,
+  });
+
   if (isError) return <Page title="Title">Could not load this title.</Page>;
   if (isPending || !data) return <Page title="Title">Loading…</Page>;
 
@@ -94,6 +105,35 @@ export function TitlePage() {
             />
             Clean this title
           </label>
+          {/* Only once there is a real choice: a dropdown whose sole option is "Default"
+              is a control that cannot do anything. The Words page points here instead,
+              once a profile exists. */}
+          {(profiles.data?.length ?? 0) > 1 && (
+            <label className="mr-3 flex items-center gap-2 text-sm text-slate-400">
+              Profile
+              <select
+                aria-label={`Profile for ${title.title}`}
+                className="rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-sm outline-none focus:border-slate-600"
+                value={title.profile_id ?? ""}
+                disabled={setProfile.isPending}
+                onChange={(event) => setProfile.mutate(event.target.value)}
+              >
+                <option value="">
+                  Default
+                  {profiles.data?.find((p) => p.is_default)
+                    ? ` (${profiles.data.find((p) => p.is_default)?.name})`
+                    : ""}
+                </option>
+                {profiles.data
+                  ?.filter((p) => !p.is_default)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          )}
           {ACTIONS.map(({ action, label, confirm }) => (
             <Button
               key={action}

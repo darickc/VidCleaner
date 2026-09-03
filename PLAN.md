@@ -2131,6 +2131,43 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   perimeter and `GET /api/webhooks/setup` acceptable only behind a reverse proxy. Stated in its
   own section, next to what *is* authenticated.
 
+- 2026-09-03 — **M5 step 7 (§9.5's Words & Profiles page) complete.** `pages/Words.tsx` replaces
+  the placeholder, plus the per-title profile dropdown on `Title.tsx`. Verified: 80 frontend
+  tests (46 before), build clean, and clicked through against a live backend.
+- 2026-09-03 — **The page is organised around "which words are muted right now", because that
+  is the question the schema makes hard to answer.** `word_entries.enabled` is **global to the
+  word** and `profiles.categories_json` is **per profile**, so a word can be enabled and still
+  not muted. Two controls that look alike and are not: the chips carry the word's own switch,
+  the profile card carries the categories, and the copy says which is which. Each category
+  card also shows whether it is in the profile currently in view.
+- 2026-09-03 — **A built-in's YAML `note` is on the chip's tooltip.** 50 of the 181 shipped
+  entries are off for precision (recorded 2026-09-01), and "why isn't `cock` muted?" should be
+  answerable by hovering the word rather than by reading a file in the image. The tooltip also
+  carries the form table, a compound's `parent` and a phrase's `focus` — the three fields
+  `effective_entries` preserves that have no database columns.
+- 2026-09-03 — **A bug the live click-through found, not a test: the category badges described
+  the *default* profile while the editor described the selected one.** The selection lived
+  inside `ProfileEditor`, so switching to "Strict" left every badge above it still reporting
+  the default's categories. The page now owns one "profile in view" and both read it, and the
+  badges **name** the profile (`in Default`, `not in Strict`) rather than saying "this
+  profile", which is ambiguous the moment a selector is on screen. Two tests pin it.
+- 2026-09-03 — **The per-title profile dropdown appears only once a second profile exists.**
+  A select whose sole option is "Default" is a control that cannot do anything; the Words
+  page's copy ("assign a profile to a series or movie from its own page") is the discovery
+  path instead. Verified live: creating "Strict" made the dropdown appear, selecting it
+  persisted `profile_id=2`, and the item's `profile_hash` changed from `v1:bce326aa…` (120
+  entries) to `v1:02180edb…` (132) — so §8's backfill re-queues those files, which is exactly
+  what the per-title override is for.
+- 2026-09-03 — **`components/Page.tsx`'s `Placeholder` is deleted.** It marked pages whose
+  content arrived in a later milestone, and with M5 there are none left.
+- 2026-09-03 — **This project is not formatted with Prettier, and running it does damage.**
+  There is no config and no dev dependency; the code is hand-formatted at roughly ruff's
+  100-column width. `npx prettier --write` at its default 80 reflowed unrelated code in
+  `Title.tsx`, `Title.test.tsx` and `App.test.tsx` (19, 16 and 5 lines of pure churn) before it
+  was noticed and reverted — those files now show additions only. Even `--print-width 100`
+  disagrees with the existing style, so **do not run Prettier on `frontend/`**; format new code
+  by hand to match its neighbours.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

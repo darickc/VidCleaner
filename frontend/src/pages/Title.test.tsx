@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { item, mockApi, title } from "../test/api";
+import { item, mockApi, profile, title } from "../test/api";
 import { renderApp } from "../test/render";
 import { TitlePage } from "./Title";
 
@@ -24,7 +24,8 @@ const DETAIL = {
 };
 
 function stub(extra: Record<string, unknown> = {}) {
-  return mockApi({ routes: { "/library/titles/3": DETAIL, ...extra } });
+  const routes = { "/library/titles/3": DETAIL, "/profiles": [profile()], ...extra };
+  return mockApi({ routes });
 }
 
 function render() {
@@ -130,5 +131,61 @@ describe("title page", () => {
     await waitFor(() =>
       expect(api.calls.find((c) => c.method === "PATCH")?.body).toEqual({ enabled: false }),
     );
+  });
+});
+
+describe("the profile override", () => {
+  /** §2's per-title override. The backend has honoured `titles.profile_id` since M3 --
+   * `plan_job` passes it into `matcher_for` and the sync compares the resulting hash --
+   * but nothing listed the profiles, so there was no way to set it. */
+
+  it("is hidden when there is only the default profile", async () => {
+    /** A dropdown with one option is a control that cannot do anything. */
+    stub();
+    render();
+    await screen.findByText("shit");
+    expect(screen.queryByLabelText("Profile for The Wire")).not.toBeInTheDocument();
+  });
+
+  it("lists the alternatives once one exists", async () => {
+    stub({ "/profiles": [profile(), profile({ id: 2, name: "Strict", is_default: false })] });
+    render();
+
+    const select = await screen.findByLabelText("Profile for The Wire");
+    expect(select).toHaveValue("");
+    expect(screen.getByRole("option", { name: "Default (Default)" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Strict" })).toBeInTheDocument();
+  });
+
+  it("choosing one patches profile_id", async () => {
+    const api = stub({
+      "/profiles": [profile(), profile({ id: 2, name: "Strict", is_default: false })],
+    });
+    render();
+
+    await userEvent.selectOptions(await screen.findByLabelText("Profile for The Wire"), "2");
+    await waitFor(() => {
+      const patched = api.calls.filter((c) => c.method === "PATCH");
+      expect(patched).toHaveLength(1);
+      expect(patched[0].body).toEqual({ profile_id: 2 });
+    });
+  });
+
+  it("choosing Default clears the override rather than sending null", async () => {
+    /** `profile_id: null` cannot mean "no change" and "use the default" at once, which
+     * is why the API takes a separate `clear_profile` flag. */
+    const api = stub({
+      "/library/titles/3": { ...DETAIL, title: { ...title(), profile_id: 2 } },
+      "/profiles": [profile(), profile({ id: 2, name: "Strict", is_default: false })],
+    });
+    render();
+
+    const select = await screen.findByLabelText("Profile for The Wire");
+    expect(select).toHaveValue("2");
+    await userEvent.selectOptions(select, "");
+    await waitFor(() => {
+      const patched = api.calls.filter((c) => c.method === "PATCH");
+      expect(patched[0].body).toEqual({ clear_profile: true });
+    });
   });
 });

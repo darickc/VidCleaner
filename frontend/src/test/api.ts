@@ -211,3 +211,73 @@ export const backups = (overrides: Record<string, unknown> = {}) => ({
   backups: [],
   ...overrides,
 });
+
+/** §9.5's Words page. One builtin, one disabled builtin, one compound, one phrase. */
+export const wordList = (overrides: Record<string, unknown> = {}) => ({
+  categories: ["strong", "mild", "religious", "slurs", "sexual"],
+  default_categories: ["religious", "sexual", "slurs", "strong"],
+  words: [
+    wordEntry({ id: 1, canonical: "fuck", category: "strong" }),
+    wordEntry({
+      id: 2,
+      canonical: "motherfucker",
+      category: "strong",
+      parent: "fuck",
+      forms: ["motherfuckers", "motherfucker"],
+    }),
+    wordEntry({
+      id: 3,
+      canonical: "bloody",
+      category: "mild",
+      enabled: false,
+      note: "far too common in British English to mute by default",
+    }),
+    wordEntry({
+      id: 4,
+      canonical: "son of a bitch",
+      category: "strong",
+      is_phrase: true,
+      focus: ["bitch"],
+    }),
+  ],
+  counts: { strong: 3, mild: 1, religious: 0, slurs: 0, sexual: 0 },
+  enabled_counts: { strong: 3, mild: 0, religious: 0, slurs: 0, sexual: 0 },
+  ...overrides,
+});
+
+export const wordEntry = (overrides: Record<string, unknown> = {}) => ({
+  id: 1,
+  canonical: "fuck",
+  category: "strong",
+  forms: ["fuck"],
+  is_phrase: false,
+  is_builtin: true,
+  enabled: true,
+  focus: [],
+  parent: null,
+  note: null,
+  ...overrides,
+});
+
+export const profile = (overrides: Record<string, unknown> = {}) => ({
+  id: 1,
+  name: "Default",
+  categories: ["strong", "slurs", "sexual", "religious"],
+  extra_word_ids: [],
+  pad_pre_ms: 80,
+  pad_post_ms: 120,
+  is_default: true,
+  titles: 0,
+  ...overrides,
+});
+
+export const whitelistEntry = (overrides: Record<string, unknown> = {}) => ({
+  id: 1,
+  scope: "global",
+  scope_id: null,
+  canonical_word: "god",
+  context_text: null,
+  mode: "suppress",
+  label: null,
+  ...overrides,
+});

@@ -223,6 +223,54 @@ export interface PathMapping {
 }
 
 /** `/api/settings` is a flat bag of scalars; the form knows the field names. */
+/** §9.5's Words & Profiles page. */
+export interface WordRow {
+  id: number | null;
+  canonical: string;
+  category: string;
+  forms: string[];
+  is_phrase: boolean;
+  is_builtin: boolean;
+  enabled: boolean;
+  /** Phrases only: mute just these words rather than the whole span. */
+  focus: string[];
+  /** Set on flattened compounds, so `motherfucker` nests under `fuck`. */
+  parent: string | null;
+  /** Why a built-in ships disabled. Custom entries have no column for it. */
+  note: string | null;
+}
+
+export interface WordList {
+  categories: string[];
+  default_categories: string[];
+  words: WordRow[];
+  counts: Record<string, number>;
+  enabled_counts: Record<string, number>;
+}
+
+export interface Profile {
+  id: number;
+  name: string;
+  categories: string[];
+  extra_word_ids: number[];
+  pad_pre_ms: number;
+  pad_post_ms: number;
+  is_default: boolean;
+  /** How many titles override to this profile -- what makes a delete consequential. */
+  titles: number;
+}
+
+export interface WhitelistEntry {
+  id: number;
+  scope: string;
+  scope_id: number | null;
+  canonical_word: string;
+  context_text: string | null;
+  /** `suppress` = do not mute; `allow` = mute after all, overriding a broader rule. */
+  mode: string;
+  label: string | null;
+}
+
 /** §9.6's "backup retention + purge". */
 export interface BackupSummary {
   total: number;

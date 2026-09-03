@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { EMPTY_QUEUE, HEALTH, mockApi } from "./test/api";
+import { EMPTY_QUEUE, HEALTH, mockApi, profile, wordList } from "./test/api";
 import { renderApp } from "./test/render";
 
 afterEach(() => {
@@ -35,6 +35,15 @@ describe("app shell", () => {
     await waitFor(() =>
       expect(screen.getAllByText("Could not reach the API.").length).toBeGreaterThan(0),
     );
+  });
+
+  it("routes to the words page, which is no longer a placeholder", async () => {
+    mockApi({ routes: { "/words": wordList(), "/profiles": [profile()], "/whitelist": [] } });
+    renderApp(<App />, { route: "/words" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "fuck (muted)" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/M5/)).not.toBeInTheDocument();
   });
 
   it("routes to the settings page", async () => {

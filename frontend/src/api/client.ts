@@ -14,6 +14,7 @@ import type {
   ItemDetail,
   JobDetail,
   PathMapping,
+  Profile,
   PurgeResult,
   QueueView,
   TestResponse,
@@ -21,7 +22,10 @@ import type {
   TitleList,
   TitlePatchResult,
   WebhookSetup,
+  WhitelistEntry,
   WhitelistResult,
+  WordList,
+  WordRow,
 } from "./types";
 
 export class ApiError extends Error {
@@ -140,6 +144,32 @@ export const getWebhookSetup = (app: string) =>
   apiGet<WebhookSetup>(`/webhooks/setup?app=${app}`);
 export const installWebhook = (app: string) =>
   apiPost<{ created: boolean; id: number; url: string }>(`/webhooks/install?app=${app}`);
+
+export const getWords = () => apiGet<WordList>("/words");
+export const patchWord = (wordId: number, enabled: boolean) =>
+  apiPatch<WordRow>(`/words/${wordId}`, { enabled });
+export const createWord = (body: {
+  canonical: string;
+  category: string;
+  forms: string[];
+}) => apiPost<WordRow>("/words", body);
+export const deleteWord = (wordId: number) => apiDelete<void>(`/words/${wordId}`);
+
+export const getProfiles = () => apiGet<Profile[]>("/profiles");
+export const createProfile = (body: Partial<Profile> & { name: string }) =>
+  apiPost<Profile>("/profiles", body);
+export const patchProfile = (profileId: number, body: Partial<Profile>) =>
+  apiPatch<Profile>(`/profiles/${profileId}`, body);
+export const deleteProfile = (profileId: number) => apiDelete<void>(`/profiles/${profileId}`);
+
+export const getWhitelist = () => apiGet<WhitelistEntry[]>("/whitelist");
+export const createWhitelist = (body: {
+  canonical_word: string;
+  scope: string;
+  scope_id?: number | null;
+  context_text?: string | null;
+  mode?: string;
+}) => apiPost<WhitelistEntry>("/whitelist", body);
 
 export const getBackups = (state?: string) =>
   apiGet<BackupList>(state ? `/backups?state=${state}` : "/backups");
