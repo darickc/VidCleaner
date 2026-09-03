@@ -14,8 +14,9 @@ and Jellyfin are refreshed afterwards.
 
 ## Status
 
-Milestones **M1 — core clean via CLI** and **M2 — full-file STT, drift and evaluation** are
-complete. The pipeline runs end to end on a real file:
+Milestones **M1** (core clean via CLI), **M2** (full-file STT, drift and evaluation),
+**M3** (job queue, backup/swap, Sonarr/Radarr/Jellyfin) and **M4** (the web UI) are complete.
+The pipeline runs end to end on a real file:
 
 ```bash
 cd backend
@@ -39,8 +40,16 @@ occupy the worker all night.
 
 Detection quality is measured rather than asserted: see [docs/eval.md](docs/eval.md).
 
-There is no automation yet — no job queue, no Sonarr/Radarr integration, and the review UI is
-still a shell. Those are M3 and M4.
+Nothing has to be driven by hand. Mark a series or movie **Clean** in the Library page and its
+existing files are queued immediately; Sonarr/Radarr webhooks queue new imports and upgrades as
+they land; the worker claims one job at a time, swaps the result into place by rename with an
+fsynced journal, keeps the original under `/backups`, and tells the arrs and Jellyfin the file
+changed. The **Queue** page shows the running stage and log, the **Item** page shows every word
+that was removed with a five-second *Original* and *Clean* clip for each, and a false positive can
+be whitelisted (this file / this title / everywhere) and the file reprocessed from that page.
+
+Still to come in **M5**: the Words & Profiles editor, per-title profile overrides, the audit pass,
+backup retention and purge, and the unraid template polish.
 
 ## Development
 
