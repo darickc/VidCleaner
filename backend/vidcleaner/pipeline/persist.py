@@ -33,6 +33,7 @@ from vidcleaner.db.models import Detection as DetectionRow
 from vidcleaner.db.session import utcnow
 from vidcleaner.logging import get_logger
 from vidcleaner.pipeline.artifacts import (
+    Detection,
     DetectionResult,
     JobSpec,
     ProbeResult,
@@ -42,6 +43,7 @@ from vidcleaner.pipeline.artifacts import (
 
 __all__ = [
     "LOCAL_TITLE_ARR_ID",
+    "detections_for_job",
     "LOCAL_TITLE_NAME",
     "PersistResult",
     "ReconcileReport",
@@ -134,6 +136,7 @@ def persist_run(
     work_dir: Path | None = None,
     media_item: MediaItem | None = None,
     count_attempt: bool = True,
+    preserve_item_status: bool = False,
 ) -> PersistResult:
     """Write the ``jobs`` row and its ``detections``, replacing any earlier run.
 
@@ -144,6 +147,13 @@ def persist_run(
     ``count_attempt=False`` is the worker path. ``jobs.attempts`` counts **claims**,
     and the queue already incremented it when it claimed the job; incrementing again
     here would retire every job after 1.5 real attempts.
+
+    ``preserve_item_status=True`` leaves ``media_items.status`` exactly as it was, for
+    a run that observes the file without changing it -- M5's audit phase 1. Without it
+    `_item_status` maps that dry run to ``pending``, which drops the item out of
+    `sync.CLEAN_STATUSES` and makes the hourly sync re-enqueue a perfectly clean file
+    forever: the exact loop the audit is required not to start. ``last_job_id`` is
+    still updated, because the profile hash the row records is what closes that loop.
     """
     item = media_item if media_item is not None else ensure_media_item(session, probe)
 
@@ -196,7 +206,8 @@ def persist_run(
         count += 1
 
     item.last_job_id = job.id
-    item.status = _item_status(state, spec.dry_run)
+    if not preserve_item_status:
+        item.status = _item_status(state, spec.dry_run)
     if state == "done" and not spec.dry_run:
         item.cleaned_at = datetime.now(UTC)
     session.flush()
@@ -212,11 +223,53 @@ def persist_run(
     return PersistResult(job.id, item.id, count)
 
 
+def detections_for_job(session: Session, job_id: str) -> list[Detection]:
+    """Read one run's detections back as artifact models.
+
+    The audit's baseline is the **database**, not ``detections.json``, for two
+    reasons. ``gc.collect_work_dirs`` removes a job's work dir seven days after it
+    finishes, and an idle-gated audit running one item per five-minute tick will
+    routinely arrive later than that. And the rows carry the user's whitelist edits
+    and are what §9.4 actually shows -- so "3 new hits" means the same thing to the
+    code and to the person reading the page.
+    """
+    rows = session.scalars(
+        select(DetectionRow)
+        .where(DetectionRow.job_id == job_id)
+        .order_by(DetectionRow.start_s, DetectionRow.end_s, DetectionRow.word_canonical)
+    ).all()
+    return [
+        Detection(
+            word_raw=row.word_raw,
+            word_canonical=row.word_canonical,
+            category=row.category,
+            start_s=row.start_s,
+            end_s=row.end_s,
+            mute_start_s=row.mute_start_s,
+            mute_end_s=row.mute_end_s,
+            source=row.source,  # type: ignore[arg-type]
+            confidence=row.confidence,
+            muted=row.muted,
+            whitelisted=row.whitelisted,
+            suspicious=row.suspicious,
+            subtitle_cue_idx=row.subtitle_cue_idx,
+            snippet_path=row.snippet_path,
+        )
+        for row in rows
+    ]
+
+
 def _item_status(state: str, dry_run: bool) -> str:
     if state == "already_clean":
         return "already_clean"
     if state == "failed":
         return "failed"
+    if state == "stale":
+        # §5/§6 already use `stale` for a vanished path, and it is what
+        # `sync.backfill_title` skips. Falling through to `pending` -- as this did --
+        # means "we intend to clean it", so the item was immediately re-enqueueable
+        # against a path that is gone, forever.
+        return "stale"
     if dry_run:
         return "pending"
     return "clean" if state == "done" else "pending"

@@ -61,6 +61,7 @@ __all__ = [
     "finalize",
     "load",
     "run",
+    "related_canonical",
     "same_finding",
     "tokens_from_transcript",
 ]
@@ -443,6 +444,22 @@ def _windowed(
     return out, fallbacks
 
 
+def related_canonical(existing: str, canonical: str) -> bool:
+    """Do these two canonicals name the same finding?
+
+    Equal, or one is a word of the other's phrase -- which is what stops the bare
+    ``god`` of a partially located ``god damn`` from being counted a second time.
+
+    Split out from :func:`same_finding` for M5's audit, which needs the identity test
+    **without** the overlap test: the audit compares a found hit against a prior
+    detection's *padded* span, and `same_finding`'s own unpadded overlap check would
+    then veto exactly the cases the padding was there to cover.
+    """
+    if existing == canonical:
+        return True
+    return canonical in existing.split() or existing in canonical.split()
+
+
 def same_finding(existing: Detection, canonical: str, start: float, end: float) -> bool:
     """Is this STT match already covered by an existing detection?
 
@@ -454,11 +471,7 @@ def same_finding(existing: Detection, canonical: str, start: float, end: float) 
     """
     if existing.end_s < start or end < existing.start_s:
         return False
-    if existing.word_canonical == canonical:
-        return True
-    return canonical in existing.word_canonical.split() or (
-        existing.word_canonical in canonical.split()
-    )
+    return related_canonical(existing.word_canonical, canonical)
 
 
 def _stt_only(

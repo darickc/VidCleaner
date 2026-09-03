@@ -307,6 +307,26 @@ def test_a_title_rollup_survives_an_audit_pass(client: TestClient) -> None:
     assert body["items"][0]["detection_count"] == 1
 
 
+def test_a_dry_run_never_becomes_the_evidence_for_a_file(client: TestClient) -> None:
+    """M5. A dry run reaches `detect` and writes a full set of detections, but changes
+    nothing on disk -- so it must not describe the file.
+
+    Two cases share this shape. The "dry run" button forces past `already_clean`, so on
+    a cleaned episode it detects over the already-muted Clean track and would report far
+    fewer words than the file really has. And M5's audit phase 1 is a dry run by
+    construction, detecting against the *backup* rather than the library file.
+    """
+    _, item_id = make_movie(status="clean")
+    cleaned = add_job(item_id, state="done", trigger="backfill", age_s=600)
+    add_detections(cleaned, item_id, "shit", "fuck")
+    preview = add_job(item_id, state="done", trigger="manual", dry_run=True, is_last=True, age_s=10)
+    add_detections(preview, item_id, "fuck")
+
+    body = client.get(f"/api/items/{item_id}").json()
+    assert body["job"]["id"] == cleaned
+    assert [d["word_canonical"] for d in body["detections"]] == ["shit", "fuck"]
+
+
 def test_a_reprocess_that_finds_nothing_is_still_the_current_run(client: TestClient) -> None:
     """The mirror case: after whitelisting the only hit, the page must show the new
     empty run rather than reaching back to the run that still has detections."""

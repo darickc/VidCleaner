@@ -280,3 +280,33 @@ def test_the_rollup_query_from_plan_section_five_works(db):
         .group_by(DetectionRow.word_canonical, DetectionRow.category)
     ).all()
     assert rows == [("fuck", "strong", 3, 3)]
+
+
+# ------------------------------------------------------- M5: audit-pass support
+
+
+def test_detections_come_back_from_the_database_as_artifacts(migrated) -> None:
+    """The audit's baseline is the DB, not `detections.json`: `gc` removes a work dir
+    after seven days and an idle audit routinely arrives later than that."""
+    from tests.support.library import add_detections, add_job, make_movie
+    from vidcleaner.pipeline.persist import detections_for_job
+
+    _title_id, item_id = make_movie()
+    job_id = add_job(item_id, state="done")
+    add_detections(job_id, item_id, "shit", "fuck")
+
+    with session_scope() as session:
+        loaded = detections_for_job(session, job_id)
+    assert [d.word_canonical for d in loaded] == ["shit", "fuck"]
+    assert all(d.mute_end_s >= d.mute_start_s for d in loaded)
+
+
+def test_a_stale_job_leaves_the_item_stale_not_pending(migrated) -> None:
+    """`pending` means "we intend to clean it", and `sync.backfill_title` does not skip
+    it -- so the item was instantly re-enqueueable against a path that is gone."""
+    from vidcleaner.pipeline.persist import _item_status
+
+    assert _item_status("stale", False) == "stale"
+    assert _item_status("stale", True) == "stale"
+    assert _item_status("done", False) == "clean"
+    assert _item_status("done", True) == "pending"
