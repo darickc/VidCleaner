@@ -1688,6 +1688,17 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   what ran (and its work dir may already be pruned), so the failed row stands and a fresh
   `reprocess` job is queued.
 
+- 2026-09-02 — **M4 step 4 (the Queue page) complete.** `api/types.ts` + a typed function per
+  endpoint in `api/client.ts` (pages never build URLs), `components/ui.tsx` (badges, buttons, the
+  one map from a state to a colour, and the time/size formatters), and §9.1's screen: the running
+  job with stage, progress and an expandable log tail, the queued list in claim order with
+  "run next"/cancel, recent jobs with retry, and the health card. 7 tests, plus a fetch stub keyed
+  by path (`src/test/api.ts`) — a single-payload stub lets a page read the wrong response and still
+  look right.
+- 2026-09-02 — **"Run next" writes priority 10, not 0.** It has to beat `manual`'s 50 without
+  inventing a tier below the constants table, and leaving room under it means two "run next"
+  presses do not silently tie.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
