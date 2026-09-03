@@ -27,6 +27,7 @@ from vidcleaner.db.constants import DEFAULT_PRIORITY, WHITELIST_SCOPES
 from vidcleaner.db.models import Backup, Job, MediaItem, Profile, Title, WhitelistEntry
 from vidcleaner.db.session import get_db
 from vidcleaner.logging import get_logger
+from vidcleaner.matching.profile import clear_matcher_cache
 from vidcleaner.settings_store import load_settings
 from vidcleaner.worker import claim as queue
 
@@ -294,6 +295,8 @@ def add_whitelist(
     if created:
         db.add(entry)
     db.flush()
+    if created:
+        clear_matcher_cache()
 
     job_id = None
     if request.reprocess:
@@ -327,6 +330,7 @@ def delete_whitelist(entry_id: int, db: DbSession) -> None:
         raise HTTPException(status_code=422, detail="unknown scope")
     db.delete(entry)
     db.flush()
+    clear_matcher_cache()
 
 
 # ------------------------------------------------------------------------ jobs

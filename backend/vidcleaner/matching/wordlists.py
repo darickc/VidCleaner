@@ -38,6 +38,8 @@ __all__ = [
     "WhitelistSeed",
     "WordEntry",
     "WordListError",
+    "check_form",
+    "entries_by_category",
     "load_builtin_entries",
     "load_never_match",
     "wordlist_data_dir",
@@ -141,7 +143,9 @@ def _read_yaml(path: Path) -> Any:
         raise WordListError(f"{path}: {exc}") from exc
 
 
-def _check_form(form: str, *, where: str) -> None:
+def check_form(form: str, *, where: str) -> None:
+    """Validate one authored form. Shared with the Words API so a custom word
+    cannot be created in a shape the YAML loader would reject."""
     if normalize(form) != form:
         raise WordListError(f"{where}: form {form!r} is not already normalized")
     if not _FORM_RE.match(form):
@@ -154,7 +158,7 @@ def _check_form(form: str, *, where: str) -> None:
 def _flatten(raw: _RawEntry, category: str, *, parent: str | None, where: str) -> list[WordEntry]:
     forms = list(dict.fromkeys([raw.canonical, *raw.forms]))
     for form in forms:
-        _check_form(form, where=f"{where}/{raw.canonical}")
+        check_form(form, where=f"{where}/{raw.canonical}")
 
     derived_phrase = " " in raw.canonical
     if raw.is_phrase is not None and raw.is_phrase != derived_phrase:

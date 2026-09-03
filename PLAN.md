@@ -1790,6 +1790,51 @@ Later / optional: PGS OCR (`pgsrip`), video preview snippets, OpenVINO iGPU enco
   path-keyed fetch stub and `npm run build` is clean, but nobody has yet clicked through it against
   a live backend on the unraid box.
 
+- 2026-09-03 — **M5 step 1 (the words, profiles and whitelist API) complete.**
+  `api/words.py`: `GET/POST /words`, `PATCH/DELETE /words/{id}`, `GET/POST /profiles`,
+  `PATCH/DELETE /profiles/{id}`, `GET/POST /whitelist`. 30 tests in
+  `tests/unit/test_api_words.py`. Verified: 1640 passed, ruff clean.
+- 2026-09-03 — **The word list is served as the YAML/DB *merge*, with row ids re-attached.**
+  `effective_entries` already blends YAML structure with the database's `enabled`, but it
+  returns `WordEntry` values with no ids and a UI needs something to PATCH. So `GET /words`
+  re-attaches them from `word_entries.canonical`. The consequence is stated in the response
+  rather than hidden: a **custom** entry has no column for `focus`/`parent`/`note`, so those
+  come back null for one, while a built-in keeps all three — which is what lets the page nest
+  `motherfucker` under `fuck` and show *why* the 50 disabled entries ship off.
+- 2026-09-03 — **A built-in word cannot be deleted (409), only disabled.**
+  `sync_builtin_word_entries` mirrors the YAML at every startup, so a deleted built-in row
+  comes back on the next restart: the button would appear to work and then silently undo
+  itself. Deleting a *custom* entry is fine. Symmetrically, **the default profile cannot be
+  deleted** (409) and **the last default cannot be un-defaulted** (422): `profile_spec` falls
+  back to the default for every title without an override, so removing it would silently
+  change the mute set of the whole library.
+- 2026-09-03 — **Promoting a profile demotes the previous default in the same transaction.**
+  §5 gives `profiles.is_default` no uniqueness constraint and `profile_spec` takes `.first()`,
+  so two defaults would make the effective profile depend on row order. Enforced in code with
+  a test that counts the `is_default` rows; a partial unique index would need a migration and
+  buys nothing the endpoint cannot guarantee.
+- 2026-09-03 — **A custom word is validated with the loader's own rules**, by making
+  `wordlists._check_form` public as `check_form`. A custom entry the YAML loader would reject
+  is an entry that behaves unlike every built-in one. Three refusals beyond that: a form on
+  `never_match.yaml` (422 — the file exists precisely because no regex separates `x-ray` from
+  `f-ing`), a duplicate canonical (409, also the DB constraint), and **a form already claimed
+  by another entry** (409). The last one matters most: two entries owning one form makes the
+  form → canonical map order-dependent, so a hit would be attributed to whichever list loaded
+  last.
+- 2026-09-03 — **`POST /whitelist` deliberately queues nothing**, unlike
+  `POST /items/{id}/whitelist`, which is §9.4's review flow and takes `reprocess`. A rule added
+  from the Words page can be *global* and touch thousands of files; the user should pick when
+  that work happens. The scope id is explicit here and validated against `titles`/`media_items`
+  (422), where the review flow derives it from the detection's own item.
+- 2026-09-03 — **Every write in `api/words.py` calls `clear_matcher_cache()`, and so do the two
+  whitelist handlers in `api/actions.py`, which did not.** Worth recording that this is a
+  *memory* concern and not a correctness one, because the obvious reading is wrong:
+  `matcher_for` re-reads all three tables on every call and `_build_cached` is keyed on the
+  resulting **values**, so the cache is self-invalidating and a stale matcher cannot be served
+  across processes. Dropping it anyway keeps the 16-entry LRU from filling with dead keys while
+  a user works through the page. `api/words.py` says so in a comment so the next reader does not
+  "fix" it into a fence it never was.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.
