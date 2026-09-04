@@ -16,6 +16,7 @@ import {
   ago,
   duration,
   gib,
+  maskWord,
 } from "../components/ui";
 
 const ACTIONS: Array<{ action: ActionName; label: string; confirm?: string }> = [
@@ -205,7 +206,7 @@ export function TitlePage() {
               {counts.map((count) => (
                 <li key={`${count.word_canonical}:${count.category}`} className="flex gap-2">
                   <span className="w-10 shrink-0 text-right text-slate-400">{count.total}×</span>
-                  <span className="text-slate-200">{count.word_canonical}</span>
+                  <span className="text-slate-200">{maskWord(count.word_canonical)}</span>
                   <Badge tone="idle">{count.category}</Badge>
                 </li>
               ))}

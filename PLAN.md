@@ -2360,6 +2360,27 @@ Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 down
   one `_guard` helper. M5 recorded how the ffmpeg version of this rotted into a no-op; giving the
   new tier a weaker guard than the old one would have been the same mistake twice.
 
+- 2026-09-04 — **The UI masks every word it displays, keeping the first and last character.**
+  This app's whole subject is words nobody wants rendered in full, and its own review screens
+  were the one place they appeared verbatim — on a shared screen, in a screenshot, in M5's demo.
+  `maskWord` and `maskIn` sit in `components/ui.tsx` beside `timecode` and `gib`, and reuse the
+  backend's separator set (`matching/compiler.py::mask_text`), so `son of a bitch` reads
+  `s*n o* a b***h` on screen exactly as it redacts in a subtitle. First and last survive because
+  a review screen still has to be usable: deciding whether a detection is a false positive means
+  knowing which word fired. The cost is real and is not hidden — `damn` and `darn` both read
+  `d**n` — and there is deliberately **no reveal affordance**, so the invariant is flat: no
+  unmasked word reaches the DOM, `aria-label`, `title` and `alt` included. One page-level test
+  asserts it against `innerHTML`, which is the only cheap way to cover attributes too. React keys
+  and the whitelist POST body stay raw: a masked key would collide `fuck`/`funk`/`fork`, and the
+  wire needs the real word.
+- 2026-09-04 — **Free text is masked best-effort, and the limit is deliberate.** A built-in's
+  `note` and a whitelist rule's `context_text` are prose, so `maskIn` masks only whole-word
+  occurrences of the terms that row already carries (canonical, forms, focus, parent) — enough
+  for the shipped notes, which quote the words they describe. A word the row does not know stays
+  visible. Masking arbitrary prose would mean the matcher in the browser, and the notes exist to
+  answer "why isn't this muted?" (recorded 2026-09-03); dropping them wholesale would cost more
+  than it buys.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

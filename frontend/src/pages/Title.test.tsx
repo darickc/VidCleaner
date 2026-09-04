@@ -51,7 +51,7 @@ describe("title page", () => {
   it("shows the per-word rollup", async () => {
     stub();
     render();
-    await waitFor(() => expect(screen.getByText("shit")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("s**t")).toBeInTheDocument());
     expect(screen.getByText("3×")).toBeInTheDocument();
     expect(screen.getByText("religious")).toBeInTheDocument();
   });
@@ -143,7 +143,7 @@ describe("the profile override", () => {
     /** A dropdown with one option is a control that cannot do anything. */
     stub();
     render();
-    await screen.findByText("shit");
+    await screen.findByText("s**t");
     expect(screen.queryByLabelText("Profile for The Wire")).not.toBeInTheDocument();
   });
 

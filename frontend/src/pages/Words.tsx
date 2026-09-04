@@ -31,7 +31,7 @@ import {
 } from "../api/client";
 import type { Profile, WordRow } from "../api/types";
 import { Page } from "../components/Page";
-import { Badge, Button, Card, Empty, ErrorNote } from "../components/ui";
+import { Badge, Button, Card, Empty, ErrorNote, maskIn, maskWord } from "../components/ui";
 
 const INPUT =
   "rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-sm outline-none focus:border-slate-600";
@@ -60,11 +60,14 @@ function WordChip({
   onDelete: () => void;
   busy: boolean;
 }) {
+  const shown = maskWord(word.canonical);
+  // Everything this row knows about itself, so `note` can be masked best-effort.
+  const terms = [word.canonical, ...word.forms, ...word.focus, word.parent];
   const title = [
-    word.forms.length > 1 ? `forms: ${word.forms.join(", ")}` : null,
-    word.note ? `note: ${word.note}` : null,
-    word.focus.length ? `mutes only: ${word.focus.join(", ")}` : null,
-    word.parent ? `part of ${word.parent}` : null,
+    word.forms.length > 1 ? `forms: ${word.forms.map(maskWord).join(", ")}` : null,
+    word.note ? `note: ${maskIn(word.note, terms)}` : null,
+    word.focus.length ? `mutes only: ${word.focus.map(maskWord).join(", ")}` : null,
+    word.parent ? `part of ${maskWord(word.parent)}` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -77,14 +80,14 @@ function WordChip({
         disabled={busy || word.id === null}
         title={title || undefined}
         aria-pressed={word.enabled}
-        aria-label={`${word.canonical}${word.enabled ? " (muted)" : " (not muted)"}`}
+        aria-label={`${shown}${word.enabled ? " (muted)" : " (not muted)"}`}
         className={`rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset transition disabled:opacity-40 ${
           word.enabled
             ? "bg-sky-500/15 text-sky-200 ring-sky-500/30 hover:bg-sky-500/25"
             : "bg-slate-800/60 text-slate-500 ring-slate-700 hover:bg-slate-800"
         }`}
       >
-        {word.canonical}
+        {shown}
         {word.is_phrase && <span className="ml-1 opacity-60">⋯</span>}
       </button>
       {!word.is_builtin && (
@@ -92,7 +95,7 @@ function WordChip({
           type="button"
           onClick={onDelete}
           disabled={busy}
-          aria-label={`Delete ${word.canonical}`}
+          aria-label={`Delete ${shown}`}
           className="text-xs text-slate-600 hover:text-rose-400"
         >
           ×
@@ -223,7 +226,7 @@ function AddWord({ categories }: { categories: string[] }) {
       </div>
       <p className="mt-2 text-xs text-slate-500">
         List the inflections you want matched. They are matched literally, never by suffix rules —
-        “fuck” does not imply “fucking”, and a rule that guessed would also match “shiitake”. A
+        “f**k” does not imply “f*****g”, and a rule that guessed would also match “shiitake”. A
         phrase (any space in the word) may be separated by spaces, hyphens or apostrophes but never
         a line break.
       </p>
@@ -434,7 +437,7 @@ function WhitelistCard() {
           <tbody>
             {data.map((row) => (
               <tr key={row.id} className="border-t border-slate-800/60">
-                <td className="py-1 font-medium text-slate-200">{row.canonical_word}</td>
+                <td className="py-1 font-medium text-slate-200">{maskWord(row.canonical_word)}</td>
                 <td className="py-1 text-slate-400">
                   {row.scope === "global" ? "everywhere" : (row.label ?? row.scope)}
                 </td>
@@ -443,12 +446,14 @@ function WhitelistCard() {
                     {row.mode === "allow" ? "mute anyway" : "leave audible"}
                   </Badge>
                 </td>
-                <td className="py-1 text-slate-500">{row.context_text ?? "—"}</td>
+                <td className="py-1 text-slate-500">
+                  {row.context_text ? maskIn(row.context_text, [row.canonical_word]) : "—"}
+                </td>
                 <td className="py-1 text-right">
                   <Button
                     onClick={() => remove.mutate(row.id)}
                     disabled={remove.isPending}
-                    aria-label={`Remove ${row.canonical_word} from the whitelist`}
+                    aria-label={`Remove ${maskWord(row.canonical_word)} from the whitelist`}
                   >
                     Remove
                   </Button>
