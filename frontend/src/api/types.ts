@@ -35,6 +35,8 @@ export interface ItemRef {
   size: number | null;
   duration: number | null;
   status: string;
+  /** The user has not selected this file; nothing automatic will queue it. */
+  skip_backfill: boolean;
   last_job_id: string | null;
   cleaned_at: string | null;
 }
@@ -102,6 +104,7 @@ export interface TitleRow {
   clean_count: number;
   failed_count: number;
   pending_count: number;
+  deferred_count: number;
   last_synced_at: string | null;
 }
 
@@ -182,6 +185,7 @@ export type ActionName = "process" | "reprocess" | "dry_run" | "restore";
 
 export interface ActionResult {
   action: string;
+  selected?: boolean;
   queued: string[];
   skipped: Record<string, number>;
   restored: number[];
@@ -194,6 +198,16 @@ export interface TitlePatchResult {
   enabled: boolean;
   profile_id: number | null;
   queued: string[];
+  /** Files a newly enabled series left unselected (PLAN.md §2). */
+  deferred: number;
+}
+
+export interface TitleSyncResult {
+  items: number;
+  added: number;
+  deferred: number;
+  queued: string[];
+  errors: string[];
 }
 
 export interface WhitelistResult extends WhitelistRow {

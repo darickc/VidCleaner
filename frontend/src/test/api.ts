@@ -115,6 +115,7 @@ export function item(overrides: Record<string, unknown> = {}) {
     size: 2 ** 30,
     duration: 3600,
     status: "clean",
+    skip_backfill: false,
     last_job_id: "job-1",
     cleaned_at: "2026-09-01T12:00:00Z",
     ...overrides,
@@ -166,6 +167,7 @@ export function title(overrides: Record<string, unknown> = {}) {
     clean_count: 1,
     failed_count: 0,
     pending_count: 1,
+    deferred_count: 0,
     last_synced_at: "2026-09-01T10:00:00Z",
     ...overrides,
   };

@@ -146,3 +146,30 @@ def test_the_transcript_and_detections_flags_are_paths():
     )
     assert args.transcript == Path("/t.json")
     assert args.detections == Path("/d.json")
+
+
+def test_titles_enable_defers_a_series_existing_episodes(migrated, capsys):
+    """The CLI and the UI must not disagree about what enabling means (§2, M7)."""
+    from tests.support.library import make_series
+    from vidcleaner.db.models import MediaItem, Title
+    from vidcleaner.db.session import session_scope
+
+    title_id, episodes = make_series(episodes=2, arr_id=42, enabled=False)
+    assert main(["titles", "enable", "--arr-id", "42"]) == 0
+    out = capsys.readouterr().out
+    assert "Deferred   2 existing file(s)" in out
+    with session_scope() as session:
+        assert session.get(Title, title_id).backfill_from is not None
+        assert all(session.get(MediaItem, e).skip_backfill for e in episodes)
+
+
+def test_titles_enable_all_keeps_the_old_behaviour(migrated, capsys):
+    from tests.support.library import make_series
+    from vidcleaner.db.models import MediaItem, Title
+    from vidcleaner.db.session import session_scope
+
+    title_id, episodes = make_series(episodes=2, arr_id=43, enabled=False)
+    assert main(["titles", "enable", "--arr-id", "43", "--all"]) == 0
+    with session_scope() as session:
+        assert session.get(Title, title_id).backfill_from is None
+        assert not any(session.get(MediaItem, e).skip_backfill for e in episodes)

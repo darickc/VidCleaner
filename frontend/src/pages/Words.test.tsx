@@ -33,11 +33,11 @@ describe("the word chips", () => {
     stub();
     renderApp(<WordsPage />);
 
-    expect(await screen.findByRole("button", { name: "fuck (muted)" })).toHaveAttribute(
+    expect(await screen.findByRole("button", { name: "f**k (muted)" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    expect(screen.getByRole("button", { name: "bloody (not muted)" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "b****y (not muted)" })).toHaveAttribute(
       "aria-pressed",
       "false",
     );
@@ -49,7 +49,7 @@ describe("the word chips", () => {
     stub();
     renderApp(<WordsPage />);
     const chip = await screen.findByRole("button", {
-      name: "bloody (not muted)",
+      name: "b****y (not muted)",
     });
     expect(chip).toHaveAttribute("title", expect.stringContaining("British English"));
   });
@@ -57,21 +57,32 @@ describe("the word chips", () => {
   it("shows a compound's parent and a phrase's focus", async () => {
     stub();
     renderApp(<WordsPage />);
-    expect(await screen.findByRole("button", { name: /motherfucker/ })).toHaveAttribute(
+    expect(await screen.findByRole("button", { name: "m**********r (muted)" })).toHaveAttribute(
       "title",
-      expect.stringContaining("part of fuck"),
+      expect.stringContaining("part of f**k"),
     );
-    expect(screen.getByRole("button", { name: /son of a bitch/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "s*n o* a b***h (muted)" })).toHaveAttribute(
       "title",
-      expect.stringContaining("mutes only: bitch"),
+      expect.stringContaining("mutes only: b***h"),
     );
+  });
+
+  it("renders no unmasked word, in visible text or in any label", async () => {
+    /** The invariant, asserted in one place: `innerHTML` covers `aria-label`, `title`
+     * and `alt` as well as text nodes, which is where masking is easiest to forget.
+     * It also covers the page's own hard-coded help copy, which quotes real words. */
+    stub({ "/whitelist": [whitelistEntry({ context_text: "thank god" })] });
+    renderApp(<WordsPage />);
+
+    await screen.findByRole("button", { name: "f**k (muted)" });
+    expect(document.body.innerHTML).not.toMatch(/fuck|bitch|\bgod\b/i);
   });
 
   it("toggling a word patches just that word", async () => {
     const api = stub();
     renderApp(<WordsPage />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "bloody (not muted)" }));
+    await userEvent.click(await screen.findByRole("button", { name: "b****y (not muted)" }));
     await waitFor(() => {
       const patched = api.calls.filter((c) => c.method === "PATCH");
       expect(patched).toHaveLength(1);
@@ -83,8 +94,8 @@ describe("the word chips", () => {
   it("offers no delete for a built-in", async () => {
     stub();
     renderApp(<WordsPage />);
-    await screen.findByRole("button", { name: "fuck (muted)" });
-    expect(screen.queryByRole("button", { name: "Delete fuck" })).not.toBeInTheDocument();
+    await screen.findByRole("button", { name: "f**k (muted)" });
+    expect(screen.queryByRole("button", { name: "Delete f**k" })).not.toBeInTheDocument();
   });
 
   it("offers a delete for a custom word", async () => {
@@ -94,9 +105,9 @@ describe("the word chips", () => {
           {
             ...profile(),
             id: 9,
-            canonical: "frak",
+            canonical: "frakking",
             category: "mild",
-            forms: ["frak"],
+            forms: ["frakking"],
             is_phrase: false,
             is_builtin: false,
             enabled: true,
@@ -108,7 +119,7 @@ describe("the word chips", () => {
       }),
     });
     renderApp(<WordsPage />);
-    expect(await screen.findByRole("button", { name: "Delete frak" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Delete f******g" })).toBeInTheDocument();
   });
 
   it('names the profile a category belongs to, rather than saying "this"', async () => {
@@ -118,7 +129,7 @@ describe("the word chips", () => {
      * a badge reading "in this profile" is ambiguous about which one it means. */
     stub();
     renderApp(<WordsPage />);
-    await screen.findByRole("button", { name: "fuck (muted)" });
+    await screen.findByRole("button", { name: "f**k (muted)" });
     expect(screen.getAllByText("in Default").length).toBeGreaterThan(0);
     expect(screen.getByText("not in Default")).toBeInTheDocument();
   });
@@ -285,7 +296,7 @@ describe("the whitelist", () => {
     renderApp(<WordsPage />);
 
     expect(await screen.findByText("everywhere")).toBeInTheDocument();
-    expect(screen.getByText("thank god")).toBeInTheDocument();
+    expect(screen.getByText("thank g*d")).toBeInTheDocument();
     expect(screen.getByText("Pluribus")).toBeInTheDocument();
     expect(screen.getByText("leave audible")).toBeInTheDocument();
     expect(screen.getByText("mute anyway")).toBeInTheDocument();
@@ -303,7 +314,7 @@ describe("the whitelist", () => {
 
     await userEvent.click(
       await screen.findByRole("button", {
-        name: "Remove god from the whitelist",
+        name: "Remove g*d from the whitelist",
       }),
     );
     await waitFor(() => {

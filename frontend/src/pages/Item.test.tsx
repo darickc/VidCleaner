@@ -65,7 +65,7 @@ describe("item page", () => {
     render();
 
     await userEvent.click(
-      await screen.findByRole("button", { name: /Review shit at 1:33\.4/ }),
+      await screen.findByRole("button", { name: "Review s**t at 1:33.4" }),
     );
 
     expect(screen.getByLabelText("Original")).toHaveAttribute(
@@ -76,14 +76,14 @@ describe("item page", () => {
       "src",
       "/api/media/snippets/job-1/0000/clean.m4a",
     );
-    expect(screen.getByRole("img", { name: /Waveform around shit/ })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Waveform around s**t" })).toBeInTheDocument();
   });
 
   it("does not offer a player when the clips are gone", async () => {
     stub();
     render();
 
-    await userEvent.click(await screen.findByRole("button", { name: /Review bass at 4:00\.1/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Review b**s at 4:00.1" }));
     expect(screen.getByText("No review clips for this detection.")).toBeInTheDocument();
     expect(screen.queryByLabelText("Original")).not.toBeInTheDocument();
   });
@@ -105,16 +105,17 @@ describe("item page", () => {
     );
     render();
 
-    await userEvent.click(await screen.findByRole("button", { name: /Review bass/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Review b**s at 4:00.1" }));
     await userEvent.selectOptions(
-      screen.getByLabelText("Whitelist scope for bass"),
+      screen.getByLabelText("Whitelist scope for b**s"),
       "title",
     );
-    await userEvent.click(screen.getByRole("button", { name: "Whitelist bass" }));
+    await userEvent.click(screen.getByRole("button", { name: "Whitelist b**s" }));
 
     await waitFor(() =>
-      expect(screen.getByText(/“bass” allowed in this title — reprocessing\./)).toBeInTheDocument(),
+      expect(screen.getByText(/“b\*\*s” allowed in this title — reprocessing\./)).toBeInTheDocument(),
     );
+    // Display is masked, the wire is not -- this assertion is the leak guard.
     expect(api.calls.find((c) => c.path === "/items/7/whitelist")?.body).toEqual({
       canonical_word: "bass",
       scope: "title",
@@ -182,7 +183,7 @@ describe("item page", () => {
     render();
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "Remove class from the whitelist" }),
+      await screen.findByRole("button", { name: "Remove c***s from the whitelist" }),
     );
     await waitFor(() =>
       expect(api.calls.some((c) => c.method === "DELETE" && c.path === "/whitelist/5")).toBe(true),

@@ -51,6 +51,50 @@ export function ago(value: string | null | undefined): string {
   return `${Math.round(seconds / 86_400)}d ago`;
 }
 
+/** The separators `mask_text` preserves (backend/vidcleaner/matching/compiler.py:400). */
+const NOT_SEPARATOR = /[^ \t\xa0'’-]+/gu;
+
+/**
+ * `fuck` -> `f**k`, `son of a bitch` -> `s*n o* a b***h`.
+ *
+ * First and last character survive so the word stays identifiable on a review screen; the
+ * middle is starred. Separators split tokens and pass through untouched, matching the
+ * backend's `mask_text`, so a phrase still reads as a phrase. A two-letter token keeps only
+ * its first character -- both of its characters are "first and last", so the rule as written
+ * would render it whole, and nothing may reach the DOM unmasked.
+ */
+export function maskWord(word: string): string {
+  return word.replace(NOT_SEPARATOR, (token) => {
+    const chars = Array.from(token);
+    if (chars.length < 2) return token;
+    const last = chars.length > 2 ? chars[chars.length - 1] : "*";
+    return chars[0] + "*".repeat(chars.length - 2) + last;
+  });
+}
+
+/**
+ * Best-effort masking inside prose: a `note` or a `context_text` is free text, but the row's
+ * own words are known, so at least those are covered. Longest term first, so `son of a bitch`
+ * wins over `bitch`; the match itself is masked, so its case and length survive.
+ */
+export function maskIn(text: string, terms: ReadonlyArray<string | null | undefined>): string {
+  const unique = [
+    ...new Set(terms.map((t) => t?.trim()).filter((t): t is string => !!t)),
+  ].sort((a, b) => b.length - a.length);
+  if (unique.length === 0) return text;
+  const body = unique
+    .map((t) =>
+      t
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace(/[ \t\xa0'’-]+/g, "[ \\t\\xa0'\\u2019-]+"),
+    )
+    .join("|");
+  // The leading separator is captured rather than looked behind: same effect, no lookbehind,
+  // and re-emitting it means two adjacent occurrences both match.
+  const boundary = new RegExp(`(^|[^\\p{L}\\p{N}])(${body})(?![\\p{L}\\p{N}])`, "giu");
+  return text.replace(boundary, (_all, before: string, hit: string) => before + maskWord(hit));
+}
+
 const TONE: Record<string, string> = {
   ok: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
   busy: "bg-sky-500/15 text-sky-300 ring-sky-500/30",

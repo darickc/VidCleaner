@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from tests.support.library import add_detections, add_job, make_movie, make_series
-from vidcleaner.db.models import Job, MediaItem, WhitelistEntry
+from vidcleaner.db.models import Job, MediaItem, Title, WhitelistEntry
 from vidcleaner.db.session import session_scope
 
 
@@ -28,14 +28,48 @@ def jobs_of(item_id: int) -> list[Job]:
 # ---------------------------------------------------------------- the toggle
 
 
-def test_enabling_a_title_backfills_its_files(client: TestClient) -> None:
-    """§2: marking a title enqueues its existing files, now -- not in an hour."""
+def test_enabling_a_movie_backfills_its_file(client: TestClient) -> None:
+    """§2: marking a movie enqueues its existing file, now -- not in an hour."""
+    title_id, item_id = make_movie(enabled=False)
+    body = client.patch(f"/api/library/titles/{title_id}", json={"enabled": True}).json()
+
+    assert body["enabled"] is True
+    assert len(body["queued"]) == 1
+    assert {j.trigger for j in jobs_of(item_id)} == {"backfill"}
+
+
+def test_enabling_a_series_queues_nothing_and_defers_its_episodes(client: TestClient) -> None:
+    """§2 as amended in M7: the episodes a series already has arrive unselected."""
     title_id, episodes = make_series(episodes=3, enabled=False)
     body = client.patch(f"/api/library/titles/{title_id}", json={"enabled": True}).json()
 
     assert body["enabled"] is True
-    assert len(body["queued"]) == 3
-    assert {j.trigger for j in jobs_of(episodes[0])} == {"backfill"}
+    assert body["queued"] == []
+    assert body["deferred"] == 3
+    assert jobs_of(episodes[0]) == []
+    with session_scope() as session:
+        assert all(session.get(MediaItem, e).skip_backfill for e in episodes)
+
+
+def test_enabling_a_series_records_the_watermark(client: TestClient) -> None:
+    """It is what marks the episodes the sync has not created yet -- which is most of
+    them, since items are pulled only for titles that are already enabled."""
+    title_id, _ = make_series(episodes=1, enabled=False)
+    client.patch(f"/api/library/titles/{title_id}", json={"enabled": True})
+    with session_scope() as session:
+        assert session.get(Title, title_id).backfill_from is not None
+
+
+def test_deferring_leaves_alone_a_file_that_already_ran(client: TestClient) -> None:
+    """A `failed` episode is retried by the hourly pass; blanket deferral on a
+    disable/enable round trip would strand it there forever."""
+    title_id, episodes = make_series(episodes=2, enabled=False)
+    add_job(episodes[0], state="failed", is_last=True)
+
+    client.patch(f"/api/library/titles/{title_id}", json={"enabled": True})
+    with session_scope() as session:
+        assert session.get(MediaItem, episodes[0]).skip_backfill is False
+        assert session.get(MediaItem, episodes[1]).skip_backfill is True
 
 
 def test_disabling_a_title_queues_nothing(client: TestClient) -> None:
@@ -52,26 +86,29 @@ def test_re_enabling_an_enabled_title_does_not_double_queue(client: TestClient) 
 
 
 def test_a_clean_file_is_not_backfilled_again(client: TestClient) -> None:
-    """§8's catch-up gate: clean *for the profile hash it was cleaned under*."""
+    """§8's catch-up gate: clean *for the profile hash it was cleaned under*.
+
+    Driven through a movie, because since M7 enabling a series queues nothing at all;
+    the gate itself is exercised per item in `tests/contract/test_sync.py`.
+    """
     import json
 
     from vidcleaner.matching.profile import matcher_for
 
-    title_id, episodes = make_series(episodes=2, enabled=False)
+    title_id, item_id = make_movie(enabled=False)
     with session_scope() as session:
-        current = matcher_for(session, title_id=title_id, item_id=episodes[0]).profile_hash
-    job_id = add_job(
-        episodes[0],
+        current = matcher_for(session, title_id=title_id, item_id=item_id).profile_hash
+    add_job(
+        item_id,
         state="done",
         is_last=True,
         profile_snapshot_json=json.dumps({"profile_hash": current}),
     )
     with session_scope() as session:
-        session.get(MediaItem, episodes[0]).status = "clean"
+        session.get(MediaItem, item_id).status = "clean"
 
     body = client.patch(f"/api/library/titles/{title_id}", json={"enabled": True}).json()
-    assert len(body["queued"]) == 1, "only the pending episode"
-    assert job_id not in body["queued"]
+    assert body["queued"] == [], "already clean for this hash"
 
 
 def test_a_profile_can_be_set_and_cleared(client: TestClient) -> None:
@@ -143,6 +180,77 @@ def test_a_title_action_covers_every_episode(client: TestClient) -> None:
     body = client.post(f"/api/library/titles/{title_id}/actions", json={"action": "process"}).json()
     assert body["considered"] == 3 and len(body["queued"]) == 3
     assert all(jobs_of(item_id) for item_id in episodes)
+
+
+def test_a_selection_covers_only_the_files_it_names(client: TestClient) -> None:
+    """§9.3's picker: the checkbox column acts on what the user ticked."""
+    title_id, episodes = make_series(episodes=3)
+    body = client.post(
+        f"/api/library/titles/{title_id}/actions",
+        json={"action": "process", "item_ids": [episodes[0], episodes[2]]},
+    ).json()
+
+    assert body["considered"] == 2 and len(body["queued"]) == 2
+    assert body["selected"] is True
+    assert jobs_of(episodes[1]) == []
+
+
+def test_a_selection_queues_as_backfill_so_it_cannot_starve_an_import(
+    client: TestClient,
+) -> None:
+    title_id, episodes = make_series(episodes=1)
+    client.post(
+        f"/api/library/titles/{title_id}/actions",
+        json={"action": "process", "item_ids": episodes},
+    )
+    job = jobs_of(episodes[0])[0]
+    assert (job.trigger, job.priority) == ("backfill", 200), "below webhook jobs (§8)"
+
+
+def test_selecting_a_deferred_file_opts_it_back_in(client: TestClient) -> None:
+    """Otherwise the flag would keep the hourly pass from ever retrying it."""
+    title_id, episodes = make_series(episodes=2, enabled=False)
+    client.patch(f"/api/library/titles/{title_id}", json={"enabled": True})
+    client.post(
+        f"/api/library/titles/{title_id}/actions",
+        json={"action": "process", "item_ids": [episodes[0]]},
+    )
+    with session_scope() as session:
+        assert session.get(MediaItem, episodes[0]).skip_backfill is False
+        assert session.get(MediaItem, episodes[1]).skip_backfill is True
+
+
+def test_a_dry_run_does_not_opt_a_deferred_file_in(client: TestClient) -> None:
+    """A dry run never touches the library, so it is not a request to clean the file."""
+    title_id, episodes = make_series(episodes=1, enabled=False)
+    client.patch(f"/api/library/titles/{title_id}", json={"enabled": True})
+    client.post(
+        f"/api/library/titles/{title_id}/actions",
+        json={"action": "dry_run", "item_ids": episodes},
+    )
+    with session_scope() as session:
+        assert session.get(MediaItem, episodes[0]).skip_backfill is True
+
+
+def test_a_selection_naming_another_titles_file_is_rejected(client: TestClient) -> None:
+    title_id, _ = make_series(episodes=1, arr_id=1)
+    _, other = make_series("Elsewhere", arr_id=2, episodes=1)
+    response = client.post(
+        f"/api/library/titles/{title_id}/actions",
+        json={"action": "process", "item_ids": other},
+    )
+    assert response.status_code == 422
+    assert jobs_of(other[0]) == []
+
+
+def test_an_empty_selection_is_rejected(client: TestClient) -> None:
+    """`[]` must not quietly mean "every file"."""
+    title_id, _ = make_series(episodes=2)
+    response = client.post(
+        f"/api/library/titles/{title_id}/actions",
+        json={"action": "process", "item_ids": []},
+    )
+    assert response.status_code == 422
 
 
 def test_an_unknown_action_is_rejected(client: TestClient) -> None:

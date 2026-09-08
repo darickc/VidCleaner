@@ -85,6 +85,16 @@ class Title(Base):
     poster_url: Mapped[str | None] = mapped_column(Text)
     arr_path: Mapped[str | None] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    backfill_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    """When this series was enabled; files the arr dates earlier are pre-existing.
+
+    Set for series only (a movie is one file and backfills on enable, §2). NULL means
+    "no watermark": a title enabled before this column existed, which keeps its old
+    behaviour of backfilling everything. Read by `sync.sync_title_items`, which is
+    where a row can first be marked ``skip_backfill`` -- a series being enabled for
+    the first time usually has no `media_items` at all yet, because `sync_all` walks
+    items only for titles that are already enabled.
+    """
     profile_id: Mapped[int | None] = mapped_column(ForeignKey("profiles.id", ondelete="SET NULL"))
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -117,6 +127,17 @@ class MediaItem(Base):
     duration: Mapped[float | None] = mapped_column(Float)
     source_fingerprint: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="untracked")
+    skip_backfill: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    """The user has not opted this file in; automatic paths must not queue it.
+
+    Set on every file a series already had at the moment it was enabled (§2: those
+    are assumed watched), and on a file the user restores. Cleared by anything
+    explicit -- a Process/Reprocess button, a selection on the Title page -- and by a
+    `Download` webhook, because a newly imported or upgraded file is new by
+    definition. `sync.backfill_title` is the one gate that reads it; a default of
+    False is what keeps every series enabled before this column existed behaving
+    exactly as it did.
+    """
     last_job_id: Mapped[str | None] = mapped_column(String(36))  # no FK: circular with jobs
     cleaned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(

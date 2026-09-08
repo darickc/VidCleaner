@@ -23,6 +23,7 @@ import {
   ago,
   duration,
   gib,
+  maskWord,
   timecode,
   when,
 } from "../components/ui";
@@ -56,6 +57,8 @@ function DetectionCard({
 }) {
   const [open, setOpen] = useState(false);
   const [scope, setScope] = useState<Scope>("item");
+  const shown = maskWord(detection.word_raw);
+  const shownCanonical = maskWord(detection.word_canonical);
 
   return (
     <div className="border-b border-slate-800 py-2 last:border-0">
@@ -63,7 +66,7 @@ function DetectionCard({
         <span className="w-20 shrink-0 font-mono text-xs text-slate-400">
           {timecode(detection.start_s)}
         </span>
-        <span className="text-slate-100">{detection.word_raw}</span>
+        <span className="text-slate-100">{shown}</span>
         <Badge tone="idle">{detection.category}</Badge>
         <Badge tone={detection.source === "both" ? "ok" : "warn"} title="how it was found">
           {detection.source}
@@ -85,7 +88,7 @@ function DetectionCard({
           type="button"
           onClick={() => setOpen((value) => !value)}
           className="ml-auto text-xs text-slate-500 hover:text-slate-300"
-          aria-label={`${open ? "Hide" : "Review"} ${detection.word_raw} at ${timecode(detection.start_s)}`}
+          aria-label={`${open ? "Hide" : "Review"} ${shown} at ${timecode(detection.start_s)}`}
         >
           {open ? "close" : "review"}
         </button>
@@ -97,7 +100,7 @@ function DetectionCard({
             <>
               <img
                 src={`${detection.snippet}/wave.png`}
-                alt={`Waveform around ${detection.word_raw}`}
+                alt={`Waveform around ${shown}`}
                 className="w-full max-w-xl rounded"
               />
               <Clip src={`${detection.snippet}/orig.m4a`} label="Original" />
@@ -111,7 +114,7 @@ function DetectionCard({
             <select
               value={scope}
               onChange={(event) => setScope(event.target.value as Scope)}
-              aria-label={`Whitelist scope for ${detection.word_canonical}`}
+              aria-label={`Whitelist scope for ${shownCanonical}`}
               className="rounded border border-slate-800 bg-slate-900 px-2 py-1 text-xs"
             >
               {(Object.keys(SCOPE_LABEL) as Scope[]).map((value) => (
@@ -123,7 +126,7 @@ function DetectionCard({
             <Button
               disabled={busy}
               onClick={() => onWhitelist(detection.word_canonical, scope)}
-              aria-label={`Whitelist ${detection.word_canonical}`}
+              aria-label={`Whitelist ${shownCanonical}`}
             >
               Whitelist &amp; reprocess
             </Button>
@@ -200,7 +203,7 @@ export function ItemPage() {
       addWhitelist(id, { canonical_word: word, scope, reprocess: true }),
     onSuccess: (result) => {
       setNote(
-        `“${result.canonical_word}” allowed in ${SCOPE_LABEL[result.scope as Scope]}` +
+        `“${maskWord(result.canonical_word)}” allowed in ${SCOPE_LABEL[result.scope as Scope]}` +
           (result.job_id ? " — reprocessing." : "."),
       );
       refresh();
@@ -297,7 +300,7 @@ export function ItemPage() {
               {data.counts.map((count) => (
                 <li key={`${count.word_canonical}:${count.category}`} className="flex gap-2">
                   <span className="w-10 shrink-0 text-right text-slate-400">{count.total}×</span>
-                  <span className="text-slate-200">{count.word_canonical}</span>
+                  <span className="text-slate-200">{maskWord(count.word_canonical)}</span>
                   <Badge tone="idle">{count.category}</Badge>
                   {count.suspicious ? <Badge tone="warn">{count.suspicious} suspicious</Badge> : null}
                 </li>
@@ -323,13 +326,13 @@ export function ItemPage() {
             <ul className="space-y-1 text-sm">
               {data.whitelist.map((entry) => (
                 <li key={entry.id} className="flex items-center gap-2">
-                  <span className="text-slate-200">{entry.canonical_word}</span>
+                  <span className="text-slate-200">{maskWord(entry.canonical_word)}</span>
                   <Badge tone="idle">{SCOPE_LABEL[entry.scope as Scope] ?? entry.scope}</Badge>
                   <button
                     type="button"
                     onClick={() => forget.mutate(entry.id)}
                     className="text-xs text-slate-600 hover:text-rose-300"
-                    aria-label={`Remove ${entry.canonical_word} from the whitelist`}
+                    aria-label={`Remove ${maskWord(entry.canonical_word)} from the whitelist`}
                   >
                     remove
                   </button>

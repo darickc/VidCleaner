@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from vidcleaner.db.models import (
     Backup,
@@ -198,6 +198,47 @@ def test_a_download_for_an_enabled_series_queues_a_job(
         assert item.path == LOCAL_E01, "the path is mapped before it reaches the database"
         assert item.arr_file_id == 501
         assert item.episode_title == "Pilot"
+
+
+def test_a_download_clears_a_deferral_and_queues(
+    client: TestClient, token: str, mapped, series
+) -> None:
+    """§2: new files process by default. A file arriving at a path the user chose not
+    to backfill is still a new file, so it is cleaned."""
+    assert post(client, token, download()).status_code == 200
+    job = jobs()[0]
+    with session_scope() as session:
+        item = session.get(MediaItem, job.media_item_id)
+        item.skip_backfill = True
+        item_id, item.status = item.id, "clean"
+        session.execute(delete(Job))
+
+    assert post(client, token, download(upgrade=True)).json()["job_id"] is not None
+    with session_scope() as session:
+        assert session.get(MediaItem, item_id).skip_backfill is False
+
+
+def test_a_rename_does_not_clear_a_deferral(client: TestClient, token: str, mapped, series) -> None:
+    """A rename is not an arrival."""
+    assert post(client, token, download()).status_code == 200
+    with session_scope() as session:
+        item = session.scalars(select(MediaItem)).one()
+        item.skip_backfill = True
+        item_id = item.id
+
+    post(
+        client,
+        token,
+        {
+            "eventType": "Rename",
+            "series": {"id": 42, "title": "Show", "path": "/tv/Show", "tvdbId": 1},
+            "renamedEpisodeFiles": [
+                {"id": 501, "previousPath": E01, "path": "/tv/Show/S01E01 - New.mkv"}
+            ],
+        },
+    )
+    with session_scope() as session:
+        assert session.get(MediaItem, item_id).skip_backfill is True
 
 
 def test_a_download_for_a_disabled_title_is_recorded_but_not_queued(

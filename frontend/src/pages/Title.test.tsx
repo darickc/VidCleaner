@@ -16,6 +16,18 @@ const DETAIL = {
       ...item({ id: 8, episode: 2, episode_title: "The Detail", status: "failed" }),
       detection_count: 0,
     },
+    {
+      ...item({
+        id: 9,
+        season: 2,
+        episode: 1,
+        episode_title: "Ebb Tide",
+        label: "The Wire S02E01 — Ebb Tide",
+        status: "pending",
+        skip_backfill: true,
+      }),
+      detection_count: 0,
+    },
   ],
   counts: [
     { word_canonical: "shit", category: "strong", total: 3, muted: 3 },
@@ -51,7 +63,7 @@ describe("title page", () => {
   it("shows the per-word rollup", async () => {
     stub();
     render();
-    await waitFor(() => expect(screen.getByText("shit")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("s**t")).toBeInTheDocument());
     expect(screen.getByText("3×")).toBeInTheDocument();
     expect(screen.getByText("religious")).toBeInTheDocument();
   });
@@ -92,6 +104,80 @@ describe("title page", () => {
     await waitFor(() =>
       expect(screen.getByText("process: 2 skipped (already active)")).toBeInTheDocument(),
     );
+  });
+
+  it("groups the episodes by season", async () => {
+    stub();
+    render();
+    await waitFor(() => expect(screen.getByText("Season 1")).toBeInTheDocument());
+    expect(screen.getByText("Season 2")).toBeInTheDocument();
+  });
+
+  it("shows a deferred file as not queued", async () => {
+    stub();
+    render();
+    await waitFor(() => expect(screen.getByText("not queued")).toBeInTheDocument());
+  });
+
+  it("processes only the files that are ticked", async () => {
+    const api = stub({
+      "/library/titles/3/actions": {
+        action: "process",
+        selected: true,
+        queued: ["a"],
+        skipped: {},
+        restored: [],
+        considered: 1,
+        warnings: [],
+      },
+    });
+    render();
+
+    const button = await screen.findByRole("button", { name: /Process selected/ });
+    expect(button).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Select The Wire S02E01 — Ebb Tide" }));
+    expect(screen.getByRole("button", { name: "Process selected (1)" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Process selected (1)" }));
+
+    await waitFor(() =>
+      expect(api.calls.find((c) => c.method === "POST")?.body).toEqual({
+        action: "process",
+        item_ids: [9],
+      }),
+    );
+  });
+
+  it("a season checkbox ticks that season only", async () => {
+    const api = stub({
+      "/library/titles/3/actions": {
+        action: "process",
+        selected: true,
+        queued: ["a", "b"],
+        skipped: {},
+        restored: [],
+        considered: 2,
+        warnings: [],
+      },
+    });
+    render();
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Select season 1" }));
+    await userEvent.click(screen.getByRole("button", { name: "Process selected (2)" }));
+
+    await waitFor(() =>
+      expect(api.calls.find((c) => c.method === "POST")?.body).toEqual({
+        action: "process",
+        item_ids: [7, 8],
+      }),
+    );
+  });
+
+  it("select all covers every season", async () => {
+    stub();
+    render();
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Select all files" }));
+    expect(screen.getByRole("button", { name: "Process selected (3)" })).toBeEnabled();
   });
 
   it("asks before reprocessing everything", async () => {
@@ -143,7 +229,7 @@ describe("the profile override", () => {
     /** A dropdown with one option is a control that cannot do anything. */
     stub();
     render();
-    await screen.findByText("shit");
+    await screen.findByText("s**t");
     expect(screen.queryByLabelText("Profile for The Wire")).not.toBeInTheDocument();
   });
 

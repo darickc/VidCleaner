@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from vidcleaner.api.views import (
@@ -46,6 +46,8 @@ class TitleRow(TitleRef):
     clean_count: int = 0
     failed_count: int = 0
     pending_count: int = 0
+    deferred_count: int = 0
+    """Files waiting for the user to select them (§9.3), excluded from ``pending``."""
     last_synced_at: datetime | None = None
 
 
@@ -78,21 +80,29 @@ class TitleDetail(BaseModel):
 
 
 def _status_counts():
-    """One aggregate per status bucket, grouped by title."""
+    """One aggregate per status bucket, grouped by title.
+
+    ``deferred`` is carved *out* of ``pending``: a series enabled since M7 arrives
+    with every episode unselected, and counting those as pending would show a
+    permanent "0/60 clean, 60 pending" that reads exactly like a stuck backlog.
+    """
+    outstanding = MediaItem.status.notin_((*DONE_STATUSES, "failed"))
+    deferred = and_(outstanding, MediaItem.skip_backfill.is_(True))
     return (
         func.count(MediaItem.id).label("item_count"),
         func.sum(case((MediaItem.status.in_(DONE_STATUSES), 1), else_=0)).label("clean_count"),
         func.sum(case((MediaItem.status == "failed", 1), else_=0)).label("failed_count"),
-        func.sum(case((MediaItem.status.notin_((*DONE_STATUSES, "failed")), 1), else_=0)).label(
+        func.sum(case((and_(outstanding, MediaItem.skip_backfill.is_(False)), 1), else_=0)).label(
             "pending_count"
         ),
+        func.sum(case((deferred, 1), else_=0)).label("deferred_count"),
     )
 
 
 def _title_row(title: Title, counts: tuple[int | None, ...]) -> TitleRow:
     base = title_ref(title)
     assert base is not None
-    item_count, clean_count, failed_count, pending_count = counts
+    item_count, clean_count, failed_count, pending_count, deferred_count = counts
     return TitleRow(
         **base.model_dump(),
         arr_id=title.arr_id,
@@ -103,6 +113,7 @@ def _title_row(title: Title, counts: tuple[int | None, ...]) -> TitleRow:
         clean_count=clean_count or 0,
         failed_count=failed_count or 0,
         pending_count=pending_count or 0,
+        deferred_count=deferred_count or 0,
         last_synced_at=utc(title.last_synced_at),
     )
 

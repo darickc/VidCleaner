@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from vidcleaner.db.constants import DEFAULT_PRIORITY, WHITELIST_SCOPES
 from vidcleaner.db.models import Backup, Job, MediaItem, Profile, Title, WhitelistEntry
-from vidcleaner.db.session import get_db
+from vidcleaner.db.session import get_db, utcnow
 from vidcleaner.logging import get_logger
 from vidcleaner.matching.profile import clear_matcher_cache
 from vidcleaner.settings_store import load_settings
@@ -50,10 +50,20 @@ ENQUEUE_KW: dict[str, dict[str, Any]] = {
 
 class ActionRequest(BaseModel):
     action: Action = "process"
+    item_ids: list[int] | None = Field(default=None, min_length=1, max_length=1000)
+    """§9.3's picker: act on just these files instead of the whole title.
+
+    ``None`` means every file, which is what the title-level buttons have always
+    meant. An **empty list is rejected** rather than read as "all" -- a selection UI
+    that sends nothing must not clean the library. The cap is the same reasoning as
+    `sync.CHUNK_SIZE`: this loop runs inside the request's single transaction.
+    """
 
 
 class ActionResult(BaseModel):
     action: str
+    selected: bool = False
+    """True when ``item_ids`` narrowed the action to part of a title."""
     queued: list[str] = Field(default_factory=list)
     """Job ids created. Fewer than ``considered`` when items were already active."""
     skipped: dict[str, int] = Field(default_factory=dict)
@@ -75,7 +85,20 @@ class TitlePatchResult(BaseModel):
     enabled: bool
     profile_id: int | None = None
     queued: list[str] = Field(default_factory=list)
-    """§2: marking a title enqueues its existing files."""
+    """§2: marking a *movie* enqueues its existing file."""
+    deferred: int = 0
+    """Pre-existing files a *series* brought in unselected, for the UI to report.
+    Often 0 even for a large series -- the files it already has are usually not in
+    the database yet at this point; `titles.backfill_from` is what marks those when
+    the sync creates them."""
+
+
+class TitleSyncResult(BaseModel):
+    items: int = 0
+    added: int = 0
+    deferred: int = 0
+    queued: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class JobPatch(BaseModel):
@@ -108,9 +131,15 @@ class WhitelistResult(BaseModel):
 # --------------------------------------------------------------------- helpers
 
 
-def _enqueue_items(session: Session, items: list[MediaItem], action: str) -> ActionResult:
+def _enqueue_items(
+    session: Session, items: list[MediaItem], action: str, *, trigger: str | None = None
+) -> ActionResult:
+    """``trigger`` overrides the queue trigger without renaming the action, so
+    ``ActionResult.action`` still reports the button the user pressed."""
     result = ActionResult(action=action, considered=len(items))
-    kwargs = ENQUEUE_KW[action]
+    kwargs = dict(ENQUEUE_KW[action])
+    if trigger is not None:
+        kwargs["trigger"] = trigger
     for item in items:
         outcome = queue.enqueue(
             session,
@@ -120,6 +149,12 @@ def _enqueue_items(session: Session, items: list[MediaItem], action: str) -> Act
         )
         if outcome.created:
             result.queued.append(outcome.job_id)
+            if not kwargs.get("dry_run"):
+                # Asking for a file is opting it in: the flag must not put it back
+                # out of the hourly pass's reach, which is also what keeps a `failed`
+                # job retryable. A dry run never touches the library, so it is not an
+                # opt-in and deliberately leaves the flag alone.
+                item.skip_backfill = False
         else:
             result.skipped[outcome.reason] = result.skipped.get(outcome.reason, 0) + 1
     return result
@@ -200,11 +235,13 @@ def _items_of(session: Session, title_id: int) -> list[MediaItem]:
     )
 
 
-def _apply(session: Session, items: list[MediaItem], action: str) -> ActionResult:
-    return (
-        _restore_items(session, items)
-        if action == "restore"
-        else _enqueue_items(session, items, action)
+def _apply(
+    session: Session, items: list[MediaItem], action: str, *, selected: bool = False
+) -> ActionResult:
+    if action == "restore":
+        return _restore_items(session, items)
+    return _enqueue_items(
+        session, items, action, trigger="backfill" if selected and action == "process" else None
     )
 
 
@@ -233,16 +270,65 @@ def patch_title(
         title.profile_id = None
 
     queued: list[str] = []
+    deferred = 0
     if patch.enabled is not None and patch.enabled != title.enabled:
         title.enabled = patch.enabled
         db.flush()
         if patch.enabled:
-            from vidcleaner.integrations.sync import backfill_title  # noqa: PLC0415
+            from vidcleaner.integrations.sync import (  # noqa: PLC0415
+                backfill_title,
+                defer_existing_items,
+            )
 
-            queued = backfill_title(db, title, settings=load_settings(db))
+            if title.kind == "series":
+                # §2 as amended in M7: the episodes this series already has are
+                # assumed watched and arrive **unselected**; the user picks them on
+                # the Title page. The watermark is what marks the ones the sync has
+                # not created yet -- which is most of them, since items are pulled
+                # only for titles that are already enabled.
+                title.backfill_from = utcnow()
+                db.flush()
+                deferred = defer_existing_items(db, title)
+            else:
+                queued = backfill_title(db, title, settings=load_settings(db))
     db.flush()
     return TitlePatchResult(
-        id=title.id, enabled=title.enabled, profile_id=title.profile_id, queued=queued
+        id=title.id,
+        enabled=title.enabled,
+        profile_id=title.profile_id,
+        queued=queued,
+        deferred=deferred,
+    )
+
+
+@router.post("/library/titles/{title_id}/sync", response_model=TitleSyncResult)
+def sync_title(title_id: int, db: DbSession) -> TitleSyncResult:
+    """Pull one title's files from its arr now.
+
+    The UI calls this straight after enabling a title, so §9.3's picker has files to
+    show instead of waiting up to an hour for the periodic pass; it is also the Title
+    page's "Refresh from Sonarr". The work happens in
+    :func:`integrations.sync.sync_one_title`, which opens its **own** sessions -- a
+    request-scoped transaction spanning an arr round trip would hold SQLite's write
+    lock past the worker's 5 s busy timeout and break its claim.
+    """
+    from vidcleaner.integrations import from_database  # noqa: PLC0415
+    from vidcleaner.integrations.sync import sync_one_title  # noqa: PLC0415
+
+    if db.get(Title, title_id) is None:
+        raise HTTPException(status_code=404, detail=f"no title {title_id}")
+    db.commit()  # release this request's transaction before the HTTP round trip
+    bundle = from_database(db)
+    try:
+        report = sync_one_title(title_id, integrations=bundle)
+    finally:
+        bundle.close()
+    return TitleSyncResult(
+        items=report.items_seen,
+        added=report.items_added,
+        deferred=report.items_deferred,
+        queued=report.enqueued,
+        errors=report.errors,
     )
 
 
@@ -250,11 +336,36 @@ def patch_title(
 def title_action(
     title_id: int, request: Annotated[ActionRequest, Body()], db: DbSession
 ) -> ActionResult:
-    """§9.3's "process now / reprocess all / restore originals / dry-run"."""
+    """§9.3's "process now / reprocess all / restore originals / dry-run", and since
+    M7 the same verbs over a **selection** of the title's files.
+
+    A selection enqueues as ``backfill`` (priority 200) rather than ``manual`` (50):
+    ticking a whole series is a backfill by definition, and it must not push ahead of
+    an episode Sonarr just imported. The title-level buttons keep their priority --
+    they say "all", and the user pressing one is asking for exactly that.
+    """
     title = db.get(Title, title_id)
     if title is None:
         raise HTTPException(status_code=404, detail=f"no title {title_id}")
-    return _apply(db, _items_of(db, title_id), request.action)
+
+    items = _items_of(db, title_id)
+    if request.item_ids is None:
+        return _apply(db, items, request.action)
+
+    wanted = list(dict.fromkeys(request.item_ids))
+    by_id = {item.id: item for item in items}
+    missing = [item_id for item_id in wanted if item_id not in by_id]
+    if missing:
+        # 422, not 404: the title exists, the request body is what is wrong. Refusing
+        # rather than silently dropping them -- a picker that acts on a subset of what
+        # the user ticked is worse than one that errors.
+        raise HTTPException(
+            status_code=422,
+            detail=f"item(s) {missing} do not belong to title {title_id}",
+        )
+    result = _apply(db, [by_id[item_id] for item_id in wanted], request.action, selected=True)
+    result.selected = True
+    return result
 
 
 # ----------------------------------------------------------------------- items

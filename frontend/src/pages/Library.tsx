@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { getTitles, patchTitle, syncLibrary } from "../api/client";
+import { getTitles, patchTitle, syncLibrary, syncTitle } from "../api/client";
 import type { TitleRow } from "../api/types";
 import { Page } from "../components/Page";
 import { Badge, Button, Card, Empty, ErrorNote, ago } from "../components/ui";
@@ -60,15 +60,26 @@ export function LibraryPage() {
   const refresh = () => client.invalidateQueries({ queryKey: ["titles"] });
 
   const toggle = useMutation({
-    mutationFn: ({ row, enabled }: { row: TitleRow; enabled: boolean }) =>
-      patchTitle(row.id, { enabled }),
-    onSuccess: (result, { row, enabled }) => {
-      // §2's backfill is the whole point of the toggle; saying how many files it
-      // queued is the difference between "did that work?" and knowing it did.
+    mutationFn: async ({ row, enabled }: { row: TitleRow; enabled: boolean }) => {
+      const result = await patchTitle(row.id, { enabled });
+      // Pull the files now rather than at the next hourly pass, so the Title page's
+      // picker has something to show the moment the user opens it.
+      const synced = enabled ? await syncTitle(row.id).catch(() => null) : null;
+      return { result, synced };
+    },
+    onSuccess: ({ result, synced }, { row, enabled }) => {
+      // §2's backfill is the whole point of the toggle for a movie; for a series it
+      // now defers instead, and saying so is the difference between "did that work?"
+      // and a user waiting for a queue that is never going to fill.
+      const deferred = result.deferred + (synced?.deferred ?? 0);
       setNote(
-        enabled
-          ? `${row.title}: queued ${result.queued.length} file${result.queued.length === 1 ? "" : "s"}`
-          : `${row.title}: cleaning off`,
+        !enabled
+          ? `${row.title}: cleaning off`
+          : result.queued.length
+            ? `${row.title}: queued ${result.queued.length} file${result.queued.length === 1 ? "" : "s"}`
+            : `${row.title}: cleaning on — new downloads process automatically${
+                deferred ? `; ${deferred} existing file${deferred === 1 ? "" : "s"} left for you to pick` : ""
+              }`,
       );
       refresh();
     },

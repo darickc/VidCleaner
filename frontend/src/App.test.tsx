@@ -41,7 +41,7 @@ describe("app shell", () => {
     mockApi({ routes: { "/words": wordList(), "/profiles": [profile()], "/whitelist": [] } });
     renderApp(<App />, { route: "/words" });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "fuck (muted)" })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: "f**k (muted)" })).toBeInTheDocument(),
     );
     expect(screen.queryByText(/M5/)).not.toBeInTheDocument();
   });

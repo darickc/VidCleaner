@@ -21,6 +21,7 @@ import type {
   TitleDetail,
   TitleList,
   TitlePatchResult,
+  TitleSyncResult,
   WebhookSetup,
   WhitelistEntry,
   WhitelistResult,
@@ -115,8 +116,16 @@ export const patchTitle = (
   patch: { enabled?: boolean; profile_id?: number; clear_profile?: boolean },
 ) => apiPatch<TitlePatchResult>(`/library/titles/${titleId}`, patch);
 
-export const titleAction = (titleId: number, action: ActionName) =>
-  apiPost<ActionResult>(`/library/titles/${titleId}/actions`, { action });
+export const titleAction = (titleId: number, action: ActionName, itemIds?: number[]) =>
+  apiPost<ActionResult>(`/library/titles/${titleId}/actions`, {
+    action,
+    ...(itemIds ? { item_ids: itemIds } : {}),
+  });
+
+/** Pull one title's files from Sonarr/Radarr now, so §9.3's picker has rows to show
+    instead of waiting for the hourly pass. Also the "Refresh from Sonarr" button. */
+export const syncTitle = (titleId: number) =>
+  apiPost<TitleSyncResult>(`/library/titles/${titleId}/sync`);
 
 export const syncLibrary = () => apiPost<Record<string, unknown>>("/library/sync");
 

@@ -28,7 +28,14 @@ describe("library page", () => {
 
   it("turning on Clean reports how many files it queued", async () => {
     const api = stub({
-      "/library/titles/4": { id: 4, enabled: true, profile_id: null, queued: ["a", "b", "c"] },
+      "/library/titles/4": {
+        id: 4,
+        enabled: true,
+        profile_id: null,
+        queued: ["a", "b", "c"],
+        deferred: 0,
+      },
+      "/library/titles/4/sync": { items: 3, added: 0, deferred: 0, queued: [], errors: [] },
     });
     renderApp(<LibraryPage />);
 
@@ -39,6 +46,26 @@ describe("library page", () => {
     );
     const call = api.calls.find((c) => c.method === "PATCH");
     expect(call?.body).toEqual({ enabled: true });
+  });
+
+  it("turning on Clean for a series says its existing files are waiting to be picked", async () => {
+    const api = stub({
+      "/library/titles/4": { id: 4, enabled: true, profile_id: null, queued: [], deferred: 0 },
+      "/library/titles/4/sync": { items: 12, added: 12, deferred: 12, queued: [], errors: [] },
+    });
+    renderApp(<LibraryPage />);
+
+    await userEvent.click(await screen.findByRole("checkbox", { name: "Clean The Sopranos" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "The Sopranos: cleaning on — new downloads process automatically; 12 existing files left for you to pick",
+        ),
+      ).toBeInTheDocument(),
+    );
+    // The files are pulled straight away, so the Title page's picker is not empty.
+    expect(api.calls.some((c) => c.path === "/library/titles/4/sync")).toBe(true);
   });
 
   it("turning Clean off says so and queues nothing", async () => {
