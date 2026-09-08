@@ -176,7 +176,7 @@ export function TitlePage() {
     >
       <div className="space-y-6">
         <div className="flex flex-wrap items-center gap-2">
-          <label className="mr-3 flex cursor-pointer items-center gap-2 text-sm">
+          <label className="flex w-full cursor-pointer items-center gap-2 text-sm sm:mr-3 sm:w-auto">
             <input
               type="checkbox"
               checked={title.enabled}
@@ -191,11 +191,11 @@ export function TitlePage() {
               is a control that cannot do anything. The Words page points here instead,
               once a profile exists. */}
           {(profiles.data?.length ?? 0) > 1 && (
-            <label className="mr-3 flex items-center gap-2 text-sm text-slate-400">
+            <label className="flex w-full items-center gap-2 text-sm text-slate-400 sm:mr-3 sm:w-auto">
               Profile
               <select
                 aria-label={`Profile for ${title.title}`}
-                className="rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-sm outline-none focus:border-slate-600"
+                className="w-full min-w-0 rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-sm outline-none focus:border-slate-600 sm:w-auto"
                 value={title.profile_id ?? ""}
                 disabled={setProfile.isPending}
                 onChange={(event) => setProfile.mutate(event.target.value)}
@@ -220,6 +220,7 @@ export function TitlePage() {
             <Button
               key={action}
               variant={action === "restore" ? "danger" : "default"}
+              className="grow sm:grow-0"
               disabled={act.isPending}
               onClick={() => {
                 if (confirm && !window.confirm(confirm)) return;
@@ -231,7 +232,7 @@ export function TitlePage() {
           ))}
           <Link
             to="/library"
-            className="ml-auto text-sm text-slate-500 hover:text-slate-300"
+            className="w-full text-sm text-slate-500 hover:text-slate-300 sm:ml-auto sm:w-auto"
           >
             ← Library
           </Link>
@@ -240,12 +241,12 @@ export function TitlePage() {
         {note && <p className="text-sm text-sky-300">{note}</p>}
         <ErrorNote error={act.error ?? toggle.error} />
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <div className="grid gap-4 sm:gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
           <Card
             title="Files"
             actions={
               items.length > 0 && (
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                   <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-400">
                     <Check
                       checked={everySelected}
@@ -270,78 +271,81 @@ export function TitlePage() {
           >
             {items.length === 0 && <Empty>No files are tracked for this title yet.</Empty>}
             {items.length > 0 && (
-              <table className="w-full text-sm">
-                <tbody>
-                  {groups.map((group) => {
-                    const ids = group.items.map((row) => row.id);
-                    const all = ids.every((value) => selected.has(value));
-                    const some = ids.some((value) => selected.has(value));
-                    return (
-                      <Fragment key={group.season ?? "movie"}>
-                        {group.season !== null && (
-                          <tr className="border-b border-slate-800">
-                            <td className="py-2 pr-2">
-                              <Check
-                                checked={all}
-                                indeterminate={some}
-                                label={`Select season ${group.season}`}
-                                onChange={(checked) => toggleMany(ids, checked)}
-                              />
-                            </td>
-                            <td colSpan={5} className="py-2 text-xs uppercase tracking-wide text-slate-500">
-                              Season {group.season}
-                            </td>
-                          </tr>
-                        )}
-                        {group.items.map((row) => (
-                          <tr key={row.id} className="border-b border-slate-800 last:border-0">
-                            <td className="py-2 pr-2">
-                              <Check
-                                checked={selected.has(row.id)}
-                                label={`Select ${row.label}`}
-                                onChange={(checked) => toggleMany([row.id], checked)}
-                              />
-                            </td>
-                            <td className="py-2 pr-3">
-                              <Link
-                                to={`/items/${row.id}`}
-                                className="text-slate-100 hover:text-sky-300"
-                              >
-                                {row.season !== null && row.episode !== null
-                                  ? `S${String(row.season).padStart(2, "0")}E${String(row.episode).padStart(2, "0")}`
-                                  : row.title}
-                              </Link>
-                              {row.episode_title && (
-                                <span className="ml-2 text-slate-400">{row.episode_title}</span>
-                              )}
-                            </td>
-                            <td className="py-2 pr-3">
-                              {row.skip_backfill && row.status !== "clean" ? (
-                                <Badge tone="idle">not queued</Badge>
-                              ) : (
-                                <StateBadge state={row.status} />
-                              )}
-                            </td>
-                            <td className="py-2 pr-3 text-xs text-slate-500">
-                              {row.detection_count > 0
-                                ? `${row.detection_count} muted`
-                                : row.status === "clean"
-                                  ? "nothing found"
-                                  : "—"}
-                            </td>
-                            <td className="py-2 pr-3 text-xs text-slate-600">
-                              {duration(row.duration)} · {gib(row.size)}
-                            </td>
-                            <td className="py-2 text-right text-xs text-slate-600">
-                              {row.cleaned_at ? `cleaned ${ago(row.cleaned_at)}` : ""}
-                            </td>
-                          </tr>
-                        ))}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div className="-mx-1 overflow-x-auto px-1">
+                <table className="w-full text-sm">
+                  <tbody>
+                    {groups.map((group) => {
+                      const ids = group.items.map((row) => row.id);
+                      const all = ids.every((value) => selected.has(value));
+                      const some = ids.some((value) => selected.has(value));
+                      return (
+                        <Fragment key={group.season ?? "movie"}>
+                          {group.season !== null && (
+                            <tr className="border-b border-slate-800">
+                              <td className="py-2 pr-2">
+                                <Check
+                                  checked={all}
+                                  indeterminate={some}
+                                  label={`Select season ${group.season}`}
+                                  onChange={(checked) => toggleMany(ids, checked)}
+                                />
+                              </td>
+                              <td colSpan={3} className="py-2 text-xs uppercase tracking-wide text-slate-500">
+                                Season {group.season}
+                              </td>
+                              <td colSpan={2} className="hidden sm:table-cell" />
+                            </tr>
+                          )}
+                          {group.items.map((row) => (
+                            <tr key={row.id} className="border-b border-slate-800 last:border-0">
+                              <td className="py-2 pr-2">
+                                <Check
+                                  checked={selected.has(row.id)}
+                                  label={`Select ${row.label}`}
+                                  onChange={(checked) => toggleMany([row.id], checked)}
+                                />
+                              </td>
+                              <td className="min-w-0 py-2 pr-3">
+                                <Link
+                                  to={`/items/${row.id}`}
+                                  className="text-slate-100 hover:text-sky-300"
+                                >
+                                  {row.season !== null && row.episode !== null
+                                    ? `S${String(row.season).padStart(2, "0")}E${String(row.episode).padStart(2, "0")}`
+                                    : row.title}
+                                </Link>
+                                {row.episode_title && (
+                                  <span className="ml-2 text-slate-400">{row.episode_title}</span>
+                                )}
+                              </td>
+                              <td className="py-2 pr-3">
+                                {row.skip_backfill && row.status !== "clean" ? (
+                                  <Badge tone="idle">not queued</Badge>
+                                ) : (
+                                  <StateBadge state={row.status} />
+                                )}
+                              </td>
+                              <td className="py-2 pr-3 text-xs text-slate-500">
+                                {row.detection_count > 0
+                                  ? `${row.detection_count} muted`
+                                  : row.status === "clean"
+                                    ? "nothing found"
+                                    : "—"}
+                              </td>
+                              <td className="hidden py-2 pr-3 text-xs text-slate-600 sm:table-cell">
+                                {duration(row.duration)} · {gib(row.size)}
+                              </td>
+                              <td className="hidden py-2 text-right text-xs text-slate-600 sm:table-cell">
+                                {row.cleaned_at ? `cleaned ${ago(row.cleaned_at)}` : ""}
+                              </td>
+                            </tr>
+                          ))}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             )}
           </Card>
 
@@ -349,7 +353,7 @@ export function TitlePage() {
             {counts.length === 0 && <Empty>Nothing has been detected yet.</Empty>}
             <ul className="space-y-1 text-sm">
               {counts.map((count) => (
-                <li key={`${count.word_canonical}:${count.category}`} className="flex gap-2">
+                <li key={`${count.word_canonical}:${count.category}`} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                   <span className="w-10 shrink-0 text-right text-slate-400">{count.total}×</span>
                   <span className="text-slate-200">{maskWord(count.word_canonical)}</span>
                   <Badge tone="idle">{count.category}</Badge>

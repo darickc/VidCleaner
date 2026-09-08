@@ -255,7 +255,13 @@ function FieldRow({
   onChange: (value: string | number | boolean) => void;
 }) {
   return (
-    <div className="grid grid-cols-[14rem_minmax(0,1fr)] items-center gap-3 py-1">
+    <div
+      className={`grid gap-1 py-1.5 sm:grid-cols-[14rem_minmax(0,1fr)] sm:items-center sm:gap-3 sm:py-1 ${
+        field.kind === "bool"
+          ? "grid-cols-[minmax(0,1fr)_auto] items-center"
+          : "grid-cols-1"
+      }`}
+    >
       <label htmlFor={field.key} className="text-sm text-slate-400">
         {field.label}
         {field.help && (
@@ -278,13 +284,13 @@ function WebhookPanel({ app, label }: { app: string; label: string }) {
   return (
     <div className="space-y-1 border-t border-slate-800 pt-3 text-sm">
       <div className="text-slate-400">{label} webhook</div>
-      <code className="block truncate rounded bg-slate-950/70 px-2 py-1 text-xs text-slate-300">
+      <code className="block break-all rounded bg-slate-950/70 px-2 py-1 text-xs text-slate-300">
         {data.url}
       </code>
-      <code className="block truncate rounded bg-slate-950/70 px-2 py-1 text-xs text-slate-300">
+      <code className="block break-all rounded bg-slate-950/70 px-2 py-1 text-xs text-slate-300">
         {data.header_name}: {data.token}
       </code>
-      <div className="flex items-center gap-2 pt-1">
+      <div className="flex flex-wrap items-center gap-2 pt-1">
         <Button onClick={() => install.mutate()} disabled={install.isPending}>
           Add to {label}
         </Button>
@@ -329,10 +335,10 @@ function BackupsPanel() {
 
   const s = data.summary;
   const ask = (scope: "expired" | "orphaned", count: number, bytes: number) => (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       {pending === scope ? (
         <>
-          <span className="text-sm text-amber-300">
+          <span className="w-full text-sm text-amber-300 sm:w-auto">
             Delete {count} original{count === 1 ? "" : "s"} ({gib(bytes)})? This
             cannot be undone.
           </span>
@@ -368,7 +374,7 @@ function BackupsPanel() {
           )}
         </div>
         <p className="text-slate-400">
-          Originals live in <code>{s.backups_dir}</code>. Restoring a file needs
+          Originals live in <code className="break-all">{s.backups_dir}</code>. Restoring a file needs
           its original, so purging one makes that episode's clean permanent.
         </p>
         {ask("expired", s.expired, s.expired_bytes)}
@@ -444,7 +450,7 @@ function PathMappings() {
       {current.map((row, index) => (
         <div
           key={index}
-          className="mb-2 grid grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)_3rem] gap-2"
+          className="mb-3 grid grid-cols-1 gap-2 border-b border-slate-800/60 pb-3 last:mb-0 last:border-0 last:pb-0 sm:mb-2 sm:grid-cols-[7rem_minmax(0,1fr)_minmax(0,1fr)_3rem] sm:border-0 sm:pb-0"
         >
           <select
             value={row.app}
@@ -477,7 +483,7 @@ function PathMappings() {
           <button
             type="button"
             onClick={() => setRows(current.filter((_, i) => i !== index))}
-            className="text-xs text-slate-600 hover:text-rose-300"
+            className="justify-self-end text-xs text-slate-600 hover:text-rose-300 sm:justify-self-auto"
             aria-label={`Remove mapping ${index + 1}`}
           >
             remove
@@ -546,8 +552,8 @@ export function SettingsPage() {
       title="Settings"
       subtitle="Integrations, STT models, codec policy and retention."
     >
-      <div className="max-w-3xl space-y-6">
-        <div className="flex items-center gap-3">
+      <div className="max-w-3xl space-y-4 sm:space-y-6">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <Button
             variant="primary"
             disabled={!dirty || save.isPending}
@@ -567,7 +573,7 @@ export function SettingsPage() {
         <Card title="Integrations">
           {APPS.map((app) => (
             <div key={app.app} className="mb-5 space-y-2 last:mb-0">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-medium text-slate-200">
                   {app.label}
                 </h3>

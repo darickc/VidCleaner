@@ -2451,6 +2451,36 @@ Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 down
   milestone box stays unticked until the §11 demo runs against the real Sonarr and Jellyfin,
   per §15.2.
 
+- 2026-09-07 — **The UI is responsive; §9's screens now work on a phone.** The shell was the
+  whole problem: a permanently visible `w-56` rail beside `main`'s `p-8` left 87px of content at
+  375px. Below `md` the rail is now an off-canvas drawer behind a hamburger, and `main` carries
+  `min-w-0` — without which a wide table widens `main` instead of scrolling inside it, and the
+  scroll containers added to all five tables would never fire. **One** `<nav>` element serves
+  both the drawer and the desktop rail: two would put every link in the DOM twice and break
+  `getByRole("link")` everywhere. The closed drawer is hidden with `invisible`, *not*
+  `aria-hidden` (which hides it from role queries even when it is the visible desktop rail) and
+  not `hidden` (`display` will not transition); `visibility` drops the off-canvas links from tab
+  order in CSS alone, so no breakpoint reaches JavaScript and no `matchMedia` polyfill is owed to
+  jsdom. It is in the transition list on purpose — an interpolating `hidden <-> visible` computes
+  to `visible` throughout, so the drawer stays painted for the whole slide out. The transitioned
+  property is `translate`, not `transform`: Tailwind v4's `-translate-x-full` sets the
+  independent `translate` property, and naming `transform` animates nothing — caught in a browser,
+  never by a test. Dense tables **hide low-value columns** at `<sm` rather than becoming cards:
+  cheap, and no row markup was rewritten. What stays is deliberate — Title keeps `N muted` (the
+  only column saying whether opening a file is worth it) and the whitelist keeps `Effect`, since
+  `leave audible` vs `mute anyway` inverts a row's meaning. Title's season header `colSpan` was
+  split so header and body agree at 4 columns below `sm` and 6 above. Webhook URLs and tokens
+  went from `truncate` to `break-all`: they exist to be copied, and a `title=` tooltip is a hover
+  affordance a phone does not have. Desktop is unchanged, measured rather than asserted — `main`,
+  card and heading geometry are identical across five routes before and after, `contentHeight`
+  included, and the audio player is capped at `max-w-64` so it stays exactly the 256px `w-64`
+  gave it. Touch targets reach 44px through `pointer-coarse:`, keyed on pointer type rather than
+  viewport, so a fine-pointer desktop keeps its density. `npm test` 108 passed, with the five
+  existing `App.test.tsx` assertions unedited — the signal the single-nav constraint held.
+  Verified in a browser at 375/768/1280: zero horizontal overflow on all six routes, and a drawer
+  left open while widening past `md` becomes a normal rail with no scrim stranded over the page.
+  No milestone box changes; this is outside the M0–M7 track.
+
 ## 15. Working agreement for future sessions
 
 1. Read `PLAN.md` §2 (locked decisions) and §11 (next unchecked milestone) before coding.

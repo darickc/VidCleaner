@@ -99,7 +99,7 @@ export function LibraryPage() {
   return (
     <Page title="Library" subtitle="Mark series and movies for cleaning.">
       <div className="space-y-4">
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <div className="flex rounded border border-slate-800">
             {(["series", "movie"] as Kind[]).map((value) => (
               <button
@@ -119,7 +119,7 @@ export function LibraryPage() {
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search"
             aria-label="Search titles"
-            className="rounded border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-sm outline-none focus:border-slate-600"
+            className="w-full min-w-0 rounded border border-slate-800 bg-slate-900/60 px-3 py-1.5 text-sm outline-none focus:border-slate-600 sm:w-auto"
           />
           <label className="flex items-center gap-2 text-sm text-slate-400">
             <input
@@ -132,7 +132,7 @@ export function LibraryPage() {
           </label>
           <Button
             variant="primary"
-            className="ml-auto"
+            className="w-full sm:ml-auto sm:w-auto"
             onClick={() => sync.mutate()}
             disabled={sync.isPending}
           >
@@ -152,43 +152,45 @@ export function LibraryPage() {
             </Empty>
           )}
           {data && data.titles.length > 0 && (
-            <table className="w-full text-sm">
-              <tbody>
-                {data.titles.map((row) => (
-                  <tr key={row.id} className="border-b border-slate-800 last:border-0">
-                    <td className="py-2 pr-3">
-                      <Link
-                        to={`/titles/${row.id}`}
-                        className="text-slate-100 hover:text-sky-300"
-                      >
-                        {row.title}
-                      </Link>
-                      {row.year && <span className="ml-2 text-xs text-slate-500">{row.year}</span>}
-                      {row.profile_id && (
-                        <Badge tone="idle" title="profile override">
-                          profile
-                        </Badge>
-                      )}
-                    </td>
-                    <td className="py-2 pr-3">
-                      <Progress row={row} />
-                    </td>
-                    <td className="py-2 pr-3 text-xs text-slate-600">
-                      synced {ago(row.last_synced_at)}
-                    </td>
-                    <td className="py-2 text-right">
-                      <div className="flex justify-end">
-                        <Toggle
-                          row={row}
-                          disabled={toggle.isPending}
-                          onChange={(enabled) => toggle.mutate({ row, enabled })}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="-mx-1 overflow-x-auto px-1">
+              <table className="w-full text-sm">
+                <tbody>
+                  {data.titles.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-800 last:border-0">
+                      <td className="min-w-0 py-2 pr-3">
+                        <Link
+                          to={`/titles/${row.id}`}
+                          className="text-slate-100 hover:text-sky-300"
+                        >
+                          {row.title}
+                        </Link>
+                        {row.year && <span className="ml-2 text-xs text-slate-500">{row.year}</span>}
+                        {row.profile_id && (
+                          <Badge tone="idle" title="profile override">
+                            profile
+                          </Badge>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <Progress row={row} />
+                      </td>
+                      <td className="hidden py-2 pr-3 text-xs text-slate-600 sm:table-cell">
+                        synced {ago(row.last_synced_at)}
+                      </td>
+                      <td className="py-2 text-right">
+                        <div className="flex justify-end">
+                          <Toggle
+                            row={row}
+                            disabled={toggle.isPending}
+                            onChange={(enabled) => toggle.mutate({ row, enabled })}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
       </div>

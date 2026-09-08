@@ -38,10 +38,10 @@ const SCOPE_LABEL: Record<Scope, string> = {
 
 function Clip({ src, label }: { src: string; label: string }) {
   return (
-    <div className="flex items-center gap-2">
-      <span className="w-16 shrink-0 text-xs text-slate-500">{label}</span>
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="w-12 shrink-0 text-xs text-slate-500 sm:w-16">{label}</span>
       {/* eslint-disable-next-line jsx-a11y/media-has-caption -- 5 s of audio, no speech track */}
-      <audio controls preload="none" src={src} aria-label={label} className="h-8 w-64" />
+      <audio controls preload="none" src={src} aria-label={label} className="h-8 w-full min-w-0 max-w-64" />
     </div>
   );
 }
@@ -62,7 +62,7 @@ function DetectionCard({
 
   return (
     <div className="border-b border-slate-800 py-2 last:border-0">
-      <div className="flex flex-wrap items-center gap-3 text-sm">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm sm:gap-x-3">
         <span className="w-20 shrink-0 font-mono text-xs text-slate-400">
           {timecode(detection.start_s)}
         </span>
@@ -81,7 +81,7 @@ function DetectionCard({
         )}
         {detection.whitelisted && <Badge tone="idle">whitelisted</Badge>}
         {!detection.muted && !detection.whitelisted && <Badge tone="idle">not muted</Badge>}
-        <span className="text-xs text-slate-600">
+        <span className="hidden text-xs text-slate-600 sm:inline">
           muted {(detection.mute_end_s - detection.mute_start_s).toFixed(2)}s
         </span>
         <button
@@ -151,11 +151,14 @@ function Summary({ data }: { data: ItemDetail }) {
     ["Job", job ? `${job.trigger}${job.dry_run ? " (dry run)" : ""}` : "—"],
   ];
   return (
-    <dl className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
+    <dl className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-x-4">
       {rows.map(([label, value]) => (
         <div key={label} className="contents">
           <dt className="text-slate-500">{label}</dt>
-          <dd className="truncate text-slate-200" title={value}>
+          <dd
+            className={`text-slate-200 ${label === "Path" ? "break-all sm:truncate" : "truncate"}`}
+            title={value}
+          >
             {value}
           </dd>
         </div>
@@ -234,17 +237,18 @@ export function ItemPage() {
     >
       <div className="space-y-6">
         <div className="flex flex-wrap items-center gap-2">
-          <Button disabled={busy} onClick={() => act.mutate("process")}>
+          <Button disabled={busy} onClick={() => act.mutate("process")} className="grow sm:grow-0">
             Process now
           </Button>
-          <Button variant="primary" disabled={busy} onClick={() => act.mutate("reprocess")}>
+          <Button variant="primary" disabled={busy} onClick={() => act.mutate("reprocess")} className="grow sm:grow-0">
             Reprocess
           </Button>
-          <Button disabled={busy} onClick={() => act.mutate("dry_run")}>
+          <Button disabled={busy} onClick={() => act.mutate("dry_run")} className="grow sm:grow-0">
             Dry run
           </Button>
           <Button
             variant="danger"
+            className="grow sm:grow-0"
             disabled={busy || !data.restorable}
             title={data.restorable ? undefined : "no backup is kept for this file"}
             onClick={() => {
@@ -256,7 +260,7 @@ export function ItemPage() {
           {data.title && (
             <Link
               to={`/titles/${data.title.id}`}
-              className="ml-auto text-sm text-slate-500 hover:text-slate-300"
+              className="w-full min-w-0 truncate text-sm text-slate-500 hover:text-slate-300 sm:ml-auto sm:w-auto"
             >
               ← {data.title.title}
             </Link>
@@ -266,7 +270,7 @@ export function ItemPage() {
         {note && <p className="text-sm text-sky-300">{note}</p>}
         <ErrorNote error={act.error ?? whitelist.error ?? forget.error} />
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="grid gap-4 sm:gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
           <Card
             title="Summary"
             actions={data.job ? <StateBadge state={data.job.state} /> : null}
@@ -298,7 +302,7 @@ export function ItemPage() {
             {data.counts.length === 0 && <Empty>Nothing was detected in this run.</Empty>}
             <ul className="space-y-1 text-sm">
               {data.counts.map((count) => (
-                <li key={`${count.word_canonical}:${count.category}`} className="flex gap-2">
+                <li key={`${count.word_canonical}:${count.category}`} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                   <span className="w-10 shrink-0 text-right text-slate-400">{count.total}×</span>
                   <span className="text-slate-200">{maskWord(count.word_canonical)}</span>
                   <Badge tone="idle">{count.category}</Badge>
@@ -325,7 +329,7 @@ export function ItemPage() {
           <Card title="Whitelist in scope">
             <ul className="space-y-1 text-sm">
               {data.whitelist.map((entry) => (
-                <li key={entry.id} className="flex items-center gap-2">
+                <li key={entry.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span className="text-slate-200">{maskWord(entry.canonical_word)}</span>
                   <Badge tone="idle">{SCOPE_LABEL[entry.scope as Scope] ?? entry.scope}</Badge>
                   <button

@@ -126,7 +126,7 @@ function CategoryCard({
   return (
     <Card
       title={
-        <span className="flex items-center gap-2">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
           {category}
           <Badge tone={active ? "ok" : "idle"}>
             {active ? `in ${profileName}` : `not in ${profileName}`}
@@ -184,8 +184,8 @@ function AddWord({ categories }: { categories: string[] }) {
 
   return (
     <Card title="Add a word or phrase">
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex flex-col gap-1 text-xs text-slate-400">
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
+        <label className="flex w-full flex-col gap-1 text-xs text-slate-400 sm:w-auto">
           Word or phrase
           <input
             aria-label="Word or phrase"
@@ -195,7 +195,7 @@ function AddWord({ categories }: { categories: string[] }) {
             placeholder="frak"
           />
         </label>
-        <label className="flex flex-col gap-1 text-xs text-slate-400">
+        <label className="flex w-full flex-col gap-1 text-xs text-slate-400 sm:w-auto">
           Category
           <select
             aria-label="Category"
@@ -210,7 +210,7 @@ function AddWord({ categories }: { categories: string[] }) {
             ))}
           </select>
         </label>
-        <label className="flex flex-1 flex-col gap-1 text-xs text-slate-400">
+        <label className="flex w-full flex-col gap-1 text-xs text-slate-400 sm:w-auto sm:flex-1">
           Other forms, comma separated
           <input
             aria-label="Other forms, comma separated"
@@ -220,7 +220,12 @@ function AddWord({ categories }: { categories: string[] }) {
             placeholder="fraks, fraking"
           />
         </label>
-        <Button variant="primary" onClick={submit} disabled={!canonical.trim() || create.isPending}>
+        <Button
+          variant="primary"
+          className="w-full sm:w-auto"
+          onClick={submit}
+          disabled={!canonical.trim() || create.isPending}
+        >
           Add
         </Button>
       </div>
@@ -341,7 +346,7 @@ function ProfileEditor({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
           <label className="flex flex-col gap-1 text-xs text-slate-400">
             Padding before (ms)
             <input
@@ -376,14 +381,14 @@ function ProfileEditor({
               }
             />
           </label>
-          <p className="flex-1 text-xs text-slate-500">
+          <p className="w-full text-xs text-slate-500 sm:flex-1">
             Recognition tends to place a word late, so the default pads more after (120 ms) than
             before (80 ms).
           </p>
         </div>
 
-        <div className="flex flex-wrap items-end gap-3 border-t border-slate-800 pt-3">
-          <label className="flex flex-col gap-1 text-xs text-slate-400">
+        <div className="flex flex-wrap items-end gap-x-3 gap-y-2 border-t border-slate-800 pt-3">
+          <label className="flex w-full flex-col gap-1 text-xs text-slate-400 sm:w-auto">
             New profile
             <input
               aria-label="New profile"
@@ -399,7 +404,7 @@ function ProfileEditor({
           >
             Create
           </Button>
-          <p className="flex-1 text-xs text-slate-500">
+          <p className="w-full text-xs text-slate-500 sm:flex-1">
             Assign a profile to a series or movie from its own page.
           </p>
         </div>
@@ -424,44 +429,46 @@ function WhitelistCard() {
       {!data || data.length === 0 ? (
         <Empty>Nothing whitelisted.</Empty>
       ) : (
-        <table className="w-full text-sm">
-          <thead className="text-xs tracking-wide text-slate-500 uppercase">
-            <tr>
-              <th className="py-1 text-left">Word</th>
-              <th className="py-1 text-left">Scope</th>
-              <th className="py-1 text-left">Effect</th>
-              <th className="py-1 text-left">Only when it says</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((row) => (
-              <tr key={row.id} className="border-t border-slate-800/60">
-                <td className="py-1 font-medium text-slate-200">{maskWord(row.canonical_word)}</td>
-                <td className="py-1 text-slate-400">
-                  {row.scope === "global" ? "everywhere" : (row.label ?? row.scope)}
-                </td>
-                <td className="py-1">
-                  <Badge tone={row.mode === "allow" ? "warn" : "idle"}>
-                    {row.mode === "allow" ? "mute anyway" : "leave audible"}
-                  </Badge>
-                </td>
-                <td className="py-1 text-slate-500">
-                  {row.context_text ? maskIn(row.context_text, [row.canonical_word]) : "—"}
-                </td>
-                <td className="py-1 text-right">
-                  <Button
-                    onClick={() => remove.mutate(row.id)}
-                    disabled={remove.isPending}
-                    aria-label={`Remove ${maskWord(row.canonical_word)} from the whitelist`}
-                  >
-                    Remove
-                  </Button>
-                </td>
+        <div className="-mx-1 overflow-x-auto px-1">
+          <table className="w-full text-sm">
+            <thead className="text-xs tracking-wide text-slate-500 uppercase">
+              <tr>
+                <th className="py-1 text-left">Word</th>
+                <th className="py-1 text-left">Scope</th>
+                <th className="py-1 text-left">Effect</th>
+                <th className="hidden py-1 text-left sm:table-cell">Only when it says</th>
+                <th />
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.map((row) => (
+                <tr key={row.id} className="border-t border-slate-800/60">
+                  <td className="py-1 font-medium text-slate-200">{maskWord(row.canonical_word)}</td>
+                  <td className="py-1 text-slate-400">
+                    {row.scope === "global" ? "everywhere" : (row.label ?? row.scope)}
+                  </td>
+                  <td className="py-1">
+                    <Badge tone={row.mode === "allow" ? "warn" : "idle"}>
+                      {row.mode === "allow" ? "mute anyway" : "leave audible"}
+                    </Badge>
+                  </td>
+                  <td className="hidden py-1 text-slate-500 sm:table-cell">
+                    {row.context_text ? maskIn(row.context_text, [row.canonical_word]) : "—"}
+                  </td>
+                  <td className="py-1 text-right">
+                    <Button
+                      onClick={() => remove.mutate(row.id)}
+                      disabled={remove.isPending}
+                      aria-label={`Remove ${maskWord(row.canonical_word)} from the whitelist`}
+                    >
+                      Remove
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       <ErrorNote error={remove.error} />
     </Card>
