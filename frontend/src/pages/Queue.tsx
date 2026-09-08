@@ -50,14 +50,14 @@ function RunningJob({ job }: { job: JobSummary }) {
 
   return (
     <div className="space-y-2 border-b border-slate-800 py-3 last:border-0 last:pb-0 first:pt-0">
-      <div className="flex items-baseline justify-between gap-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <ItemLink job={job} />
-        <span className="shrink-0 text-xs text-slate-500">
+        <span className="text-xs text-slate-500">
           {job.trigger}
           {job.dry_run ? " · dry run" : ""} · started {ago(job.started_at)}
         </span>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3">
         <Badge tone="busy">{job.stage ?? job.state}</Badge>
         <Progress value={job.progress_pct} />
         <span className="w-12 shrink-0 text-right text-xs text-slate-400">
@@ -91,12 +91,12 @@ function QueuedRow({ job, onBump, onCancel, busy }: {
       <td className="py-1.5 pr-3">
         <ItemLink job={job} />
       </td>
-      <td className="py-1.5 pr-3 text-xs text-slate-500">{job.trigger}</td>
-      <td className="py-1.5 pr-3 text-xs text-slate-500" title="lower runs sooner">
+      <td className="hidden py-1.5 pr-3 text-xs text-slate-500 sm:table-cell">{job.trigger}</td>
+      <td className="hidden py-1.5 pr-3 text-xs text-slate-500 sm:table-cell" title="lower runs sooner">
         {job.priority}
       </td>
       <td className="py-1.5 pr-3 text-xs text-slate-500">{ago(job.created_at)}</td>
-      <td className="py-1.5 text-right">
+      <td className="py-1.5 text-right whitespace-nowrap">
         <Button
           onClick={() => onBump(job)}
           disabled={busy}
@@ -123,9 +123,9 @@ function DiskRow({ name, disk }: { name: string; disk: DiskInfo }) {
   const total = disk.total_bytes ?? 0;
   const low = total > 0 && free / total < 0.05;
   return (
-    <div className="flex items-baseline justify-between border-b border-slate-800 py-1.5 last:border-0">
+    <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5 border-b border-slate-800 py-1.5 last:border-0">
       <span className="text-slate-400">
-        {name} <span className="text-xs text-slate-600">{disk.path}</span>
+        {name} <span className="break-all text-xs text-slate-600">{disk.path}</span>
       </span>
       {disk.exists ? (
         <span className={low ? "text-amber-300" : "text-slate-200"}>{gib(free)} free</span>
@@ -149,7 +149,7 @@ function HealthCard() {
       {isError && <p className="text-sm text-rose-400">Could not reach the API.</p>}
       {data && (
         <div className="space-y-3 text-sm">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <Badge tone={tone(data.status)}>{data.status}</Badge>
             <span className="text-xs text-slate-500">
               v{data.version} · role {data.role}
@@ -194,7 +194,7 @@ export function QueuePage() {
 
   return (
     <Page title="Queue" subtitle="Running and queued jobs, plus system health.">
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+      <div className="grid gap-4 sm:gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="space-y-6">
           <Card title="Running">
             {isPending && <Empty>Loading…</Empty>}
@@ -217,19 +217,21 @@ export function QueuePage() {
           >
             {data && data.queued.length === 0 && <Empty>The queue is empty.</Empty>}
             {data && data.queued.length > 0 && (
-              <table className="w-full text-sm">
-                <tbody>
-                  {data.queued.map((job) => (
-                    <QueuedRow
-                      key={job.id}
-                      job={job}
-                      busy={busy}
-                      onBump={(j) => bump.mutate(j)}
-                      onCancel={(j) => cancel.mutate(j.id)}
-                    />
-                  ))}
-                </tbody>
-              </table>
+              <div className="-mx-1 overflow-x-auto px-1">
+                <table className="w-full text-sm">
+                  <tbody>
+                    {data.queued.map((job) => (
+                      <QueuedRow
+                        key={job.id}
+                        job={job}
+                        busy={busy}
+                        onBump={(j) => bump.mutate(j)}
+                        onCancel={(j) => cancel.mutate(j.id)}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
             <ErrorNote error={cancel.error ?? bump.error} />
           </Card>
@@ -237,39 +239,41 @@ export function QueuePage() {
           <Card title="Recent">
             {data && data.recent.length === 0 && <Empty>Nothing has finished yet.</Empty>}
             {data && data.recent.length > 0 && (
-              <table className="w-full text-sm">
-                <tbody>
-                  {data.recent.map((job) => (
-                    <tr key={job.id} className="border-b border-slate-800 last:border-0">
-                      <td className="py-1.5 pr-3">
-                        <ItemLink job={job} />
-                        {job.error && (
-                          <div className="truncate text-xs text-rose-400" title={job.error}>
-                            {job.error}
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-1.5 pr-3">
-                        <StateBadge state={job.state} />
-                      </td>
-                      <td className="py-1.5 pr-3 text-xs text-slate-500">
-                        {ago(job.finished_at)}
-                      </td>
-                      <td className="py-1.5 text-right">
-                        {(job.state === "failed" || job.state === "cancelled") && (
-                          <Button
-                            onClick={() => retry.mutate(job.id)}
-                            disabled={busy}
-                            aria-label={`Retry ${job.item?.label ?? job.id}`}
-                          >
-                            Retry
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="-mx-1 overflow-x-auto px-1">
+                <table className="w-full text-sm">
+                  <tbody>
+                    {data.recent.map((job) => (
+                      <tr key={job.id} className="border-b border-slate-800 last:border-0">
+                        <td className="py-1.5 pr-3">
+                          <ItemLink job={job} />
+                          {job.error && (
+                            <div className="line-clamp-2 text-xs text-rose-400" title={job.error}>
+                              {job.error}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          <StateBadge state={job.state} />
+                        </td>
+                        <td className="hidden py-1.5 pr-3 text-xs text-slate-500 sm:table-cell">
+                          {ago(job.finished_at)}
+                        </td>
+                        <td className="py-1.5 text-right">
+                          {(job.state === "failed" || job.state === "cancelled") && (
+                            <Button
+                              onClick={() => retry.mutate(job.id)}
+                              disabled={busy}
+                              aria-label={`Retry ${job.item?.label ?? job.id}`}
+                            >
+                              Retry
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
             <ErrorNote error={retry.error} />
           </Card>

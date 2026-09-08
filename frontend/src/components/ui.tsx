@@ -136,7 +136,7 @@ export function Badge({
   return (
     <span
       title={title}
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset ${TONE[name]}`}
+      className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium whitespace-nowrap ring-1 ring-inset ${TONE[name]}`}
     >
       {children}
     </span>
@@ -160,7 +160,7 @@ export function Button({ variant = "default", className = "", ...props }: Button
   return (
     <button
       {...props}
-      className={`rounded px-2.5 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${styles} ${className}`}
+      className={`rounded px-2.5 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:px-3.5 pointer-coarse:py-3 ${styles} ${className}`}
     />
   );
 }
@@ -179,12 +179,12 @@ export function Card({
   return (
     <section className={`rounded border border-slate-800 bg-slate-900/40 ${className}`}>
       {(title || actions) && (
-        <header className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-2">
+        <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-slate-800 px-3 py-2 sm:px-4">
           <h2 className="text-sm font-medium tracking-wide text-slate-300 uppercase">{title}</h2>
           {actions}
         </header>
       )}
-      <div className="p-4">{children}</div>
+      <div className="p-3 sm:p-4">{children}</div>
     </section>
   );
 }
