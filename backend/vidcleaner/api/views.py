@@ -143,6 +143,8 @@ class ItemRef(BaseModel):
     size: int | None = None
     duration: float | None = None
     status: str
+    skip_backfill: bool = False
+    """The user has not selected this file; nothing automatic will queue it (§9.3)."""
     last_job_id: str | None = None
     cleaned_at: datetime | None = None
 
@@ -164,6 +166,7 @@ def item_ref(
         size=item.size,
         duration=item.duration,
         status=item.status,
+        skip_backfill=item.skip_backfill,
         last_job_id=item.last_job_id,
         cleaned_at=utc(item.cleaned_at),
     )

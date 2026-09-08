@@ -7,6 +7,7 @@ ours through ``PathMap.to_local`` before anything reaches the database.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +49,11 @@ class EpisodeFile(BaseModel):
     relative_path: str = Field(default="", alias="relativePath")
     path: str = ""
     size: int | None = None
+    date_added: datetime | None = Field(default=None, alias="dateAdded")
+    """When the arr imported this file. Compared against `titles.backfill_from` to
+    tell a file that predates the user enabling the series from one that arrived
+    after -- which is what keeps the hourly sync a real catch-up for a missed
+    webhook. Optional: an arr that does not report it is read as pre-existing."""
 
 
 class Movie(BaseModel):
@@ -77,6 +83,9 @@ class MovieFile(BaseModel):
     relative_path: str = Field(default="", alias="relativePath")
     path: str = ""
     size: int | None = None
+    date_added: datetime | None = Field(default=None, alias="dateAdded")
+    """Unused today -- movies backfill on enable (§2) -- but the field is free and
+    keeps the two file models the same shape."""
 
 
 Movie.model_rebuild()

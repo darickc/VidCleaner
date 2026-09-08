@@ -27,7 +27,7 @@ Sonarr/Radarr/Jellyfin or have a review UI). We build our own, borrowing their f
 | Output mode | **Add a "Clean" audio track.** Video/subs/chapters/attachments stream-copied. Muted audio becomes the new *first + default* track (title `Clean`, same `language` tag as source), original audio kept as track 2 (title `Original`, default flag cleared). Written to a temp file, verified, then atomically swapped into the library; the untouched original is moved to a backup dir until purged. Fully reversible. |
 | STT compute | **Local CPU only.** faster-whisper (CTranslate2 int8) + whisperX forced alignment for word boundaries. Use existing text subtitles, when present, to narrow which windows need STT. |
 | Tech stack | **Python 3.12 backend (FastAPI + SQLAlchemy/SQLite + separate worker process) + React/TypeScript/Vite UI**, one Docker image; FastAPI serves the built SPA. |
-| Selection | **Per-title toggle + automation.** UI lists Sonarr series and Radarr movies; user marks titles "clean". Marking a title enqueues its **existing files (backfill)**; Sonarr/Radarr webhooks enqueue new imports/upgrades. Manual "process now"/"reprocess"/"restore original" always available. |
+| Selection | **Per-title toggle + automation.** UI lists Sonarr series and Radarr movies; user marks titles "clean". Marking a **movie** enqueues its existing file; marking a **series** records a watermark and leaves the episodes it already has **unselected** — they are picked on the Title page by series, season or episode (M7; before that a series backfilled everything too). Sonarr/Radarr webhooks enqueue new imports/upgrades either way. Manual "process now"/"reprocess"/"restore original" always available. |
 | Word list | **Built-in categorized tiers + custom edits.** Categories (strong, mild, religious, slurs, sexual) toggled per *profile*; custom words/phrases; per-title profile override; whitelist for false positives (global/title/item). |
 | Subtitles | **Redact text subtitles too** (SRT/ASS/SSA/WebVTT/mov_text embedded or sidecar → `****`). Bitmap subs (PGS/VobSub) are **never** rewritten. Since M6 a PGS track may be **OCR'd for windowing only** — it narrows which audio needs STT and never decides on its own what to mute. |
 | Approval | **Auto-apply, review after.** Every detection visible with a playable snippet; false positives → whitelist → reprocess. |
@@ -131,8 +131,8 @@ VidCleaner/
 
 - `settings` (key, value_json) — integration URLs/keys (secrets encrypted with a key file in /config), STT models, threads, padding, codec policy, retention, audit-pass mode.
 - `path_mappings` (id, app `sonarr|radarr|jellyfin`, from_prefix, to_prefix) — empty = identity.
-- `titles` (id, kind `series|movie`, arr_id, tvdb_id, tmdb_id, imdb_id, title, year, poster_url, arr_path, **enabled** bool, profile_id nullable, last_synced_at). Unique (kind, arr_id).
-- `media_items` (id, title_id, kind `movie|episode`, arr_file_id, season, episode, episode_title, path, size, duration, source_fingerprint, status `untracked|pending|queued|processing|clean|already_clean|failed|stale|restored`, last_job_id, cleaned_at, updated_at). Unique (title_id, season, episode); index path.
+- `titles` (id, kind `series|movie`, arr_id, tvdb_id, tmdb_id, imdb_id, title, year, poster_url, arr_path, **enabled** bool, backfill_from nullable (M7: when a series was enabled; NULL = pre-M7, backfill everything), profile_id nullable, last_synced_at). Unique (kind, arr_id).
+- `media_items` (id, title_id, kind `movie|episode`, arr_file_id, season, episode, episode_title, path, size, duration, source_fingerprint, status `untracked|pending|queued|processing|clean|already_clean|failed|stale|restored`, **skip_backfill** bool (M7: the user has not selected this file; nothing automatic queues it), last_job_id, cleaned_at, updated_at). Unique (title_id, season, episode); index path.
 - `jobs` (id uuid, media_item_id, trigger `webhook|backfill|manual|reprocess|audit`, priority int, state, stage, progress_pct, claimed_by, heartbeat, attempts, work_dir, source_fingerprint, stt_mode `windowed|full|audit`, model_used, subtitle_source, profile_snapshot_json, timings_json, dry_run bool, error, created_at, started_at, finished_at). Index (state, priority, created_at), media_item_id.
 - `job_logs` (id, job_id, ts, level, msg) — plus a file log per job for ffmpeg stderr.
 - `detections` (id, job_id, media_item_id, word_raw, word_canonical, category, start_s, end_s, mute_start_s, mute_end_s, source `subtitle|stt|both`, confidence, muted bool, whitelisted bool, suspicious bool, subtitle_cue_idx nullable, snippet_path). Index (media_item_id), (job_id, word_canonical).
@@ -176,7 +176,7 @@ VidCleaner/
 ## 8. Integrations
 
 - **Webhook receivers**: `POST /api/webhooks/sonarr`, `/api/webhooks/radarr`; shared secret header `X-VidCleaner-Token` (configured in the arr's Webhook "Headers"). Setup page shows the URL + header to paste, and can create the notification via `POST /api/v3/notification` on user click.
-- **Sync + backfill**: hourly and on demand: pull all series/movies into `titles`; for enabled titles pull files and enqueue any item not `clean` for the current profile hash (catch-up for missed webhooks). Enabling a title triggers immediate backfill of its files (priority below webhook jobs).
+- **Sync + backfill**: hourly and on demand: pull all series/movies into `titles`; for enabled titles pull files and enqueue any item not `clean` for the current profile hash and not deferred (catch-up for missed webhooks). Enabling a **movie** triggers immediate backfill of its file (priority below webhook jobs). Enabling a **series** records `titles.backfill_from` and pulls its files through `POST /api/library/titles/{id}/sync`, which runs outside the request's transaction; files the arr dates *before* the watermark arrive `skip_backfill` and wait to be selected, files dated after it still backfill, so the pass stays a real catch-up. A selection from §9.3 enqueues at `backfill` priority and clears the flag.
 - **Post-swap**: `RescanSeries`/`RescanMovie`, then Jellyfin path refresh. Mapping verification 90 s later.
 - **Path mapping** applied to every arr path → local, and local → Jellyfin path.
 
@@ -184,7 +184,7 @@ VidCleaner/
 
 1. **Queue** (home) — running job (stage, %, ETA, log tail), queued list with reorder/cancel, recent done/failed with retry, integration health, disk space.
 2. **Library** — tabs Series / Movies: poster, Clean toggle, profile dropdown, status (e.g. 12/24 clean), search/filter, "Sync now". Row → Title page.
-3. **Title** — episode/movie list with status badge, per-word rollup, buttons: process now, reprocess all, restore originals, dry-run.
+3. **Title** — episode/movie list grouped by season with status badge and a **selection checkbox per file, per season and for the whole title** ("Process selected (N)"; deferred files read `not queued`), per-word rollup, buttons: process now, reprocess all, restore originals, dry-run.
 4. **Item** — summary (model, mode, subtitle source, time, codec), **counts per word/category**, detections table (time, word, category, source, confidence, suspicious) with ▶ Original / ▶ Clean snippet players + waveform, "false positive → whitelist (item/title/global) + reprocess", job log.
 5. **Words & Profiles** — categories with word chips, custom words/phrases, whitelist, profile editor, default profile, padding.
 6. **Settings** — Sonarr/Radarr/Jellyfin URL + key + Test, webhook URL/token, path mappings, STT models/threads, codec policy, audit pass, backup retention + purge, log level.
@@ -208,13 +208,21 @@ VidCleaner/
 
 - [x] **M6 — Bitmap subtitle OCR**: read a PGS track so a Blu-ray remux narrows its STT windows instead of falling through to a full-file pass; PGS decoder + tesseract, OCR cues never redacted and never muting without STT corroboration; a generated PGS fixture. *Demo: a bitmap-only file stays in windowed mode, with the cost measured against the full-file pass it replaces.*
 
+- [ ] **M7 — Opt-in backfill**: enabling a series stops queueing the episodes it already has; a
+  watermark plus a per-file flag remember what was deferred, the Title page grows a
+  series/season/episode picker, and a restore is no longer undone by the next hourly pass.
+  *Demo (owed on the real instance): enable a series with existing episodes → the queue stays
+  empty and every episode lists unselected; tick one season → those jobs run at priority 200;
+  Sonarr imports a new episode → cleaned automatically without being ticked; "Sync now" leaves
+  the unticked ones alone.*
+
 Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 downmix track, Bazarr integration to fetch subs before STT, notifications (Discord/Pushover), multi-language word lists, VobSub OCR.
 
 ## 12. Verification strategy
 
 - **Unit**: matcher (boundaries, inflections, compounds, phrases, censored tokens, never-match, whitelist scopes), padding/merging/guards, ffmpeg graph builder (golden files), codec policy table, path mapping, webhook payload parsing (fixtures shaped per §3), job claiming/resume.
 - **Integration (ffmpeg required)**: fixture MKV = CC0 speech WAV + hand-written SRT with target words + tone track + chapters; run CLI; assert `volumedetect` ≈ −91 dB inside ranges and unchanged outside; assert stream layout/titles/dispositions/language/chapters via ffprobe JSON; assert redacted subtitle text; assert MP4→MKV remux path.
-- **Contract**: `respx`-mocked Sonarr/Radarr/Jellyfin; `Test`/`Download`/upgrade/season-pack flows; rescan/refresh calls with correct ids/paths; disabled-title events recorded but not queued.
+- **Contract**: `respx`-mocked Sonarr/Radarr/Jellyfin; `Test`/`Download`/upgrade/season-pack flows; rescan/refresh calls with correct ids/paths; disabled-title events recorded but not queued; enabling a series records the watermark and queues nothing, while a file the arr dates after it still backfills.
 - **End-to-end on unraid**: manual import of a test episode into an enabled series; confirm auto-clean, Sonarr still maps the file (size updated), Jellyfin shows two audio tracks, Infuse plays Clean by default and can switch to Original; restore original and confirm reversal; kill the container mid-render and confirm resume.
 - **Quality loop**: labelled set of 5 clips with known swear timestamps; report precision/recall and mean timing error per model in `docs/eval.md` when tuning models/padding.
 
@@ -2380,6 +2388,68 @@ Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 down
   visible. Masking arbitrary prose would mean the matcher in the browser, and the notes exist to
   answer "why isn't this muted?" (recorded 2026-09-03); dropping them wholesale would cost more
   than it buys.
+
+- 2026-09-07 — **§2's "marking a title enqueues its existing files" is amended for series.**
+  Enabling a 60-episode show and watching 60 jobs appear is the wrong default on a CPU-only
+  box: it cleans episodes nobody will play again while the ones that matter wait behind them.
+  A series now records `titles.backfill_from` when it is enabled and its pre-existing files
+  arrive **unselected**, picked on the Title page by series, season or episode. **Movies are
+  unchanged** (one file, and the toggle is already the decision), and the webhook path is
+  untouched: a `Download` — import *or* upgrade — still processes automatically, because a new
+  file is new by definition. There is deliberately **no watched-state integration**: "already
+  there" is the proxy for "already watched", which needs no Jellyfin reads, no new sync and no
+  priority tier (user decision, recorded here because §3's Jellyfin research invites the
+  opposite).
+- 2026-09-07 — **Two columns, not one, and the second one is not optional.** The per-item
+  `skip_backfill` boolean is what the checkboxes write, but it cannot mark rows that do not
+  exist — and they usually do not: `sync_all` pulls items only for *enabled* titles, so a
+  series being enabled for the first time has **zero** `media_items` and "mark everything we
+  know about" marks nothing. The 60 episodes would appear at the next hourly sync unmarked and
+  queue in full. `titles.backfill_from` is what `sync_title_items` compares against the arr's
+  `dateAdded` (new on `EpisodeFile`/`MovieFile`) so a row is marked as it is *created*. Files
+  dated after the watermark still backfill, which is what keeps §8's pass a catch-up for a
+  webhook that never arrived rather than a blanket skip; a missing `dateAdded` counts as
+  pre-existing, because the user can always tick the box and the opposite error cleans a file
+  they declined. Both defaults (`0` / NULL) mean "behave exactly as before", so every series
+  already enabled on the running instance is unaffected.
+- 2026-09-07 — **Deferral is written only on row creation, and only for files that never ran.**
+  A later sync never rewrites `skip_backfill`: that value is the user's, and a sync that
+  "corrected" it would silently undo a ticked box. `defer_existing_items` (the enable-time pass
+  over rows that already exist) skips anything with a `last_job_id`, so a `failed` episode
+  stays in reach of the hourly retry instead of being stranded by a disable/enable round trip.
+  Explicit action clears the flag — Process, Reprocess, a selection, a `Download` — but a
+  **dry run does not**, since it never touches the library and is therefore not a request to
+  clean the file. A `Rename` does not either: a rename is not an arrival.
+- 2026-09-07 — **Enabling had to stop being a database-only operation, and that is a lock
+  hazard.** The picker is useless if the Title page is empty, and it was: `patch_title` never
+  fetched files, so a freshly enabled series showed nothing until the hourly sync. Doing the
+  fetch inside the handler is the obvious fix and the wrong one — `get_db` wraps a request in
+  one transaction and `title.enabled` is written first, so the arr round trip would happen with
+  SQLite's write lock held, which is exactly the failure `sync.sync_all`'s docstring exists to
+  prevent (the worker's `BEGIN IMMEDIATE` claim starts failing with "database is locked").
+  The fetch is `integrations.sync.sync_one_title`, which takes a `title_id` and opens its **own**
+  sessions, behind `POST /api/library/titles/{id}/sync`; the UI calls it right after the toggle
+  and it doubles as a "refresh this title from Sonarr". `patch_title` stays pure database.
+- 2026-09-07 — **A selection enqueues as `backfill` (200), not `manual` (50).** Ticking a whole
+  series is a backfill by definition and must not push ahead of the episode Sonarr imported
+  five minutes ago. The title-level buttons keep priority 50: they say "all", and pressing one
+  is an explicit request for exactly that. `ActionResult.action` still reports the button the
+  user pressed, so the trigger override is a parameter rather than a new action name.
+- 2026-09-07 — **Bug found while reading, fixed by the same flag: a restore was undone within
+  the hour.** `persist.restore_item` leaves the item `restored`, which is not one of
+  `sync.CLEAN_STATUSES`, so `_needs_cleaning` answered "yes, queue it" and the next hourly pass
+  re-cleaned the file the user had just put back. Nothing guarded it and no test covered it.
+  Restoring is the one unambiguous "leave this file alone" in the app, so it now sets
+  `skip_backfill`; Process/Reprocess clears it again.
+- 2026-09-07 — **`deferred_count` is carved out of `pending_count`** in §9.2's progress figure.
+  Without it a series enabled since M7 reads "0/60 clean, 60 pending" forever, which is
+  indistinguishable from a stuck backlog — the one number on that page whose whole job is to
+  say whether anything is wrong.
+- 2026-09-07 — **M7 verified locally, demo on the real instance still owed.** `uv run pytest`
+  1835 passed (including the new deferral, selection, webhook, CLI and restore tests), `ruff
+  check` and `ruff format --check` clean; `npm test` 101 passed, `npm run build` OK. The
+  milestone box stays unticked until the §11 demo runs against the real Sonarr and Jellyfin,
+  per §15.2.
 
 ## 15. Working agreement for future sessions
 

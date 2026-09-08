@@ -1,10 +1,10 @@
 /** PLAN.md §9.3 — one series or movie: its files, its word rollup, and the buttons. */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getProfiles, getTitle, patchTitle, titleAction } from "../api/client";
-import type { ActionName, ActionResult } from "../api/types";
+import { getProfiles, getTitle, patchTitle, syncTitle, titleAction } from "../api/client";
+import type { ActionName, ActionResult, ItemRow } from "../api/types";
 import { Page } from "../components/Page";
 import {
   Badge,
@@ -30,6 +30,44 @@ const ACTIONS: Array<{ action: ActionName; label: string; confirm?: string }> = 
   },
 ];
 
+/** Episodes grouped by season, in the order the API already sorted them. A movie has
+    no seasons, so it lands in one unlabelled group and renders as a flat list. */
+function bySeason(items: ItemRow[]): Array<{ season: number | null; items: ItemRow[] }> {
+  const groups: Array<{ season: number | null; items: ItemRow[] }> = [];
+  for (const item of items) {
+    const last = groups[groups.length - 1];
+    if (last && last.season === item.season) last.items.push(item);
+    else groups.push({ season: item.season, items: [item] });
+  }
+  return groups;
+}
+
+/** React has no declarative `indeterminate`; it is a DOM property only. */
+function Check({
+  checked,
+  indeterminate = false,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  indeterminate?: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <input
+      type="checkbox"
+      checked={checked}
+      ref={(node) => {
+        if (node) node.indeterminate = indeterminate && !checked;
+      }}
+      onChange={(event) => onChange(event.target.checked)}
+      aria-label={label}
+      className="h-4 w-4 accent-sky-500"
+    />
+  );
+}
+
 function summarise(result: ActionResult): string {
   const parts: string[] = [];
   if (result.queued.length) parts.push(`queued ${result.queued.length}`);
@@ -46,6 +84,7 @@ export function TitlePage() {
   const id = Number(titleId);
   const client = useQueryClient();
   const [note, setNote] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const { data, isPending, isError } = useQuery({
     queryKey: ["title", id],
@@ -59,17 +98,34 @@ export function TitlePage() {
   };
 
   const act = useMutation({
-    mutationFn: (action: ActionName) => titleAction(id, action),
+    mutationFn: ({ action, itemIds }: { action: ActionName; itemIds?: number[] }) =>
+      titleAction(id, action, itemIds),
     onSuccess: (result) => {
       setNote(summarise(result));
       if (result.warnings.length) setNote(`${summarise(result)} — ${result.warnings.join("; ")}`);
+      if (result.selected) setSelected(new Set());
       refresh();
     },
   });
 
   const toggle = useMutation({
-    mutationFn: (enabled: boolean) => patchTitle(id, { enabled }),
-    onSuccess: refresh,
+    // Enabling a series queues nothing (PLAN.md §2 as amended in M7); it pulls the
+    // files instead, so the picker below has something to show rather than staying
+    // empty until the hourly sync runs.
+    mutationFn: async (enabled: boolean) => {
+      const result = await patchTitle(id, { enabled });
+      if (enabled) await syncTitle(id).catch(() => undefined);
+      return result;
+    },
+    onSuccess: (result, enabled) => {
+      if (enabled)
+        setNote(
+          result.queued.length
+            ? `queued ${result.queued.length} file(s)`
+            : "cleaning on — new downloads process automatically; tick the files below to clean what is already here",
+        );
+      refresh();
+    },
   });
 
   // §2's per-title profile override. The backend has honoured `titles.profile_id` since
@@ -83,10 +139,35 @@ export function TitlePage() {
     onSuccess: refresh,
   });
 
+  const items = data?.items ?? [];
+  const groups = useMemo(() => bySeason(items), [items]);
+  // A refetch after an action must not leave ids in the selection that no longer
+  // exist -- the button would then post files the user cannot see.
+  const known = items.map((row) => row.id).join(",");
+  useEffect(() => {
+    const live = new Set(known ? known.split(",").map(Number) : []);
+    setSelected((current) => {
+      const kept = new Set([...current].filter((value) => live.has(value)));
+      return kept.size === current.size ? current : kept;
+    });
+  }, [known]);
+
+  const toggleMany = (ids: number[], checked: boolean) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const value of ids) {
+        if (checked) next.add(value);
+        else next.delete(value);
+      }
+      return next;
+    });
+
   if (isError) return <Page title="Title">Could not load this title.</Page>;
   if (isPending || !data) return <Page title="Title">Loading…</Page>;
 
-  const { title, items, counts } = data;
+  const { title, counts } = data;
+  const allIds = items.map((row) => row.id);
+  const everySelected = allIds.length > 0 && allIds.every((value) => selected.has(value));
 
   return (
     <Page
@@ -142,7 +223,7 @@ export function TitlePage() {
               disabled={act.isPending}
               onClick={() => {
                 if (confirm && !window.confirm(confirm)) return;
-                act.mutate(action);
+                act.mutate({ action });
               }}
             >
               {label}
@@ -160,41 +241,105 @@ export function TitlePage() {
         <ErrorNote error={act.error ?? toggle.error} />
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-          <Card title="Files">
+          <Card
+            title="Files"
+            actions={
+              items.length > 0 && (
+                <div className="flex items-center gap-3">
+                  <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-400">
+                    <Check
+                      checked={everySelected}
+                      indeterminate={selected.size > 0}
+                      label="Select all files"
+                      onChange={(checked) => toggleMany(allIds, checked)}
+                    />
+                    All
+                  </label>
+                  <Button
+                    variant="primary"
+                    disabled={selected.size === 0 || act.isPending}
+                    onClick={() =>
+                      act.mutate({ action: "process", itemIds: [...selected] })
+                    }
+                  >
+                    Process selected ({selected.size})
+                  </Button>
+                </div>
+              )
+            }
+          >
             {items.length === 0 && <Empty>No files are tracked for this title yet.</Empty>}
             {items.length > 0 && (
               <table className="w-full text-sm">
                 <tbody>
-                  {items.map((row) => (
-                    <tr key={row.id} className="border-b border-slate-800 last:border-0">
-                      <td className="py-2 pr-3">
-                        <Link to={`/items/${row.id}`} className="text-slate-100 hover:text-sky-300">
-                          {row.season !== null && row.episode !== null
-                            ? `S${String(row.season).padStart(2, "0")}E${String(row.episode).padStart(2, "0")}`
-                            : row.title}
-                        </Link>
-                        {row.episode_title && (
-                          <span className="ml-2 text-slate-400">{row.episode_title}</span>
+                  {groups.map((group) => {
+                    const ids = group.items.map((row) => row.id);
+                    const all = ids.every((value) => selected.has(value));
+                    const some = ids.some((value) => selected.has(value));
+                    return (
+                      <Fragment key={group.season ?? "movie"}>
+                        {group.season !== null && (
+                          <tr className="border-b border-slate-800">
+                            <td className="py-2 pr-2">
+                              <Check
+                                checked={all}
+                                indeterminate={some}
+                                label={`Select season ${group.season}`}
+                                onChange={(checked) => toggleMany(ids, checked)}
+                              />
+                            </td>
+                            <td colSpan={5} className="py-2 text-xs uppercase tracking-wide text-slate-500">
+                              Season {group.season}
+                            </td>
+                          </tr>
                         )}
-                      </td>
-                      <td className="py-2 pr-3">
-                        <StateBadge state={row.status} />
-                      </td>
-                      <td className="py-2 pr-3 text-xs text-slate-500">
-                        {row.detection_count > 0
-                          ? `${row.detection_count} muted`
-                          : row.status === "clean"
-                            ? "nothing found"
-                            : "—"}
-                      </td>
-                      <td className="py-2 pr-3 text-xs text-slate-600">
-                        {duration(row.duration)} · {gib(row.size)}
-                      </td>
-                      <td className="py-2 text-right text-xs text-slate-600">
-                        {row.cleaned_at ? `cleaned ${ago(row.cleaned_at)}` : ""}
-                      </td>
-                    </tr>
-                  ))}
+                        {group.items.map((row) => (
+                          <tr key={row.id} className="border-b border-slate-800 last:border-0">
+                            <td className="py-2 pr-2">
+                              <Check
+                                checked={selected.has(row.id)}
+                                label={`Select ${row.label}`}
+                                onChange={(checked) => toggleMany([row.id], checked)}
+                              />
+                            </td>
+                            <td className="py-2 pr-3">
+                              <Link
+                                to={`/items/${row.id}`}
+                                className="text-slate-100 hover:text-sky-300"
+                              >
+                                {row.season !== null && row.episode !== null
+                                  ? `S${String(row.season).padStart(2, "0")}E${String(row.episode).padStart(2, "0")}`
+                                  : row.title}
+                              </Link>
+                              {row.episode_title && (
+                                <span className="ml-2 text-slate-400">{row.episode_title}</span>
+                              )}
+                            </td>
+                            <td className="py-2 pr-3">
+                              {row.skip_backfill && row.status !== "clean" ? (
+                                <Badge tone="idle">not queued</Badge>
+                              ) : (
+                                <StateBadge state={row.status} />
+                              )}
+                            </td>
+                            <td className="py-2 pr-3 text-xs text-slate-500">
+                              {row.detection_count > 0
+                                ? `${row.detection_count} muted`
+                                : row.status === "clean"
+                                  ? "nothing found"
+                                  : "—"}
+                            </td>
+                            <td className="py-2 pr-3 text-xs text-slate-600">
+                              {duration(row.duration)} · {gib(row.size)}
+                            </td>
+                            <td className="py-2 text-right text-xs text-slate-600">
+                              {row.cleaned_at ? `cleaned ${ago(row.cleaned_at)}` : ""}
+                            </td>
+                          </tr>
+                        ))}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             )}

@@ -160,6 +160,17 @@ def test_restore_puts_the_original_back_and_moves_the_clean_copy_aside(library) 
         assert session.scalars(select(Backup)).one().state == "restored"
 
 
+def test_restore_takes_the_file_out_of_the_hourly_backfill(library) -> None:
+    """`restored` is not a clean status, so §8's gate said "queue it" and the next
+    hourly pass re-cleaned the file, silently undoing the restore."""
+    with session_scope() as session:
+        persist_swap(session, library.swap_result(), media_item_id=library.item_id)
+    with session_scope() as session:
+        restore_item(session, library.item_id)
+    with session_scope() as session:
+        assert session.get(MediaItem, library.item_id).skip_backfill is True
+
+
 def test_restore_follows_a_rename(library) -> None:
     """The item was renamed after the swap, so `backups.original_path` is stale;
     restoring there would recreate the old name and leave two video files."""

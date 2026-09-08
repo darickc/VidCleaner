@@ -83,6 +83,21 @@ def test_sync_now_needs_an_arr(client: TestClient) -> None:
     assert "configured" in response.json()["detail"]
 
 
+def test_syncing_one_title_reports_that_no_arr_is_configured(client: TestClient) -> None:
+    """The UI calls this straight after the toggle, so it must answer even with
+    nothing configured -- enabling a title is not an integration failure."""
+    from tests.support.library import make_series
+
+    title_id, _ = make_series(episodes=1)
+    body = client.post(f"/api/library/titles/{title_id}/sync").json()
+    assert body["items"] == 0
+    assert body["errors"] == ["sonarr is not configured"]
+
+
+def test_syncing_an_unknown_title_is_a_404(client: TestClient) -> None:
+    assert client.post("/api/library/titles/999/sync").status_code == 404
+
+
 def test_the_new_routes_are_registered_before_the_spa_catch_all(client: TestClient) -> None:
     """`_mount_spa` registers `GET /{full_path:path}`, which raises 404 for anything
     under `api/`. A router included after it would be shadowed, so this asserts the

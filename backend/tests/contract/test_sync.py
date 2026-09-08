@@ -9,6 +9,7 @@ points at that row, so getting it wrong silently orphans an earlier run's work.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -33,7 +34,9 @@ from vidcleaner.integrations.sonarr import SonarrClient
 from vidcleaner.integrations.sync import (
     backfill_title,
     confirm_mapping,
+    defer_existing_items,
     sync_all,
+    sync_one_title,
     sync_title_items,
     sync_titles,
 )
@@ -73,12 +76,16 @@ def bundle(sonarr_client=None, radarr_client=None, jellyfin_client=None) -> Inte
     )
 
 
-def enable(kind: str, arr_id: int) -> int:
+def enable(kind: str, arr_id: int, *, watermark: datetime | None = None) -> int:
+    """Enable a title the way the database sees it. ``watermark`` is what
+    `api.actions.patch_title` writes for a series since M7; leaving it None is the
+    grandfathered case -- a title enabled before that column existed."""
     with session_scope() as session:
         title = session.scalars(
             select(Title).where(Title.kind == kind, Title.arr_id == arr_id)
         ).one()
         title.enabled = True
+        title.backfill_from = watermark
         return title.id
 
 
@@ -444,6 +451,128 @@ def _mark_clean(title_id: int, *, episode: int) -> int:
         item.status = "clean"
         item.last_job_id = job.id
         return item.id
+
+
+# ------------------------------------------------------------------ deferral
+
+
+#: The `dateAdded` every fixture episode file carries.
+FILES_ADDED = datetime(2026, 1, 2, 3, 4, 5)
+
+
+def test_files_a_series_already_had_are_not_queued(sonarr) -> None:
+    """§2 as amended in M7, and the case a per-item flag alone cannot cover: a series
+    being enabled for the first time has **no** `media_items` yet, because `sync_all`
+    pulls items only for titles that are already enabled. The watermark is what marks
+    them when the sync finally creates them."""
+    service, client = sonarr
+    with session_scope() as session:
+        sync_titles(session, client=client, kind="series", pathmap=TV_MAP)
+    title_id = enable("series", 42, watermark=FILES_ADDED + timedelta(days=1))
+
+    with session_scope() as session:
+        title = session.get(Title, title_id)
+        report = sync_title_items(session, title, client=client, pathmap=TV_MAP)
+        queued = backfill_title(session, title, client=client, pathmap=TV_MAP)
+
+    assert report.items_deferred == 2
+    assert queued == []
+    with session_scope() as session:
+        assert all(item.skip_backfill for item in session.scalars(select(MediaItem)))
+
+
+def test_a_file_the_arr_dates_after_the_watermark_still_backfills(sonarr) -> None:
+    """§8's pass has to stay a catch-up for a webhook that never arrived."""
+    service, client = sonarr
+    with session_scope() as session:
+        sync_titles(session, client=client, kind="series", pathmap=TV_MAP)
+    title_id = enable("series", 42, watermark=FILES_ADDED - timedelta(days=1))
+
+    with session_scope() as session:
+        title = session.get(Title, title_id)
+        sync_title_items(session, title, client=client, pathmap=TV_MAP)
+        queued = backfill_title(session, title, client=client, pathmap=TV_MAP)
+    assert len(queued) == 2, "both files postdate the toggle"
+
+
+def test_a_file_with_no_date_added_is_read_as_pre_existing(sonarr) -> None:
+    """The conservative direction: the user can tick the box, whereas the opposite
+    error cleans a file they declined."""
+    service, client = sonarr
+    files = [dict(f) for f in fake_arr.fixture("sonarr_episodefiles")]
+    for file in files:
+        file.pop("dateAdded", None)
+    service.route("GET", "/api/v3/episodefile", files)
+
+    with session_scope() as session:
+        sync_titles(session, client=client, kind="series", pathmap=TV_MAP)
+    title_id = enable("series", 42, watermark=FILES_ADDED - timedelta(days=1))
+    with session_scope() as session:
+        title = session.get(Title, title_id)
+        report = sync_title_items(session, title, client=client, pathmap=TV_MAP)
+    assert report.items_deferred == 2
+
+
+def test_a_deferred_item_is_never_backfilled(sonarr) -> None:
+    service, client, title_id = synced(sonarr)
+    with session_scope() as session:
+        for item in session.scalars(select(MediaItem)):
+            item.skip_backfill = True
+    with session_scope() as session:
+        assert (
+            backfill_title(session, session.get(Title, title_id), client=client, pathmap=TV_MAP)
+            == []
+        )
+
+
+def test_a_grandfathered_series_still_backfills_everything(sonarr) -> None:
+    """No watermark = enabled before M7; that library must not change behaviour."""
+    service, client, title_id = synced(sonarr)
+    with session_scope() as session:
+        assert session.get(Title, title_id).backfill_from is None
+        queued = backfill_title(
+            session, session.get(Title, title_id), client=client, pathmap=TV_MAP
+        )
+    assert len(queued) == 2
+
+
+def test_deferring_does_not_overwrite_a_choice_the_user_already_made(sonarr) -> None:
+    """A later sync must not undo a ticked box -- in either direction."""
+    service, client, title_id = synced(sonarr)
+    with session_scope() as session:
+        session.get(Title, title_id).backfill_from = FILES_ADDED + timedelta(days=1)
+    with session_scope() as session:
+        title = session.get(Title, title_id)
+        report = sync_title_items(session, title, client=client, pathmap=TV_MAP)
+    assert report.items_deferred == 0, "the rows already exist; only creation defers"
+    with session_scope() as session:
+        assert not any(item.skip_backfill for item in session.scalars(select(MediaItem)))
+
+
+def test_defer_existing_items_skips_a_file_that_already_ran(sonarr) -> None:
+    service, client, title_id = synced(sonarr)
+    with session_scope() as session:
+        first = session.scalars(select(MediaItem).order_by(MediaItem.id)).first()
+        first.last_job_id = "some-earlier-job"
+        ran = first.id
+    with session_scope() as session:
+        marked = defer_existing_items(session, session.get(Title, title_id))
+    assert marked == 1
+    with session_scope() as session:
+        assert session.get(MediaItem, ran).skip_backfill is False
+
+
+def test_sync_one_title_pulls_files_without_the_callers_transaction(sonarr) -> None:
+    """It takes an id, not a `Session`: a request-scoped transaction spanning an arr
+    round trip holds SQLite's write lock past the worker's busy timeout."""
+    service, client = sonarr
+    with session_scope() as session:
+        sync_titles(session, client=client, kind="series", pathmap=TV_MAP)
+    title_id = enable("series", 42, watermark=FILES_ADDED + timedelta(days=1))
+
+    report = sync_one_title(title_id, integrations=bundle(client))
+    assert report.items_seen == 2 and report.items_deferred == 2
+    assert report.enqueued == []
 
 
 def test_a_stale_item_is_never_enqueued(sonarr) -> None:

@@ -42,6 +42,11 @@ def add_parsers(subparsers: argparse._SubParsersAction) -> None:
     titles.add_argument("--arr-id", type=int, help="the Sonarr series id or Radarr movie id")
     titles.add_argument("--name", help="match a title by name instead of id (must be unique)")
     titles.add_argument("--enabled", action="store_true", help="list only enabled titles")
+    titles.add_argument(
+        "--all",
+        action="store_true",
+        help="enable: also queue the episodes the series already has (pre-M7 behaviour)",
+    )
 
     queue = subparsers.add_parser("queue", help="inspect and steer the job queue")
     queue.add_argument(
@@ -195,9 +200,13 @@ def _toggle_title(args: argparse.Namespace, *, enable: bool) -> int:
     from sqlalchemy import select  # noqa: PLC0415
 
     from vidcleaner.db.models import Title  # noqa: PLC0415
-    from vidcleaner.db.session import session_scope  # noqa: PLC0415
+    from vidcleaner.db.session import session_scope, utcnow  # noqa: PLC0415
     from vidcleaner.integrations import from_database  # noqa: PLC0415
-    from vidcleaner.integrations.sync import backfill_title, sync_title_items  # noqa: PLC0415
+    from vidcleaner.integrations.sync import (  # noqa: PLC0415
+        backfill_title,
+        defer_existing_items,
+        sync_title_items,
+    )
 
     if args.arr_id is None and not args.name:
         print("error: pass --arr-id or --name", file=sys.stderr)
@@ -222,6 +231,13 @@ def _toggle_title(args: argparse.Namespace, *, enable: bool) -> int:
             return 64
         title = matches[0]
         title.enabled = enable
+        deferred = 0
+        if enable and title.kind == "series" and not args.all:
+            # Same rule as the UI's toggle (§2 as amended in M7): the episodes the
+            # series already has arrive unselected. `--all` is the old behaviour.
+            title.backfill_from = utcnow()
+            session.flush()
+            deferred = defer_existing_items(session, title)
         title_id, kind, name = title.id, title.kind, title.title
 
     if not enable:
@@ -236,16 +252,21 @@ def _toggle_title(args: argparse.Namespace, *, enable: bool) -> int:
         if client is None or title is None:
             bundle.close()
             print(f"Enabled    {kind} {name} (no arr configured; nothing to backfill)")
+            if deferred:
+                print(f"Deferred   {deferred} existing file(s)")
             return 0
         pathmap = bundle.map_for("sonarr" if kind == "series" else "radarr")
         try:
-            sync_title_items(session, title, client=client, pathmap=pathmap)
+            report = sync_title_items(session, title, client=client, pathmap=pathmap)
+            deferred += report.items_deferred
             queued = backfill_title(session, title, client=client, pathmap=pathmap)
         finally:
             bundle.close()
 
     print(f"Enabled    {kind} {name}")
     print(f"Queued     {len(queued)} job(s)")
+    if deferred:
+        print(f"Deferred   {deferred} existing file(s); select them in the UI or pass --all")
     return 0
 
 

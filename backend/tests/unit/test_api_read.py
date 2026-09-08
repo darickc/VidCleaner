@@ -120,6 +120,24 @@ def test_titles_carry_their_clean_progress(client: TestClient) -> None:
     assert (row["failed_count"], row["pending_count"]) == (1, 1)
 
 
+def test_deferred_files_are_counted_apart_from_pending(client: TestClient) -> None:
+    """A series enabled since M7 arrives with every episode unselected; counting them
+    as pending would read like a stuck backlog forever."""
+    from vidcleaner.db.models import MediaItem
+    from vidcleaner.db.session import session_scope
+
+    title_id, episodes = make_series(episodes=3)
+    with session_scope() as session:
+        for item_id in episodes[:2]:
+            session.get(MediaItem, item_id).skip_backfill = True
+
+    row = next(t for t in client.get("/api/library/titles").json()["titles"] if t["id"] == title_id)
+    assert (row["deferred_count"], row["pending_count"]) == (2, 1)
+
+    items = client.get(f"/api/library/titles/{title_id}").json()["items"]
+    assert sum(item["skip_backfill"] for item in items) == 2
+
+
 def test_titles_can_be_filtered_by_kind_search_and_enabled(client: TestClient) -> None:
     make_series("Breaking Bad", arr_id=1, enabled=True)
     make_series("Better Call Saul", arr_id=2, enabled=False)

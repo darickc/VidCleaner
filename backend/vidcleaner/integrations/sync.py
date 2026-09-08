@@ -17,6 +17,13 @@ Three jobs:
   with **no file I/O**. Over-enqueueing is deliberately cheap: `probe` re-reads the
   `VIDCLEANER_PROFILE_HASH` tag and returns `already_clean` in about 0.1 s (measured
   in the M1 demo). The queue is the cheap filter; the tag is the definitive one.
+  Since M7 it also skips anything the user has not selected (`skip_backfill`).
+* **Deferral.** §2's Selection decision changed for series: enabling one no longer
+  enqueues the files it already had. `titles.backfill_from` records when that
+  happened and `is_pre_existing` compares the arr's `dateAdded` against it, so a file
+  the sync discovers later lands unselected if it predates the toggle and queued if
+  it arrived after -- which is what keeps this pass a catch-up for missed webhooks
+  rather than a blanket skip.
 
 Two things to keep in mind while reading:
 
@@ -32,7 +39,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, timedelta
 from typing import Any
 
 from sqlalchemy import select, update
@@ -53,8 +60,12 @@ __all__ = [
     "SyncReport",
     "backfill_title",
     "confirm_mapping",
+    "defer_existing_items",
+    "is_pre_existing",
     "resolve_item",
     "sync_all",
+    "sync_one_title",
+    "sync_title_items",
     "sync_titles",
 ]
 
@@ -78,6 +89,8 @@ class SyncReport:
     items_merged: int = 0
     items_updated: int = 0
     items_stale: int = 0
+    items_deferred: int = 0
+    """Pre-existing files a series brought in unselected (§2). See `resolve_item`."""
     enqueued: list[str] = field(default_factory=list)
     mapping_checked: int = 0
     mapping_mismatched: int = 0
@@ -211,6 +224,31 @@ def set_episode_spans(session: Session, item: MediaItem, spans: Sequence[Episode
     return len(wanted)
 
 
+def is_pre_existing(title: Title, file: Any) -> bool:
+    """Did this file exist before the user enabled the series (§2)?
+
+    Only a series carries a watermark, so a movie is always False. A file the arr
+    dates **after** the watermark arrived later and is treated as new -- that is what
+    keeps the hourly pass §8's "catch-up for missed webhooks" rather than a blanket
+    skip for anything a webhook did not deliver.
+
+    A missing ``dateAdded`` counts as pre-existing, on purpose: the user can always
+    tick the box, whereas the opposite error cleans a file they declined.
+    """
+    watermark = title.backfill_from
+    if watermark is None or title.kind != "series":
+        return False
+    added = getattr(file, "date_added", None)
+    if added is None:
+        return True
+    # Database times are naive UTC (`db.session.utcnow`); the arrs report an offset.
+    if added.tzinfo is not None:
+        added = added.astimezone(UTC).replace(tzinfo=None)
+    if watermark.tzinfo is not None:
+        watermark = watermark.astimezone(UTC).replace(tzinfo=None)
+    return added < watermark
+
+
 def resolve_item(
     session: Session,
     title: Title,
@@ -223,11 +261,18 @@ def resolve_item(
     arr_file_id: int | None,
     size: int | None,
     report: SyncReport,
+    defer: bool = False,
 ) -> MediaItem:
     """Find, adopt, merge or create the row for one arr file.
 
     The natural key comes first because `uq_media_items_title_s_e` enforces it. The
     path lookup comes second and is what performs **adoption**.
+
+    ``defer`` marks a **newly created** row ``skip_backfill`` -- the file predates the
+    user enabling this series, so §2 says it arrives unselected. It deliberately never
+    touches a row that already exists: that value is the user's, written by the Title
+    page's checkboxes, and a later sync must not undo their choice in either
+    direction.
     """
     by_key: MediaItem | None = None
     if kind == "episode":
@@ -268,9 +313,17 @@ def resolve_item(
             )
         item.title_id = title.id
     else:
-        item = MediaItem(title_id=title.id, kind=kind, path=local_path, status="untracked")
+        item = MediaItem(
+            title_id=title.id,
+            kind=kind,
+            path=local_path,
+            status="untracked",
+            skip_backfill=defer,
+        )
         session.add(item)
         report.items_added += 1
+        if defer:
+            report.items_deferred += 1
 
     item.kind = kind
     item.season = season
@@ -346,6 +399,7 @@ def sync_title_items(
                 arr_file_id=file.id,
                 size=file.size,
                 report=report,
+                defer=is_pre_existing(title, file),
             )
             set_episode_spans(
                 session,
@@ -438,7 +492,10 @@ def backfill_title(
 
     queued: list[str] = []
     for item in items:
-        if item.status == "stale":
+        if item.status == "stale" or item.skip_backfill:
+            # `skip_backfill` is the user's "not this one": a file the series already
+            # had when it was enabled, or one they restored. Nothing automatic may
+            # queue it -- see `enable_title` and the module docstring.
             continue
         if not _needs_cleaning(session, title, item, settings=settings):
             continue
@@ -447,6 +504,35 @@ def backfill_title(
             queued.append(result.job_id)
     session.flush()
     return queued
+
+
+def defer_existing_items(session: Session, title: Title) -> int:
+    """§2: enabling a series leaves the files it already has **unselected**.
+
+    Only rows that have never been through the pipeline (`last_job_id IS NULL`) are
+    marked. A file that already ran -- cleaned, or `failed` and waiting for the hourly
+    retry -- keeps its place in the queue's reach; blanket marking would strand a
+    failure the moment someone toggled the series off and on again.
+
+    Usually this marks nothing at all, because `sync_all` walks items only for titles
+    that are *already* enabled, so a series enabled for the first time has no
+    `media_items` yet. `titles.backfill_from` is what covers the rows the next sync
+    creates; this covers the rows that are already here.
+    """
+    if title.kind != "series":
+        return 0
+    marked = 0
+    for item in session.scalars(
+        select(MediaItem).where(
+            MediaItem.title_id == title.id,
+            MediaItem.last_job_id.is_(None),
+            MediaItem.skip_backfill.is_(False),
+        )
+    ):
+        item.skip_backfill = True
+        marked += 1
+    session.flush()
+    return marked
 
 
 def _needs_cleaning(
@@ -601,6 +687,59 @@ def sync_all(
         stale=report.items_stale,
         enqueued=len(report.enqueued),
         errors=len(report.errors),
+    )
+    return report
+
+
+def sync_one_title(
+    title_id: int,
+    *,
+    integrations: Any,
+    enqueue_backfill: bool = True,
+    settings: AppSettings | None = None,
+) -> SyncReport:
+    """Pull one title's files from its arr, on demand.
+
+    Takes a ``title_id`` and opens its **own** sessions rather than joining the
+    caller's, for the reason `sync_all` states: a request-scoped transaction that
+    spans an arr round trip holds SQLite's write lock far past the worker's 5 s busy
+    timeout, and the worker's claim starts failing with "database is locked". The
+    HTTP happens with no transaction open at all.
+
+    This is what the UI calls after enabling a title, so the Title page has files to
+    show without waiting up to an hour for the periodic pass -- and what its "Refresh
+    from Sonarr" button calls later.
+    """
+    report = SyncReport()
+    with session_scope() as session:
+        title = session.get(Title, title_id)
+        if title is None:
+            report.errors.append(f"no title {title_id}")
+            return report
+        kind, arr_id = title.kind, title.arr_id
+    if arr_id is None or arr_id < 0:
+        return report  # the CLI sentinel: never ours to sync
+
+    app = "sonarr" if kind == "series" else "radarr"
+    client = integrations.arr(app)
+    if client is None:
+        report.errors.append(f"{app} is not configured")
+        return report
+    pathmap = integrations.map_for(app)
+
+    with session_scope() as session:
+        title = session.get(Title, title_id)
+        if title is None:  # pragma: no cover - deleted between the two transactions
+            return report
+        report.merge(sync_title_items(session, title, client=client, pathmap=pathmap))
+        if enqueue_backfill:
+            report.enqueued.extend(backfill_title(session, title, settings=settings))
+    log.info(
+        "sync.one_title",
+        title_id=title_id,
+        items=report.items_seen,
+        deferred=report.items_deferred,
+        enqueued=len(report.enqueued),
     )
     return report
 

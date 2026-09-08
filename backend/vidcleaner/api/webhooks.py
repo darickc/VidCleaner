@@ -359,6 +359,10 @@ def _on_download(hook: Any, db: Session, title: Title) -> tuple[str, str | None]
         )
     if item.status == "stale":
         item.status = "pending"
+    # A newly imported or upgraded file is new by definition, so it processes whether
+    # or not the user deferred whatever used to be at this path (§2, M7). A `Rename`
+    # deliberately does not do this: a rename is not an arrival.
+    item.skip_backfill = False
 
     if not title.enabled:
         # §12: "disabled-title events recorded but not queued". The row is still

@@ -444,6 +444,11 @@ def restore_item(session: Session, media_item_id: int, *, fs: Any = None) -> Res
     item.path = result.restored_path
     item.size = video.size or item.size
     item.status = "restored"
+    # `restored` is not a clean status, so `sync._needs_cleaning` says yes and the
+    # hourly backfill used to re-clean the file within the hour -- silently undoing
+    # the restore. Restoring is the one unambiguous "leave this file alone" in the
+    # app; the Process/Reprocess buttons clear the flag again.
+    item.skip_backfill = True
     item.cleaned_at = None
     session.flush()
     log.info(
