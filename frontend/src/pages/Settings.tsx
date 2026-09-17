@@ -10,6 +10,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   getBackups,
   getPathMappings,
@@ -17,7 +18,6 @@ import {
   getWebhookSetup,
   installWebhook,
   patchSettings,
-  purgeBackups,
   putPathMappings,
   testIntegration,
 } from "../api/client";
@@ -306,59 +306,23 @@ function WebhookPanel({ app, label }: { app: string; label: string }) {
 }
 
 /**
- * §9.6's "backup retention + purge" and §13's "purge UI".
+ * §9.6's "backup retention + purge", as a summary.
  *
- * The number has been in Settings since M0 with nothing reading it; this is the half
- * that shows what it costs and lets the space come back now. Both buttons are
- * irreversible -- they delete the originals every "restore" depends on -- so both sit
- * behind a confirm, and the labels say how much would go rather than just "purge".
+ * The number has been in Settings since M0 with nothing reading it; M5 gave it a
+ * consumer. What it cannot do here is answer "which originals, and where did they
+ * come from" -- so the acting half now lives on §9.7's Backups page, and this is the
+ * cost, the setting, and the way there.
  */
 function BackupsPanel() {
-  const client = useQueryClient();
   const { data, error } = useQuery({
     queryKey: ["backups"],
     queryFn: () => getBackups(),
-  });
-  const [pending, setPending] = useState<"expired" | "orphaned" | null>(null);
-
-  const purge = useMutation({
-    mutationFn: (scope: "expired" | "orphaned") => purgeBackups(scope),
-    onSuccess: () => {
-      setPending(null);
-      client.invalidateQueries({ queryKey: ["backups"] });
-      client.invalidateQueries({ queryKey: ["health"] });
-    },
   });
 
   if (error) return <Card title="Backups">{String(error)}</Card>;
   if (!data) return <Card title="Backups">Loading…</Card>;
 
   const s = data.summary;
-  const ask = (scope: "expired" | "orphaned", count: number, bytes: number) => (
-    <div className="flex flex-wrap items-center gap-2">
-      {pending === scope ? (
-        <>
-          <span className="w-full text-sm text-amber-300 sm:w-auto">
-            Delete {count} original{count === 1 ? "" : "s"} ({gib(bytes)})? This
-            cannot be undone.
-          </span>
-          <Button
-            variant="danger"
-            onClick={() => purge.mutate(scope)}
-            disabled={purge.isPending}
-          >
-            Yes, purge
-          </Button>
-          <Button onClick={() => setPending(null)}>Cancel</Button>
-        </>
-      ) : (
-        <Button onClick={() => setPending(scope)} disabled={count === 0}>
-          {scope === "expired" ? "Purge expired" : "Purge orphaned"} ({count})
-        </Button>
-      )}
-    </div>
-  );
-
   return (
     <Card title="Backups">
       <div className="space-y-3 text-sm">
@@ -372,35 +336,23 @@ function BackupsPanel() {
           ) : (
             <Badge>purged after {s.retention_days} days</Badge>
           )}
+          {s.orphaned > 0 && (
+            <Badge tone="warn" title="nothing can restore these">
+              {s.orphaned} orphaned ({gib(s.orphaned_bytes)})
+            </Badge>
+          )}
         </div>
         <p className="text-slate-400">
-          Originals live in <code className="break-all">{s.backups_dir}</code>. Restoring a file needs
-          its original, so purging one makes that episode's clean permanent.
+          Originals live in <code className="break-all">{s.backups_dir}</code>.
+          Restoring a file needs its original, so purging one makes that episode's
+          clean permanent.
         </p>
-        {ask("expired", s.expired, s.expired_bytes)}
-        {s.orphaned > 0 && (
-          <div className="space-y-1">
-            <p className="text-slate-400">
-              {s.orphaned} original{s.orphaned === 1 ? "" : "s"} (
-              {gib(s.orphaned_bytes)}) belong to files that are no longer in the
-              library — an upgrade or a delete replaced them, so nothing can
-              restore them.
-            </p>
-            {ask("orphaned", s.orphaned, s.orphaned_bytes)}
-          </div>
-        )}
-        {purge.data && (
-          <p className="text-emerald-300">
-            Purged {purge.data.purged}, reclaimed {gib(purge.data.freed_bytes)}
-            {purge.data.missing > 0 && ` (${purge.data.missing} already gone)`}
-          </p>
-        )}
-        {purge.data?.warnings.map((warning) => (
-          <p key={warning} className="text-amber-300">
-            {warning}
-          </p>
-        ))}
-        <ErrorNote error={purge.error} />
+        <Link
+          to="/backups"
+          className="inline-block text-sm text-sky-400 hover:text-sky-300"
+        >
+          Manage backups →
+        </Link>
       </div>
     </Card>
   );

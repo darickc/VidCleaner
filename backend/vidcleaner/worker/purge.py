@@ -15,6 +15,7 @@ actually run out.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -89,6 +90,7 @@ def purge_backups(
     *,
     now: datetime | None = None,
     scope: str = "expired",
+    ids: Sequence[int] | None = None,
 ) -> PurgeReport:
     """Delete backups whose retention has run out. Returns what it did.
 
@@ -100,12 +102,23 @@ def purge_backups(
     ``scope="orphaned"`` is §9.6's manual button for the storage an upgrade or a delete
     left behind: rows already marked `orphaned`, regardless of their clock, because the
     file they backed up is not in the library any more and nothing will ever restore it.
+
+    ``ids`` is the Backups page deleting one named original, so the one 40 GB remux
+    that is actually costing the space can go without taking the rest with it. It is a
+    *selection*, not a second deletion path: the row must still be in a purgeable state,
+    and every refusal below applies to it unchanged. That matters -- these guards are
+    the difference between a button and a data-loss bug, and there must be exactly one
+    definition of what may be deleted.
     """
     settings = settings or get_settings()
     now = now or utcnow()
     root = settings.backups_dir
 
-    if scope == "orphaned":
+    if ids is not None:
+        rows = session.scalars(
+            select(Backup).where(Backup.id.in_(ids), Backup.state.in_(PURGEABLE_STATES))
+        ).all()
+    elif scope == "orphaned":
         rows = session.scalars(select(Backup).where(Backup.state == "orphaned")).all()
     else:
         rows = session.scalars(

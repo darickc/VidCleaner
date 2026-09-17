@@ -17,8 +17,14 @@ services:
       UMASK: "0002"
       VIDCLEANER_ROLE: "all"
       VIDCLEANER_LOG_LEVEL: "INFO"
-      # Inside /media, so the swap is a rename rather than a copy-and-delete.
-      VIDCLEANER_BACKUPS_DIR: "/media/.vidcleaner-backups"
+      # Originals default to <media>/VidCleaner-Backups -- inside /media, so the swap
+      # is a rename rather than a copy-and-delete, and deliberately NOT dot-prefixed:
+      # it is the one directory that grows by the size of what you clean, so it has to
+      # be visible when you tidy the share. It carries a .ignore (Jellyfin skips it)
+      # and a README.txt saying what deleting it would cost. Leave this unset unless
+      # you want it somewhere else entirely; an explicit /media/.vidcleaner-backups is
+      # treated as the old default and moved for you.
+      # VIDCLEANER_BACKUPS_DIR: "/media/VidCleaner-Backups"
       # CTranslate2/OMP threads. Leave it unset and the entrypoint uses `nproc - 2`
       # (PLAN.md §4); set it only to override that. Note it must be set *here* rather
       # than in the UI, because libgomp reads it once at process start -- the UI's

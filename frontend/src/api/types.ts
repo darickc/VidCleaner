@@ -159,7 +159,10 @@ export interface WhitelistRow {
   context_text: string | null;
 }
 
-export interface BackupRow {
+/** What `/items/{id}` returns. Narrower than the Backups page's row, and named apart
+ * from it: both were called `BackupRow`, and TypeScript merges same-named interfaces
+ * rather than complaining, so this one silently claimed fields it never carries. */
+export interface ItemBackupRow {
   id: number;
   backup_path: string;
   original_path: string;
@@ -177,7 +180,7 @@ export interface ItemDetail {
   counts: WordCount[];
   detections: DetectionRow[];
   whitelist: WhitelistRow[];
-  backups: BackupRow[];
+  backups: ItemBackupRow[];
   restorable: boolean;
 }
 
@@ -298,6 +301,7 @@ export interface BackupSummary {
   retention_days: number;
   keeps_forever: boolean;
   backups_dir: string;
+  backups_dir_is_hidden: boolean;
 }
 
 export interface BackupRow {
@@ -306,12 +310,31 @@ export interface BackupRow {
   label: string;
   original_path: string;
   backup_path: string;
+  /** `backup_path` under `backups_dir` — the backups tree mirrors the library tree,
+   * so this is readable even for an orphan with no item behind it. */
+  rel_path: string;
+  /** False for a row adopted onto the `<orphaned backups>` sentinel: no item to link
+   * to, and nothing to restore it into. */
+  identified: boolean;
   size: number | null;
   state: string;
   exists: boolean;
   created_at: string | null;
   purge_after: string | null;
   expired: boolean;
+}
+
+export interface BackupQuery {
+  state?: string;
+  sort?: "recent" | "largest";
+  expired_only?: boolean;
+}
+
+export interface ReconcileResult {
+  adopted: number;
+  purged: number;
+  skipped: boolean;
+  note: string;
 }
 
 export interface BackupList {

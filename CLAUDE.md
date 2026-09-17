@@ -44,6 +44,12 @@ Sonarr/Radarr, with a review UI. Python (FastAPI + worker) backend, React/TypeSc
   faster-whisper and whisperX imports inside functions.
 - Persistence lives in `pipeline/persist.py` and is called *after* the pipeline, never threaded
   through `StageContext`.
+- **The backups directory is a plain subdirectory of `media_dir`** (`VidCleaner-Backups`,
+  visible on purpose), never a mount of its own: `rename(2)` refuses to cross a mount point
+  even when both sides are one filesystem. `config.py` derives it, treats the old hidden
+  `.vidcleaner-backups` as unset, and `worker/relocate.py` moves an existing install's
+  originals on an idle tick. Nothing may move a backup while a `swap.plan.json` is
+  unresolved, and `reconcile_backups` refuses to run until the legacy directory is gone.
 - Library files are only ever changed by `pipeline/swap.py` (rename-based, never unlink). Two
   renames cannot be atomic, so `swap` writes an **fsynced intent journal** (`swap.plan.json`)
   before the first one and `swap.recover()` resolves every crash state from it. `swap` and
@@ -55,7 +61,7 @@ Sonarr/Radarr, with a review UI. Python (FastAPI + worker) backend, React/TypeSc
   agreeing (`detect.DetectOptions.mute_subtitle_only`).
 - **The database stores local paths exclusively.** Arr and Jellyfin paths are translated only at
   the integration boundary, through `integrations/pathmap.py` (`from_prefix` = the app's path,
-  `to_prefix` = ours). Never map a `/work` or `/backups` path.
+  `to_prefix` = ours). Never map a work-dir or backups-dir path.
 - **Periodic work is split by resource.** The worker owns anything needing queue idleness or the
   volumes (stale recovery, `/work` collection, the audit pass); the api owns the hourly arr sync,
   because a timer in the worker fires however late the current ffmpeg or STT stage happens to be.

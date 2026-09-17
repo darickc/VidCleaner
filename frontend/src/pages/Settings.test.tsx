@@ -221,16 +221,14 @@ describe("settings page", () => {
 });
 
 describe("the backups panel", () => {
-  it("shows what is held and what would be reclaimed", async () => {
+  it("shows what is held and where it lives", async () => {
     stub();
     renderApp(<SettingsPage />);
 
     expect(await screen.findByText("3 kept originals")).toBeInTheDocument();
     expect(screen.getByText("6.0 GiB")).toBeInTheDocument();
     expect(screen.getByText("purged after 30 days")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Purge expired \(1\)/ }),
-    ).toBeEnabled();
+    expect(screen.getByText("/media/VidCleaner-Backups")).toBeInTheDocument();
   });
 
   it("says so when retention is off", async () => {
@@ -243,57 +241,7 @@ describe("the backups panel", () => {
     expect(await screen.findByText("kept forever")).toBeInTheDocument();
   });
 
-  it("cannot purge when there is nothing expired", async () => {
-    stub({
-      "/backups": backups({ summary: { expired: 0, expired_bytes: 0 } }),
-    });
-    renderApp(<SettingsPage />);
-    expect(
-      await screen.findByRole("button", { name: /Purge expired \(0\)/ }),
-    ).toBeDisabled();
-  });
-
-  it("asks before deleting, and says how much would go", async () => {
-    const api = stub();
-    renderApp(<SettingsPage />);
-
-    await userEvent.click(
-      await screen.findByRole("button", { name: /Purge expired/ }),
-    );
-    expect(
-      screen.getByText(
-        /Delete 1 original \(2.0 GiB\)\? This cannot be undone\./,
-      ),
-    ).toBeInTheDocument();
-    // Nothing has been sent yet: the confirm is a real gate, not a flourish.
-    expect(api.calls.filter((c) => c.path === "/backups/purge")).toHaveLength(
-      0,
-    );
-
-    await userEvent.click(screen.getByRole("button", { name: "Yes, purge" }));
-    await waitFor(() => {
-      const posted = api.calls.filter((c) => c.path === "/backups/purge");
-      expect(posted).toHaveLength(1);
-      expect(posted[0].body).toEqual({ scope: "expired" });
-    });
-  });
-
-  it("cancelling sends nothing", async () => {
-    const api = stub();
-    renderApp(<SettingsPage />);
-
-    await userEvent.click(
-      await screen.findByRole("button", { name: /Purge expired/ }),
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-
-    expect(screen.queryByText(/cannot be undone/)).not.toBeInTheDocument();
-    expect(api.calls.filter((c) => c.path === "/backups/purge")).toHaveLength(
-      0,
-    );
-  });
-
-  it("offers orphaned originals separately, and explains why", async () => {
+  it("surfaces orphans here, but sends you to the page that can show them", async () => {
     stub({
       "/backups": backups({
         summary: { orphaned: 2, orphaned_bytes: 4 * 1024 ** 3 },
@@ -301,11 +249,20 @@ describe("the backups panel", () => {
     });
     renderApp(<SettingsPage />);
 
+    expect(await screen.findByText(/2 orphaned \(4.0 GiB\)/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Manage backups/ })).toHaveAttribute(
+      "href",
+      "/backups",
+    );
+  });
+
+  it("does not delete anything from here", async () => {
+    stub();
+    renderApp(<SettingsPage />);
+    await screen.findByText("3 kept originals");
+
     expect(
-      await screen.findByText(/no longer in the library/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Purge orphaned \(2\)/ }),
-    ).toBeEnabled();
+      screen.queryByRole("button", { name: /Purge/ }),
+    ).not.toBeInTheDocument();
   });
 });

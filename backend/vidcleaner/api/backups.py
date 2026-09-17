@@ -4,10 +4,13 @@ Retention had a *number* in Settings from M0 and no consumer until M5. This is t
 other half: what is being held, how much of the media share it costs, and a way to
 reclaim it now rather than waiting for the scheduler.
 
-The list is deliberately not paginated per item: a library of a few thousand episodes
-has a few thousand rows, the page shows totals plus the oldest, and the useful question
-("how much is this costing me, and what can go?") is answered by the summary rather
-than by scrolling.
+The summary answers "how much is this costing me, and what can go?". §9.7's Backups
+page answers the other half -- *which* originals, and where they came from -- because
+an orphan that is only a count cannot be checked before it is deleted, and "the share
+is filling up" is really the question "what is the biggest thing in here?".
+
+Still not paginated: a few thousand rows sort and filter fine in one response, and
+`limit` caps it.
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -39,6 +42,13 @@ class BackupRow(BaseModel):
     label: str
     original_path: str
     backup_path: str
+    rel_path: str = ""
+    """`backup_path` under `backups_dir`. What the page shows, because the backups tree
+    mirrors the library tree -- so this reads `Movies/Foo (2019)/Foo.mkv` even for an
+    adopted orphan, whose `original_path` is empty and whose item is a sentinel."""
+    identified: bool = True
+    """False for a row hung off the `<orphaned backups>` sentinel: there is no item
+    page to link to, and nothing to restore it into."""
     size: int | None = None
     state: str
     exists: bool = True
@@ -62,6 +72,10 @@ class BackupSummary(BaseModel):
     keeps_forever: bool = False
     """``backup_retention_days == 0``: `purge_after` is NULL and nothing expires."""
     backups_dir: str = ""
+    backups_dir_is_hidden: bool = False
+    """The old default was dot-prefixed, and an installed container keeps the variable
+    it was created with. The page says so rather than leaving "where are my backups?"
+    to be answered by a file browser that does not show them."""
 
 
 class BackupList(BaseModel):
@@ -73,12 +87,41 @@ class PurgeRequest(BaseModel):
     scope: Literal["expired", "orphaned"] = "expired"
 
 
+class ReconcileResult(BaseModel):
+    adopted: int = 0
+    purged: int = 0
+    skipped: bool = False
+    note: str = ""
+
+
 class PurgeResult(BaseModel):
     scope: str
     purged: int = 0
     freed_bytes: int = 0
     missing: int = 0
     warnings: list[str] = Field(default_factory=list)
+
+
+def _relative(path: str, root: Path) -> str:
+    """The backups tree mirrors the library tree, so this is the readable name."""
+    try:
+        return str(Path(path).relative_to(root))
+    except ValueError:
+        # A row from an older `backups_dir`, or one pointing somewhere it should not.
+        # `purge_backups` refuses those; showing the full path is how they get noticed.
+        return path
+
+
+def _sentinel_item_id(db: Session) -> int | None:
+    """The `<orphaned backups>` item adopted files hang from (`persist.ORPHAN_PATH`).
+
+    `backups.media_item_id` is NOT NULL, so a file whose row was lost to a crash has
+    to belong to *something*; it is not an episode, and the page must not offer a link
+    or a restore for it.
+    """
+    from vidcleaner.pipeline.persist import ORPHAN_PATH  # noqa: PLC0415
+
+    return db.scalars(select(MediaItem.id).where(MediaItem.path == ORPHAN_PATH)).first()
 
 
 def _labels(db: Session, rows: list[Backup]) -> dict[int, str]:
@@ -95,10 +138,13 @@ def _labels(db: Session, rows: list[Backup]) -> dict[int, str]:
 def list_backups(
     db: DbSession,
     state: Annotated[str | None, Query()] = None,
+    sort: Annotated[Literal["recent", "largest"], Query()] = "recent",
+    expired_only: Annotated[bool, Query()] = False,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
 ) -> BackupList:
     """What `/backups` is holding, with the totals the Settings page shows."""
     settings = load_settings(db)
+    deploy = get_settings()
     now = utcnow()
 
     counts = db.execute(
@@ -113,7 +159,8 @@ def list_backups(
         bytes_by_state={s: int(b) for s, _, b in counts},
         retention_days=settings.backup_retention_days,
         keeps_forever=settings.backup_retention_days == 0,
-        backups_dir=str(get_settings().backups_dir),
+        backups_dir=str(deploy.backups_dir),
+        backups_dir_is_hidden=deploy.backups_dir_is_hidden,
     )
 
     expired = db.execute(
@@ -132,11 +179,21 @@ def list_backups(
     ).one()
     summary.orphaned, summary.orphaned_bytes = int(orphaned[0]), int(orphaned[1])
 
-    query = select(Backup).order_by(Backup.created_at.desc(), Backup.id.desc()).limit(limit)
+    # "Largest first" is the question behind "the share is filling up"; "newest first"
+    # is the one behind "what did that last job keep?".
+    order = (
+        (Backup.size.desc().nullslast(), Backup.id.desc())
+        if sort == "largest"
+        else (Backup.created_at.desc(), Backup.id.desc())
+    )
+    query = select(Backup).order_by(*order).limit(limit)
     if state:
         query = query.where(Backup.state == state)
+    if expired_only:
+        query = query.where(Backup.purge_after.is_not(None), Backup.purge_after <= now)
     rows = list(db.scalars(query).all())
     labels = _labels(db, rows)
+    sentinel = _sentinel_item_id(db)
 
     return BackupList(
         summary=summary,
@@ -147,6 +204,8 @@ def list_backups(
                 label=labels.get(row.media_item_id, f"item {row.media_item_id}"),
                 original_path=row.original_path,
                 backup_path=row.backup_path,
+                rel_path=_relative(row.backup_path, deploy.backups_dir),
+                identified=row.media_item_id != sentinel,
                 size=row.size,
                 state=row.state,
                 exists=Path(row.backup_path).is_file(),
@@ -178,6 +237,64 @@ def purge(request: Annotated[PurgeRequest, Body()], db: DbSession) -> PurgeResul
     )
     return PurgeResult(
         scope=request.scope,
+        purged=report.purged,
+        freed_bytes=report.freed_bytes,
+        missing=report.missing,
+        warnings=list(report.refused),
+    )
+
+
+@router.post("/backups/reconcile", response_model=ReconcileResult)
+def reconcile(db: DbSession) -> ReconcileResult:
+    """Re-read the directory before showing it.
+
+    The scheduler reconciles hourly, and §9.7's page exists precisely so orphans can
+    be looked at before they are deleted -- a list that is up to an hour stale is the
+    wrong thing to put a purge button next to.
+    """
+    from vidcleaner.pipeline.persist import reconcile_backups  # noqa: PLC0415
+
+    deploy = get_settings()
+    report = reconcile_backups(
+        db,
+        deploy.backups_dir,
+        retention_days=load_settings(db).backup_retention_days,
+        legacy_dir=deploy.legacy_backups_dir,
+    )
+    if report.skipped:
+        return ReconcileResult(
+            skipped=True,
+            note=(
+                f"Originals are still being moved out of {deploy.legacy_backups_dir}. "
+                "This will run by itself once that finishes."
+            ),
+        )
+    log.info("backups.reconciled_by_user", adopted=report.adopted, purged=report.purged)
+    return ReconcileResult(adopted=report.adopted, purged=report.purged)
+
+
+@router.delete("/backups/{backup_id}", response_model=PurgeResult)
+def purge_one(backup_id: int, db: DbSession) -> PurgeResult:
+    """Delete one named original, so a single huge orphan can go on its own.
+
+    Routed through the same `purge_backups` as both bulk buttons, with `ids` selecting
+    rather than a second deletion path: every refusal -- outside `backups_dir`, a
+    `restored` row, a file already gone -- has to apply here unchanged.
+    """
+    from vidcleaner.worker.purge import purge_backups  # noqa: PLC0415
+
+    row = db.get(Backup, backup_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no such backup")
+
+    report = purge_backups(db, get_settings(), ids=[backup_id])
+    if not (report.purged or report.missing or report.refused):
+        # Selected but not purgeable: a `restored` row, whose file went back into the
+        # library, or an already-`purged` one.
+        raise HTTPException(status_code=409, detail=f"a {row.state} backup cannot be purged")
+    log.info("backups.purged_one_by_user", backup_id=backup_id, freed_mib=report.freed_mib)
+    return PurgeResult(
+        scope="one",
         purged=report.purged,
         freed_bytes=report.freed_bytes,
         missing=report.missing,

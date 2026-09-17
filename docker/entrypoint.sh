@@ -35,7 +35,11 @@ RUN_AS="${PUID}:${PGID}"
 
 # `${HF_HOME}` too: the first job downloads a model into it, and on an existing
 # appdata dir that directory would otherwise be created by whoever got there first.
-for dir in /config /work /backups "${HF_HOME:-/config/models}"; do
+# NOT /backups: there is no such volume any more (the originals live inside /media,
+# because rename(2) cannot cross a mount point). Creating it here would make an empty
+# container-local directory *exist*, and a config that cleared VIDCLEANER_BACKUPS_DIR
+# would then silently resolve to it and fail at `swapping` with EXDEV.
+for dir in /config /work "${HF_HOME:-/config/models}"; do
     mkdir -p "$dir"
     # Only the top level: chowning a large backups share on every boot is costly.
     chown "$RUN_AS" "$dir" 2>/dev/null || echo "warn: cannot chown $dir (read-only mount?)"

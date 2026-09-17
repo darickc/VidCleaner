@@ -18,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -35,6 +35,14 @@ def _dir_default(container_path: str, dev_name: str) -> Path:
     """Use the container mount when it exists, else a repo-local dev directory."""
     path = Path(container_path)
     return path if path.is_dir() else _DEV_ROOT / dev_name
+
+
+#: Where originals are kept. Visible on purpose: this is the one directory in the
+#: install that silently accumulates full-size video files, and a dot-prefixed name
+#: makes it the one directory nobody sees while tidying the share.
+BACKUPS_DIRNAME = "VidCleaner-Backups"
+#: What it was called before, and what the relocator looks for.
+LEGACY_BACKUPS_DIRNAME = ".vidcleaner-backups"
 
 
 def _config_dir_from_env() -> Path:
@@ -79,7 +87,18 @@ class Settings(BaseSettings):
 
     config_dir: Path = Field(default_factory=lambda: _dir_default("/config", "config"))
     media_dir: Path = Field(default_factory=lambda: _dir_default("/media", "media"))
-    backups_dir: Path = Field(default_factory=lambda: _dir_default("/backups", "backups"))
+    backups_dir: Path = Field(
+        default_factory=lambda data: Path(data["media_dir"]) / BACKUPS_DIRNAME
+    )
+    """A subdirectory *inside* the media mount, never a mount of its own.
+
+    `rename(2)` refuses to cross mount points even when both sides are the same
+    filesystem (§14, 2026-09-03), so a separate `/backups` volume could never be the
+    rename the swap needs -- and the entrypoint used to `mkdir /backups` regardless,
+    which made that broken path the silent default for anyone who cleared the
+    environment variable. Deriving it from `media_dir` removes the trap instead of
+    papering over it, and follows a `media_dir` set in `settings.json` as well as one
+    set in the environment."""
     work_dir: Path = Field(default_factory=lambda: _dir_default("/work", "work"))
     static_dir: Path = Field(default_factory=_static_dir_default)
 
@@ -116,12 +135,46 @@ class Settings(BaseSettings):
         return self.config_dir / "snippets"
 
     @property
+    def legacy_backups_dir(self) -> Path:
+        """Where originals lived before the directory was given a visible name."""
+        return self.media_dir / LEGACY_BACKUPS_DIRNAME
+
+    @property
+    def backups_dir_is_hidden(self) -> bool:
+        """An install that pinned the old value keeps working; it just cannot be seen.
+
+        Shipping a new default does not change a saved `VIDCLEANER_BACKUPS_DIR`, so
+        this is what the startup log and the Backups page use to say so out loud.
+        """
+        return self.backups_dir.name.startswith(".")
+
+    @property
     def runs_api(self) -> bool:
         return self.role in ("api", "all")
 
     @property
     def runs_worker(self) -> bool:
         return self.role in ("worker", "all")
+
+    @model_validator(mode="after")
+    def _retire_the_legacy_backups_default(self) -> Settings:
+        """`<media>/.vidcleaner-backups` is the old default, not a choice.
+
+        The image, `docker-compose.yml` and the unraid template all shipped that
+        literal as `VIDCLEANER_BACKUPS_DIR`, and an installed container keeps the
+        variable it was created with -- so for exactly the installs that need to move,
+        the old path is pinned from outside and "relocate only when `backups_dir` is
+        the new default" would never fire. Treating that one exact value as unset is
+        what lets an upgrade actually happen. Any other override is honoured
+        untouched, and this is deterministic, so it re-applies identically on every
+        boot rather than mutating anything on disk.
+        """
+        if (
+            self.backups_dir.name == LEGACY_BACKUPS_DIRNAME
+            and self.backups_dir.parent == self.media_dir
+        ):
+            self.backups_dir = self.media_dir / BACKUPS_DIRNAME
+        return self
 
     def ensure_dirs(self) -> None:
         """Create the directories we own. /media is the library and is never created."""

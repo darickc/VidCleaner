@@ -39,6 +39,7 @@ log = get_logger(__name__)
 RECOVER_INTERVAL_S: Final = 30.0
 GC_INTERVAL_S: Final = 3600.0
 RETENTION_INTERVAL_S: Final = 3600.0
+RELOCATE_INTERVAL_S: Final = 900.0
 AUDIT_INTERVAL_S: Final = 300.0
 #: How many recent audits `promote_audits` looks at per tick.
 AUDIT_PROMOTE_SCAN: Final = 50
@@ -63,6 +64,20 @@ def _collect(settings: Settings) -> None:
         collect_work_dirs(session, settings)
 
 
+def _relocate(settings: Settings) -> None:
+    """Move originals out of the old hidden backups directory, once.
+
+    A no-op forever after it succeeds, and a no-op on an install that never had the
+    old directory. Registered *after* `recover_stale` on purpose: a swap that crashed
+    mid-rename must be resolved against the paths it journalled before any of them
+    move. See `worker/relocate.py`.
+    """
+    from vidcleaner.worker.relocate import migrate_legacy_backups  # noqa: PLC0415
+
+    with session_scope() as session:
+        migrate_legacy_backups(session, settings)
+
+
 def _retention(settings: Settings) -> None:
     """§13's retention, in the order that makes it safe.
 
@@ -77,7 +92,12 @@ def _retention(settings: Settings) -> None:
 
     with session_scope() as session:
         days = load_settings(session).backup_retention_days
-        reconcile_backups(session, settings.backups_dir, retention_days=days)
+        reconcile_backups(
+            session,
+            settings.backups_dir,
+            retention_days=days,
+            legacy_dir=settings.legacy_backups_dir,
+        )
         if days:
             # 0 means keep forever, and `purge_after` is NULL for those rows -- but
             # rows written while the setting was non-zero still carry a date, so the
@@ -335,6 +355,9 @@ class Scheduler:
         if not self.tasks:
             self.tasks = (
                 PeriodicTask("recover_stale", RECOVER_INTERVAL_S, _recover_stale),
+                # After recover_stale, and before anything that reads the backups
+                # directory: see `_relocate`.
+                PeriodicTask("relocate", RELOCATE_INTERVAL_S, _relocate),
                 PeriodicTask("audit", AUDIT_INTERVAL_S, _audit),
                 PeriodicTask("gc_work_dirs", GC_INTERVAL_S, _collect),
                 PeriodicTask("retention", RETENTION_INTERVAL_S, _retention),

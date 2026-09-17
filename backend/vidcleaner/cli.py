@@ -170,13 +170,40 @@ def _backups(action: str) -> int:
     configure_logging("WARNING", role="cli")
     settings = get_settings()
 
+    if action == "migrate":
+        # Normally the worker's scheduler does this on an idle tick. Here for a split
+        # `VIDCLEANER_ROLE=api` deployment, which has no worker to do it.
+        from vidcleaner.worker.relocate import migrate_legacy_backups  # noqa: PLC0415
+
+        with session_scope() as session:
+            report = migrate_legacy_backups(session, settings)
+        if report.blocked:
+            print(f"nothing moved: {report.blocked}")
+            return 0
+        print(
+            f"moved {report.moved} file(s) ({report.moved_mib} MiB) to "
+            f"{settings.backups_dir}, updated {report.rows_updated} row(s)"
+        )
+        for skipped in report.skipped:
+            print(f"           left behind: {skipped}")
+        if report.legacy_removed:
+            print(f"           removed {settings.legacy_backups_dir}")
+        return 0
+
     if action == "reconcile":
         with session_scope() as session:
             report = reconcile_backups(
                 session,
                 settings.backups_dir,
                 retention_days=load_settings(session).backup_retention_days,
+                legacy_dir=settings.legacy_backups_dir,
             )
+        if report.skipped:
+            print(
+                f"skipped: originals are still in {settings.legacy_backups_dir}. "
+                "Run `vidcleaner backups migrate` first."
+            )
+            return 0
         print(f"adopted {report.adopted} untracked file(s), marked {report.purged} purged")
         return 0
 
@@ -226,10 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
         "action",
         nargs="?",
         default="list",
-        choices=("list", "reconcile"),
+        choices=("list", "reconcile", "migrate"),
         help=(
-            "list: every recorded backup; reconcile: adopt files in /backups with no row "
-            "and mark rows whose file is gone"
+            "list: every recorded backup; reconcile: adopt files in the backups directory "
+            "with no row and mark rows whose file is gone; migrate: move originals out of "
+            "the old hidden .vidcleaner-backups directory"
         ),
     )
 

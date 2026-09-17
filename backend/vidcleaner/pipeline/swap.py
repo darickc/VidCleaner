@@ -68,7 +68,7 @@ __all__ = [
     "reconcile",
     "restore_backup",
     "run",
-    "write_ignore_marker",
+    "write_dir_markers",
 ]
 
 NAME = "swap"
@@ -85,6 +85,28 @@ STAGE_HEADROOM_BYTES = 64 * 1024 * 1024
 #: Written into ``/backups`` on first use. `/backups` defaults to a directory inside
 #: the media share (§10), and Jellyfin honours this file.
 IGNORE_MARKER = ".ignore"
+README_MARKER = "README.txt"
+#: Written beside `.ignore` so the directory explains itself to whoever finds it
+#: while tidying the share. A visible folder full of video files invites exactly one
+#: question, and this is the cheapest place to answer it.
+README_TEXT = """\
+VidCleaner backups
+==================
+
+These are the untouched ORIGINAL video files that VidCleaner replaced in your
+library. Each one sits at the same relative path it has under your media folders,
+so you can tell which episode or movie it belongs to without the database.
+
+Deleting anything in here is not reversible:
+
+  * "Restore original" stops working for that file -- its clean becomes permanent.
+  * The audit pass, which re-checks a clean against the untouched original, has
+    nothing left to compare with.
+
+You do not need to clear this out by hand. VidCleaner deletes these itself once
+the retention period expires (Settings -> Backups), and the Backups page lists
+every original it is holding, what it costs, and which ones are orphaned.
+"""
 
 
 # --------------------------------------------------------------- filesystem
@@ -99,6 +121,8 @@ class FsOps(Protocol):
     def copy_file(self, src: Path, dst: Path) -> None: ...
     def unlink(self, path: Path) -> None: ...
     def mkdirs(self, path: Path) -> None: ...
+    def iterdir(self, path: Path) -> list[Path]: ...
+    def rmdir(self, path: Path) -> None: ...
     def chmod(self, path: Path, mode: int) -> None: ...
     def chown(self, path: Path, uid: int, gid: int) -> None: ...
     def disk_free(self, path: Path) -> int: ...
@@ -139,6 +163,13 @@ class RealFs:
 
     def mkdirs(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
+
+    def iterdir(self, path: Path) -> list[Path]:
+        return sorted(path.iterdir())
+
+    def rmdir(self, path: Path) -> None:
+        """Empty directories only -- this seam must never be able to take a file."""
+        path.rmdir()
 
     def chmod(self, path: Path, mode: int) -> None:
         os.chmod(path, mode)
@@ -626,16 +657,26 @@ def _swap_sidecar(sidecar: SidecarSwap, *, fs: FsOps) -> tuple[bool, str | None]
     return True, None
 
 
-def write_ignore_marker(backups_root: Path, fs: FsOps | None = None) -> None:
-    """`/backups` defaults to a directory *inside* the media share (§10), where a
-    Jellyfin library scan would otherwise find every original we ever kept."""
+def write_dir_markers(backups_root: Path, fs: FsOps | None = None) -> None:
+    """Two files that make the backups directory safe to see and safe to find.
+
+    `.ignore` because the directory defaults to a path *inside* the media share
+    (§10), where a Jellyfin library scan would otherwise find every original we ever
+    kept. `README.txt` because the directory is deliberately *visible* -- it is the
+    one place in the install that quietly grows by the size of the library, and a
+    human who finds it while clearing space should not have to guess what it is.
+    """
     fs = fs or RealFs()
-    marker = backups_root / IGNORE_MARKER
-    if fs.exists(marker):
-        return
-    with contextlib.suppress(OSError):
-        fs.mkdirs(backups_root)
-        fs.write_text(marker, "VidCleaner backups. Not a media library.\n")
+    for name, text in (
+        (IGNORE_MARKER, "VidCleaner backups. Not a media library.\n"),
+        (README_MARKER, README_TEXT),
+    ):
+        marker = backups_root / name
+        if fs.exists(marker):
+            continue
+        with contextlib.suppress(OSError):
+            fs.mkdirs(backups_root)
+            fs.write_text(marker, text)
 
 
 def _safe_fingerprint(path: Path, fs: FsOps) -> str:
@@ -839,7 +880,7 @@ def run(ctx) -> None:
         arr_paths=_arr_paths(ctx),
     )
 
-    write_ignore_marker(ctx.deploy.backups_dir, fs)
+    write_dir_markers(ctx.deploy.backups_dir, fs)
 
     # The journal, fsynced, after staging is planned and before anything moves.
     plan.write(ctx.ws.swap_plan_json, fsync=True)

@@ -28,7 +28,6 @@ ENV PYTHONUNBUFFERED=1 \
     VIDCLEANER_ROLE=all \
     VIDCLEANER_CONFIG_DIR=/config \
     VIDCLEANER_MEDIA_DIR=/media \
-    VIDCLEANER_BACKUPS_DIR=/media/.vidcleaner-backups \
     VIDCLEANER_WORK_DIR=/work \
     VIDCLEANER_STATIC_DIR=/app/static
 

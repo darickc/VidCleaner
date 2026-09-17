@@ -40,6 +40,7 @@ from vidcleaner.pipeline.artifacts import (
     SnippetsResult,
     SwapResult,
 )
+from vidcleaner.pipeline.swap import README_MARKER
 
 __all__ = [
     "LOCAL_TITLE_ARR_ID",
@@ -293,6 +294,8 @@ class ReconcileReport:
     """Files under /backups with no row -- a rename committed but its commit did not."""
     purged: int = 0
     """Rows whose backup file is gone."""
+    skipped: bool = False
+    """Refused to run because an unfinished relocation makes the directory a lie."""
 
 
 def persist_swap(
@@ -468,7 +471,11 @@ def restore_item(session: Session, media_item_id: int, *, fs: Any = None) -> Res
 
 
 def reconcile_backups(
-    session: Session, backups_dir: Path, *, retention_days: int = 30
+    session: Session,
+    backups_dir: Path,
+    *,
+    retention_days: int = 30,
+    legacy_dir: Path | None = None,
 ) -> ReconcileReport:
     """Close the one window the swap cannot: a committed rename whose row was lost.
 
@@ -477,7 +484,20 @@ def reconcile_backups(
     human deleted leaves the reverse. Adding a `pending` backup state would only move
     the window, not close it; the intent journal in `/work` is the honest source of
     truth during a swap and this is the backstop afterwards.
+
+    ``legacy_dir`` is the relocator's barrier, and it is not optional politeness. While
+    originals are being moved out of the old hidden directory, a row may still name the
+    old path for a file that is already at the new one -- and this function reads that
+    as *two* separate facts: the row's file is gone (mark it `purged`) and the new file
+    has no row (adopt it as `orphaned`, with a thirty-day clock). That pair silently
+    converts a restorable original into something `purge_backups` deletes a month later.
+    `worker/relocate.py` keeps the legacy directory in place for the whole of its run,
+    so "it still exists" is exactly "a relocation is unfinished".
     """
+    if legacy_dir is not None and legacy_dir != backups_dir and legacy_dir.is_dir():
+        log.warning("backups.reconcile_deferred", legacy=str(legacy_dir))
+        return ReconcileReport(skipped=True)
+
     known = {row.backup_path for row in session.scalars(select(Backup))}
     purge_after = utcnow() + timedelta(days=retention_days) if retention_days else None
 
@@ -485,6 +505,11 @@ def reconcile_backups(
     if backups_dir.is_dir():
         for path in sorted(backups_dir.rglob("*")):
             if not path.is_file() or path.name.startswith("."):
+                continue
+            if path.parent == backups_dir and path.name == README_MARKER:
+                # Our own signpost, not an original. Only at the root: a library
+                # folder may legitimately contain a `README.txt` of its own, and a
+                # backup of that file still deserves adopting.
                 continue
             if str(path) in known:
                 continue

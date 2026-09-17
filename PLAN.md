@@ -83,7 +83,7 @@ Sonarr/Radarr/Jellyfin or have a review UI). We build our own, borrowing their f
                     │ claim→stages     │
                     └──────────────────┘
    volumes: /config (db, settings, models cache, logs) · /media (library, same path as arrs/Jellyfin)
-            /backups (originals; default inside the media share) · /work (scratch; SSD/cache)
+            (originals live in <media>/VidCleaner-Backups, inside the /media mount) · /work (scratch; SSD/cache)
 ```
 
 - **One image, two processes** started by the entrypoint (`api` and `worker`; if either exits the container exits so Docker restarts it). Separate processes because CTranslate2/numpy hold the GIL and pin threads, which would starve the API event loop. `VIDCLEANER_ROLE=api|worker|all` allows split deployment later.
@@ -187,13 +187,14 @@ VidCleaner/
 3. **Title** — episode/movie list grouped by season with status badge and a **selection checkbox per file, per season and for the whole title** ("Process selected (N)"; deferred files read `not queued`), per-word rollup, buttons: process now, reprocess all, restore originals, dry-run.
 4. **Item** — summary (model, mode, subtitle source, time, codec), **counts per word/category**, detections table (time, word, category, source, confidence, suspicious) with ▶ Original / ▶ Clean snippet players + waveform, "false positive → whitelist (item/title/global) + reprocess", job log.
 5. **Words & Profiles** — categories with word chips, custom words/phrases, whitelist, profile editor, default profile, padding.
-6. **Settings** — Sonarr/Radarr/Jellyfin URL + key + Test, webhook URL/token, path mappings, STT models/threads, codec policy, audit pass, backup retention + purge, log level.
+6. **Settings** — Sonarr/Radarr/Jellyfin URL + key + Test, webhook URL/token, path mappings, STT models/threads, codec policy, audit pass, backup retention (the number, plus what it costs and a link to 7), log level.
+7. **Backups** — every original being held, orphans included: its path under the backups directory (which mirrors the library tree), the item it came from, size, age, retention. Filter by state, sort by size, rescan the directory, and purge or restore one row or all of a kind. A count cannot be checked before it is deleted; this is the screen where it can.
 
 ## 10. Docker / unraid
 
 - `Dockerfile`: multi-stage; `node:22` builds frontend → `/app/static`; `python:3.12-slim` + static ffmpeg ≥ 7.0 (jellyfin-ffmpeg or johnvansickle build) + `uv sync --frozen`; torch CPU wheels (`--index-url https://download.pytorch.org/whl/cpu`); image ≈ 3 GB. Models download on first run to `/config/models` (`HF_HOME`).
 - Entrypoint: `gosu $PUID:$PGID`, `umask 0002`, run migrations, start `api` and `worker` (exit if either dies). Env: `PUID PGID TZ VIDCLEANER_PORT=8585 VIDCLEANER_ROLE=all OMP_NUM_THREADS`.
-- Volumes: `/config`, `/media` (host `/mnt/user/media`, same as arrs/Jellyfin), `/backups` (default `/mnt/user/media/.vidcleaner-backups` so swaps are same-filesystem renames), `/work` (host cache/SSD).
+- Volumes: `/config`, `/media` (host `/mnt/user/media`, same as arrs/Jellyfin), `/work` (host cache/SSD). **Three, not four**: originals go to `<media_dir>/VidCleaner-Backups`, a plain subdirectory *inside* the `/media` mount, because `rename(2)` refuses to cross a mount point even when both sides are one filesystem. Visible rather than dot-prefixed, with a `.ignore` for Jellyfin and a `README.txt` for whoever finds it.
 - `docker-compose.yml` + `unraid/vidcleaner.xml` CA-style template; healthcheck `GET /api/health`.
 - Dev on the Mac: `brew install ffmpeg` (present, 9.0.1), `uv run uvicorn --reload`, `uv run vidcleaner-worker`, `npm run dev` with API proxy; fixtures via `scripts/make_fixtures.py`. Real tests on the unraid box via compose.
 
@@ -235,7 +236,7 @@ Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 down
 | Misalignment mutes the wrong word | whisperX alignment; guards (≤ 3 s range, ≤ 2.5 s from cue); snippets for review |
 | Sonarr/Radarr confused by the modified file | Same path, size changes ⇒ re-analyze; explicit Rescan; mapping check; never leave sibling video files |
 | Upgrade replaces the cleaned file | `Download`+`isUpgrade` re-enqueues; old backup marked orphaned and purged per retention |
-| Backups double storage | Retention (default 30 days), purge UI, backups on the same share |
+| Backups double storage | Retention (default 30 days), a Backups page that lists and prices every original, per-row and bulk purge, backups on the same share |
 | Lossless/7.1 sources | FLAC clean track; optional EAC3 downmix |
 | Infuse ignores default flag on some MKVs | Clean track is also first and language-tagged; document Infuse audio "Auto" |
 | Season-pack webhook bursts | Path dedupe + single-STT concurrency |
@@ -2480,6 +2481,98 @@ Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 down
   Verified in a browser at 375/768/1280: zero horizontal overflow on all six routes, and a drawer
   left open while widening past `md` becomes a normal rail with no scrim stranded over the page.
   No milestone box changes; this is outside the M0–M7 track.
+- 2026-09-17 — **The backups directory is now visible, and there is a page that lists what
+  is in it.** Reported from running the thing: `/media/.vidcleaner-backups` is the one
+  directory in the install that grows by the size of everything cleaned, and a dot-prefixed
+  name makes it the one directory you cannot see while tidying the share — so deleting it by
+  accident is the *expected* outcome, not the unlucky one. It is not a harmless folder:
+  §9.3's "restore original" needs those files and so does §6's audit pass, which reads the
+  backup rather than the library copy. And §13's orphans (an upgrade's or a delete's
+  leftovers) were a *count* on Settings with a purge button next to it, which is not
+  something anyone can check before pressing.
+  **The directory:** `VidCleaner-Backups` beside the library folders. Visible is safe
+  because both consumers that could adopt it already are: Jellyfin honours the `.ignore`
+  marker written on first use, and the arrs enumerate only their own root folders — while
+  `preflight`'s refusal for a `backups_dir` *inside* a library folder is unchanged. A
+  `README.txt` joins the `.ignore`, because a visible folder full of video files raises
+  exactly one question and this is the cheapest place to answer it. The constraint from
+  2026-09-03 is untouched: still a plain subdirectory of the `/media` mount, because
+  `rename(2)` refuses to cross a mount point.
+- 2026-09-17 — **`config.py`'s `/backups` default was a live trap, not just dead code.**
+  `_dir_default("/backups", "backups")` selects `/backups` whenever that directory *exists* —
+  and `entrypoint.sh` created it on every boot. So any install that cleared
+  `VIDCLEANER_BACKUPS_DIR` silently resolved to a container-local, cross-mount directory and
+  would have failed at `swapping` with EXDEV on its first episode, exactly the 2026-09-03 bug
+  wearing a different hat. Only the Dockerfile's `ENV` was hiding it. `backups_dir` is now
+  derived from `media_dir` with a data-aware `default_factory`, so it follows a `media_dir`
+  set in `settings.json` as well as one from the environment; the entrypoint no longer creates
+  `/backups`; and the image no longer pins the variable at all, since an image-level `ENV` is
+  indistinguishable from an operator's.
+- 2026-09-17 — **A `backups_dir` that is exactly `<media>/.vidcleaner-backups` is treated as
+  unset.** Without this the feature could not fire for the installs it exists for: the image,
+  `docker-compose.yml` and the unraid template all shipped that literal as
+  `VIDCLEANER_BACKUPS_DIR`, and an installed container keeps the variables it was created
+  with — so "relocate only when `backups_dir` is the new default" would never be true. That
+  one exact value is the old default, not a choice. Any other override is honoured untouched,
+  and the rule is deterministic, so it re-applies identically on every boot rather than
+  mutating anything on disk. A symlink was considered and rejected: `backup_path_for` composes
+  `backups_dir / relative` *unresolved*, so new rows would be written with the legacy prefix
+  again and `reconcile_backups` would adopt duplicates.
+- 2026-09-17 — **The relocation is a periodic worker task, and `recover_stale` is registered
+  ahead of it.** `Scheduler.tick()` runs only when `poll_once` found no work, so the task
+  inherits "the queue is idle" for free. The ordering is load-bearing rather than tidy:
+  `swap.recover()` decides what a crashed swap did from the **size of the files at the
+  journalled paths**, so moving a backup out from under an unresolved `swap.plan.json` makes
+  it read "source gone, backup gone" and conclude `stale` — a wrong answer that cannot be
+  walked back. Hence three guards on top of the idle gate: no `RUNNING_STATES` job (a second
+  worker is invisible to our tick), no `swap.plan.json` in `/work` without its `swap.json`
+  (walked from the directory rather than the job table, because a `vidcleaner clean
+  --in-place` run writes the same journal with no row behind it), and the legacy directory
+  actually existing. Any failure is "not now", never "not ever"; the task simply runs again.
+  An Alembic revision was rejected twice over: it has no `Settings`, and `entrypoint.sh` runs
+  `alembic upgrade head` under `set -e`, so one EACCES would stop the container booting.
+- 2026-09-17 — **`reconcile_backups` refuses to run while the legacy directory exists, and
+  that is the guard that matters most here.** Mid-relocation a row can name the old path for a
+  file already at the new one, and reconcile reads that as *two* separate facts: the row's
+  file is gone (mark it `purged`) and the new file has no row (adopt it as `orphaned`, with a
+  thirty-day clock). `purge_backups` then deletes the only copy of that original a month
+  later, silently. The relocator keeps the legacy directory in place for the whole of its run
+  and removes it only after every file has moved and every row is committed — so "it still
+  exists" *is* "a relocation is unfinished". Chosen over a persisted marker and a state
+  machine because it needs no new state to be correct, and the window it has to cover is
+  already bounded by a per-file commit.
+- 2026-09-17 — **Three bugs found by running it rather than by reading it.** The relocator
+  moved the legacy `.ignore` as though it were an original — which counted it as a moved file
+  and, on any install whose new directory already had its own marker from a swap, would have
+  been a *collision*; a collision is a skip, and a skip leaves the legacy directory in place
+  forever. The summary card is keyed off the same query as the table, so every filter click
+  dropped it to "Loading…" (`keepPreviousData`). And the per-row confirm took three attempts:
+  inside the action cell a sentence stretched the table off the page; its own full-width row
+  fixed that and hid it somewhere worse, inside the scrolling container, where on a phone you
+  pressed Delete and what you were agreeing to sat off the right-hand edge. It is a banner
+  above the table now, naming the file — which is also the only version that says *which*
+  original is about to go.
+- 2026-09-17 — **Rebased onto 2026-09-04's responsive drawer, and adopted its pattern rather
+  than working around it.** That change landed first and set the house rule for tables:
+  `-mx-1 overflow-x-auto px-1` around the table, secondary columns `hidden sm:table-cell`,
+  long paths `break-all`. §9.7 follows it — age and retention are the two columns worth losing
+  on a phone, because the filename, the state and the size are what the page is *for*. Zero
+  page-level horizontal overflow at 375px, measured in a browser rather than assumed, which is
+  the criterion that entry set for itself. Its "§9's six screens" is now seven.
+- 2026-09-17 — **§9.7's Backups page, and what did *not* get a new endpoint.** `GET /backups`
+  already returned the rows; Settings fetched them and rendered only the totals. Added:
+  `rel_path` (the path under `backups_dir` — the tree mirrors the library tree, so it is the
+  only readable name an adopted orphan has, its `original_path` being empty and its item the
+  `<orphaned backups>` sentinel), `identified` so the page does not offer a dead link,
+  `sort=largest` because "the share is filling up" is really "what is the biggest thing in
+  here?", `expired_only`, `POST /backups/reconcile` (a list whose purpose is looking at
+  orphans before deleting them must not be an hour stale), and `DELETE /backups/{id}`.
+  The per-row delete is `purge_backups(ids=[...])`, a *selection* rather than a second
+  deletion path, because 2026-09-03 pinned one definition of what may be deleted and every
+  refusal has to apply to it unchanged. **Restore got no endpoint at all**: a per-row restore
+  is really "restore the item this backup belongs to", and `restore_item` works per item on
+  purpose so the video and its sidecars go back together and the cleaned file is displaced
+  correctly — so the page calls the existing `POST /items/{id}/actions`.
 
 ## 15. Working agreement for future sessions
 

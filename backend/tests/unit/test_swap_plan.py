@@ -263,6 +263,19 @@ def test_staging_by_copy_needs_room_on_the_library_filesystem(tmp_path: Path) ->
 def test_the_ignore_marker_keeps_jellyfin_out_of_the_backups(tmp_path: Path) -> None:
     """`/backups` defaults to a directory inside the media share (§10)."""
     root = tmp_path / "backups"
-    swap.write_ignore_marker(root)
+    swap.write_dir_markers(root)
     assert (root / swap.IGNORE_MARKER).is_file()
-    swap.write_ignore_marker(root)  # idempotent
+    swap.write_dir_markers(root)  # idempotent
+
+
+def test_the_readme_explains_the_directory_to_whoever_finds_it(tmp_path: Path) -> None:
+    """The directory is visible on purpose, so it has to say what it is."""
+    root = tmp_path / "backups"
+    swap.write_dir_markers(root)
+    text = (root / swap.README_MARKER).read_text()
+    assert "ORIGINAL" in text
+    assert "Restore original" in text
+
+    (root / swap.README_MARKER).write_text("edited by a human\n")
+    swap.write_dir_markers(root)
+    assert (root / swap.README_MARKER).read_text() == "edited by a human\n"

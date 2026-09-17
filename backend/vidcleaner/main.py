@@ -24,7 +24,7 @@ from vidcleaner.api import (
     words,
 )
 from vidcleaner.api import settings as settings_api
-from vidcleaner.config import get_settings
+from vidcleaner.config import BACKUPS_DIRNAME, get_settings
 from vidcleaner.db.migrate import upgrade_to_head
 from vidcleaner.logging import configure_logging, get_logger
 from vidcleaner.matching.profile import ensure_seed_data
@@ -56,7 +56,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         config_dir=str(settings.config_dir),
         static_dir=str(settings.static_dir),
         spa_built=(settings.static_dir / "index.html").is_file(),
+        backups_dir=str(settings.backups_dir),
     )
+    if settings.backups_dir_is_hidden:
+        # The originals are the whole basis of "every change is reversible", and a
+        # dot-prefixed directory is the one thing on the share that grows without
+        # ever being seen. An operator who pinned the old value gets told once, here
+        # and on the Backups page, rather than finding out while clearing space.
+        log.warning(
+            "api.backups_dir_hidden",
+            backups_dir=str(settings.backups_dir),
+            suggestion=str(settings.media_dir / BACKUPS_DIRNAME),
+        )
     # §8's hourly sync is owned by this process: it is HTTP-and-database only, and a
     # timer in the worker would fire however late the current ffmpeg or STT stage
     # happens to be. See the Decision Log for the split.

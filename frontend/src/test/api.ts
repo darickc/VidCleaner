@@ -194,7 +194,25 @@ export function detection(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** §9.6's backups panel. Overrides spread last, as everywhere in this module. */
+/** One row of §9.7's Backups table. */
+export const backupRow = (overrides: Record<string, unknown> = {}) => ({
+  id: 1,
+  media_item_id: 1,
+  label: "Show S01E01",
+  original_path: "/media/tv/Show/S01E01.mkv",
+  backup_path: "/media/VidCleaner-Backups/tv/Show/S01E01.mkv",
+  rel_path: "tv/Show/S01E01.mkv",
+  identified: true,
+  size: 2 * 1024 ** 3,
+  state: "kept",
+  exists: true,
+  created_at: "2026-09-01T00:00:00Z",
+  purge_after: "2026-10-01T00:00:00Z",
+  expired: false,
+  ...overrides,
+});
+
+/** §9.6's summary and §9.7's list. Overrides spread last, as everywhere here. */
 export const backups = (overrides: Record<string, unknown> = {}) => ({
   summary: {
     total: 3,
@@ -207,7 +225,8 @@ export const backups = (overrides: Record<string, unknown> = {}) => ({
     orphaned_bytes: 0,
     retention_days: 30,
     keeps_forever: false,
-    backups_dir: "/backups",
+    backups_dir: "/media/VidCleaner-Backups",
+    backups_dir_is_hidden: false,
     ...((overrides.summary as Record<string, unknown>) ?? {}),
   },
   backups: [],

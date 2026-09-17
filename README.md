@@ -49,7 +49,7 @@ Detection quality is measured rather than asserted: see [docs/eval.md](docs/eval
 Nothing has to be driven by hand. Mark a series or movie **Clean** in the Library page and its
 existing files are queued immediately; Sonarr/Radarr webhooks queue new imports and upgrades as
 they land; the worker claims one job at a time, swaps the result into place by rename with an
-fsynced journal, keeps the original under `/backups`, and tells the arrs and Jellyfin the file
+fsynced journal, keeps the original in `/media/VidCleaner-Backups`, and tells the arrs and Jellyfin the file
 changed. The **Queue** page shows the running stage and log, the **Item** page shows every word
 that was removed with a five-second *Original* and *Clean* clip for each, and a false positive can
 be whitelisted (this file / this title / everywhere) and the file reprocessed from that page.
@@ -95,7 +95,7 @@ Three things decide whether this works at all:
 |---|---|
 | **`/media` must be the same path Sonarr, Radarr and Jellyfin use** | VidCleaner replaces files in place. If the paths differ, configure a mapping in Settings → Path mappings; if they differ *and* you skip that, the arrs will not find the file afterwards. |
 | **`PUID`/`PGID` must own the media share** | The swap is a rename inside the library folder. The entrypoint warns on startup if `/media` is not writable, so check the container log first when a job fails at `swapping`. |
-| **`/backups` should be on the media share** | Then the swap is a same-filesystem rename rather than a copy. A cross-device backup is refused by default (`allow_cross_device_backup`), because it could not be done without deleting an original. |
+| **Originals go to `/media/VidCleaner-Backups`** | A plain folder beside your library folders, not a separate share: `rename(2)` refuses to cross a *mount point* even when both sides are one filesystem, so a separate volume would force a copy-and-delete. A cross-device backup is refused by default (`allow_cross_device_backup`), because it could not be done without deleting an original. The folder is visible on purpose — see below. |
 
 `/work` wants an SSD or cache pool and about 1.3x your largest file free; the worker
 pauses the queue rather than failing jobs when it drops below `min_free_gib`.
@@ -118,7 +118,26 @@ pauses the queue rather than failing jobs when it drops below `min_free_gib`.
    Wrong one? Whitelist it (this file / this title / everywhere) and press reprocess.
 
 Nothing is destroyed at any point: the original audio stays in the file as track 2 and
-the untouched source file is kept under `/backups` until retention purges it.
+the untouched source file is kept in `/media/VidCleaner-Backups` until retention purges
+it.
+
+### About that backups folder
+
+It sits beside your library folders rather than inside a hidden `.`-directory, because
+it is the one place in the install that grows by the size of everything you clean — and
+a folder you cannot see is a folder you delete by accident while clearing space. It
+carries a `.ignore` (so Jellyfin skips it) and a `README.txt` explaining what it is.
+
+Deleting it by hand is not harmless: "restore original" needs those files, and so does
+the audit pass. You do not have to — **Backups** in the web UI lists every original with
+its size, its age and where it came from, flags the orphans (an upgrade or a delete left
+them behind, so nothing can ever restore them), and lets you delete one or all of them.
+Retention does it on a schedule anyway (Settings → Keep backups (days)).
+
+Upgrading from a version that used `/media/.vidcleaner-backups`? Nothing to do. That
+path is recognised as the old default, and the originals are moved into the new folder
+the first time the worker is idle — a rename, so it is instant — with the database
+updated to match. `vidcleaner backups migrate` does it by hand if you would rather.
 
 ### Configuration: env vs. the web UI
 
@@ -201,10 +220,12 @@ cd backend && VIDCLEANER_TEST_REQUIRE_FFMPEG=1 VIDCLEANER_TEST_REQUIRE_OCR=1 uv 
 
 ## The image
 
-Four volumes: `/config` (database, settings, STT models, logs), `/media` (the library),
-`/backups` (originals) and `/work` (scratch). See **Install** above for what each one
-needs. Override the host paths with `MEDIA_DIR`, `BACKUPS_DIR`, `CONFIG_DIR` and
-`WORK_DIR` when running compose outside unraid.
+Three volumes: `/config` (database, settings, STT models, logs), `/media` (the library)
+and `/work` (scratch). Originals are **not** a fourth: they live in
+`/media/VidCleaner-Backups`, inside the `/media` mount, so the swap stays a rename.
+See **Install** above for what each volume needs. Override the host paths with
+`MEDIA_DIR`, `CONFIG_DIR` and `WORK_DIR` when running compose outside unraid, and
+`VIDCLEANER_BACKUPS_DIR` if you want the originals somewhere other than the default.
 
 About 3 GB (Debian trixie + ffmpeg 7.x + CPU-only torch), built and exercised for both
 `linux/amd64` (unraid) and `linux/arm64`. One image runs both processes and exits if

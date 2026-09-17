@@ -1,5 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout";
+import { BackupsPage } from "./pages/Backups";
 import { ItemPage } from "./pages/Item";
 import { LibraryPage } from "./pages/Library";
 import { QueuePage } from "./pages/Queue";
@@ -16,6 +17,7 @@ export function App() {
         <Route path="titles/:titleId" element={<TitlePage />} />
         <Route path="items/:itemId" element={<ItemPage />} />
         <Route path="words" element={<WordsPage />} />
+        <Route path="backups" element={<BackupsPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
     </Routes>

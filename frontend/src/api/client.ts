@@ -10,6 +10,7 @@ import type {
   ActionResult,
   AppSettings,
   BackupList,
+  BackupQuery,
   Health,
   ItemDetail,
   JobDetail,
@@ -17,6 +18,7 @@ import type {
   Profile,
   PurgeResult,
   QueueView,
+  ReconcileResult,
   TestResponse,
   TitleDetail,
   TitleList,
@@ -180,10 +182,20 @@ export const createWhitelist = (body: {
   mode?: string;
 }) => apiPost<WhitelistEntry>("/whitelist", body);
 
-export const getBackups = (state?: string) =>
-  apiGet<BackupList>(state ? `/backups?state=${state}` : "/backups");
+export const getBackups = (params: BackupQuery = {}) => {
+  const query = new URLSearchParams();
+  if (params.state) query.set("state", params.state);
+  if (params.sort) query.set("sort", params.sort);
+  if (params.expired_only) query.set("expired_only", "true");
+  const suffix = query.toString();
+  return apiGet<BackupList>(suffix ? `/backups?${suffix}` : "/backups");
+};
 export const purgeBackups = (scope: "expired" | "orphaned") =>
   apiPost<PurgeResult>("/backups/purge", { scope });
+export const purgeBackup = (backupId: number) =>
+  apiDelete<PurgeResult>(`/backups/${backupId}`);
+export const reconcileBackups = () =>
+  apiPost<ReconcileResult>("/backups/reconcile", {});
 
 export const getPathMappings = () => apiGet<PathMapping[]>("/path-mappings");
 export const putPathMappings = (mappings: PathMapping[]) =>

@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 
-/** The six pages of PLAN.md §9. Only Queue is wired to the API in M0. */
+/** The pages of PLAN.md §9. */
 const NAV = [
   { to: "/", label: "Queue", end: true },
   { to: "/library", label: "Library", end: false },
   { to: "/words", label: "Words & Profiles", end: false },
+  { to: "/backups", label: "Backups", end: false },
   { to: "/settings", label: "Settings", end: false },
 ];
 
