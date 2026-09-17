@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from vidcleaner.pipeline.artifacts import ArtifactError
+from vidcleaner.pipeline.artifacts import ArtifactError, AudioStreamInfo
 from vidcleaner.pipeline.probe import ProbeError, choose_source_audio, parse_probe
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "probe"
@@ -40,10 +40,11 @@ def test_real_media_stream_counts():
     assert result.attachment_count == 0
 
 
-def test_real_media_source_audio_is_the_default_eac3():
+def test_real_media_source_audio_is_the_english_eac3():
     result = probe("eac3_atmos_many_subs")
     audio = result.source_audio
-    assert result.source_audio_reason == "default"
+    # The one stream is both `eng` and `default`; the language pass reaches it first.
+    assert result.source_audio_reason == "preferred_language"
     assert audio.codec_name == "eac3"
     assert audio.channels == 6
     assert audio.bit_rate == 768_000
@@ -242,6 +243,80 @@ def test_source_audio_raises_if_the_index_is_bogus():
 # -------------------------------------------------------- choose_source_audio
 
 
+def audio(typed_index: int, language: str | None, *dispositions: str) -> AudioStreamInfo:
+    return AudioStreamInfo(
+        index=typed_index + 1,
+        typed_index=typed_index,
+        codec_name="ac3",
+        language=language,
+        is_default="default" in dispositions,
+        dispositions=tuple(sorted(dispositions)),
+    )
+
+
 def test_choose_source_audio_rejects_an_empty_list():
     with pytest.raises(ProbeError, match="no audio streams"):
         choose_source_audio([], "eng")
+
+
+def test_english_beats_a_foreign_default_track():
+    """The bug this ordering exists for: a dub flagged `default` used to win."""
+    streams = [audio(0, "spa", "default"), audio(1, "eng")]
+    assert choose_source_audio(streams, "eng") == (1, "preferred_language")
+
+
+def test_the_default_english_track_beats_an_english_commentary_listed_first():
+    streams = [audio(0, "eng", "comment"), audio(1, "eng", "default")]
+    assert choose_source_audio(streams, "eng") == (1, "preferred_language")
+
+
+def test_commentary_loses_to_a_plain_english_track_even_without_a_default():
+    streams = [audio(0, "eng", "comment"), audio(1, "eng")]
+    assert choose_source_audio(streams, "eng") == (1, "preferred_language")
+
+
+def test_audio_description_is_treated_like_commentary():
+    streams = [audio(0, "eng", "visual_impaired"), audio(1, "eng")]
+    assert choose_source_audio(streams, "eng") == (1, "preferred_language")
+
+
+def test_a_lone_english_commentary_still_beats_a_foreign_main_track():
+    """Dropping side tracks is a fallback, not a filter -- the pool must not empty."""
+    streams = [audio(0, "spa", "default"), audio(1, "eng", "comment")]
+    assert choose_source_audio(streams, "eng") == (1, "preferred_language")
+
+
+def test_an_untagged_track_beats_a_tagged_foreign_default():
+    streams = [audio(0, "spa", "default"), audio(1, None)]
+    assert choose_source_audio(streams, "eng") == (1, "untagged")
+
+
+def test_undetermined_counts_as_untagged():
+    streams = [audio(0, "jpn", "default"), audio(1, "und")]
+    assert choose_source_audio(streams, "eng") == (1, "untagged")
+
+
+def test_the_default_untagged_track_wins_among_untagged_ones():
+    streams = [audio(0, None), audio(1, None, "default")]
+    assert choose_source_audio(streams, "eng") == (1, "untagged")
+
+
+def test_english_still_beats_an_untagged_track():
+    streams = [audio(0, None, "default"), audio(1, "eng")]
+    assert choose_source_audio(streams, "eng") == (1, "preferred_language")
+
+
+def test_all_foreign_falls_back_to_the_default_flag():
+    streams = [audio(0, "jpn"), audio(1, "spa", "default")]
+    assert choose_source_audio(streams, "eng") == (1, "default")
+
+
+def test_all_foreign_and_no_default_falls_back_to_the_first():
+    streams = [audio(0, "jpn"), audio(1, "spa")]
+    assert choose_source_audio(streams, "eng") == (0, "first")
+
+
+def test_a_null_preference_falls_through_to_the_untagged_pass():
+    """`lang.matches` is False against None, so nothing can match the preference."""
+    streams = [audio(0, "spa", "default"), audio(1, None)]
+    assert choose_source_audio(streams, None) == (1, "untagged")

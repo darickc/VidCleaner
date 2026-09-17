@@ -221,6 +221,31 @@ def test_verify_passes_on_a_good_render(rendered):
     assert result.measured_db
 
 
+def test_verify_passes_when_the_source_was_not_the_default_track(
+    rendered, sample_foreign_default_mkv
+):
+    """The foreign-default file, all the way through render and verify.
+
+    Worth its own case because `verify` re-probes the *output*, so
+    `choose_source_audio` runs a second time over a file that now holds the
+    cleaned English track at `a:0` and the Spanish dub behind it. The Clean
+    track must still be the one it lands on, or the clean-track checks would be
+    comparing the dub against itself.
+    """
+    ctx = rendered(sample_foreign_default_mkv)
+    run_stage(ctx, "verify")
+    result = verify_stage.load(ctx.ws)
+    assert result is not None and result.ok, [c.name for c in (result.failures if result else [])]
+
+    data = FFmpegRunner().probe(Path(render_stage.load(ctx.ws).out_path))
+    audio = [s for s in data["streams"] if s["codec_type"] == "audio"]
+    # Clean (from `eng`), then the source order: the dub, then the English original.
+    assert [s["tags"].get("language") for s in audio] == ["eng", "spa", "eng"]
+    assert audio[0]["tags"]["title"] == "Clean"
+    assert audio[2]["tags"]["title"] == "Original"
+    assert [s["disposition"]["default"] for s in audio] == [1, 0, 0]
+
+
 def test_verify_measures_both_silence_and_a_control_window(rendered):
     ctx = rendered()
     run_stage(ctx, "verify")

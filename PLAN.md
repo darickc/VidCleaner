@@ -147,7 +147,7 @@ VidCleaner/
 `queued → probing → extracting → subtitles → transcribing → detecting → rendering → verifying → swapping → refreshing → snippets → done` | `failed` | `already_clean` | `stale`. `dry_run` jobs stop after `detecting`.
 
 0. **Ingest** (API side): store raw webhook, respond 200 immediately. Only `Download` creates work (`Test` marks integration verified; `Rename` updates paths; `*FileDelete` marks item `pending` and backup `orphaned`; `*Delete` disables title). Resolve `titles` by arr id; if not `enabled`, record only. **Dedupe** by path within 60 s (season packs). Upgrades (`isUpgrade`) supersede any running job for the item.
-1. **probing** — wait for size+mtime stability (poll 5 s, 2 stable polls, cap 5 min); `ffprobe -show_format -show_streams -show_chapters -of json`; compute fingerprint; skip if tag matches (→ `already_clean`); record duration, audio streams (codec/channels/bitrate/language/start_time/default), subtitle streams; choose source audio (default stream, else first in preferred language, else first); choose clean codec (§3 policy); free-space check: `/work` ≥ 1.3× size and backup volume ≥ 1.0× size.
+1. **probing** — wait for size+mtime stability (poll 5 s, 2 stable polls, cap 5 min); `ffprobe -show_format -show_streams -show_chapters -of json`; compute fingerprint; skip if tag matches (→ `already_clean`); record duration, audio streams (codec/channels/bitrate/language/start_time/default), subtitle streams; choose source audio (first stream in the preferred language, else the first untagged stream, else the default stream, else the first; within a language, commentary and audio-description tracks are skipped and the `default` one wins); choose clean codec (§3 policy); free-space check: `/work` ≥ 1.3× size and backup volume ≥ 1.0× size.
 2. **extracting** — `ffmpeg -i in -map 0:a:<src> -ac 1 -ar 16000 -f wav audio.wav` (reused by STT, drift check, snippets).
 3. **subtitles** — choose text sub: sidecar `*.<lang>.srt|*.srt|*.ass` → embedded text stream in preferred language → any embedded text stream → none. Parse with `pysubs2` (strips ASS tags). Run matcher over cue text → candidate windows `[start−1.5, end+1.5]`, merge gaps < 2 s. **Drift check**: choose 3 cues with ≥ 6 words at 10/50/90 %; transcribe each ±5 s with `small`; offset = median(STT word time − sub word time). If text similarity < 0.4 → discard subs (wrong language/episode). If |offset| > 0.7 s or spread > 0.5 s → subs unreliable for timing: widen windows to ±6 s and use the median offset for redaction alignment.
 4. **transcribing** — *Windowed* (subs present): faster-whisper `clip_timestamps` over merged windows, `word_timestamps=True`, `vad_filter=True`, `condition_on_previous_text=False`, `initial_prompt` with profanity hint; whisperX align. *Full* (no/unreliable subs, or `audit`): same over the whole file with `medium`. Persist `transcript.json` (words with start/end/prob).
@@ -2573,6 +2573,29 @@ Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 down
   is really "restore the item this backup belongs to", and `restore_item` works per item on
   purpose so the video and its sidecars go back together and the cleaned file is displaced
   correctly — so the page calls the existing `POST /items/{id}/actions`.
+
+- 2026-09-17 — **The audio track's language outranks its `default` flag.** §6.1 read "default
+  stream, else preferred language, else first", so on a file whose default track is a foreign dub
+  `probe` picked the dub: we muted it, left the English audio untouched, and — because `render`
+  always promotes the cleaned track to `a:0 default` — handed Jellyfin a muted dub as the track it
+  reaches for first. `choose_source_audio` now tries the preferred language, then untagged streams,
+  then the default flag, then the first stream. Nothing downstream changed: `extract`, `render`,
+  `stt`, `drift` and `snippets` all already route through `probe.source_audio`.
+  Three things fall out. **A commentary guard was mandatory, not polish** — `sample.mkv` is
+  `a:0 eng default` + `a:1 eng comment`, so reordering alone would have started muting the
+  director's commentary; `_main_first` drops `comment`/`visual_impaired`/`descriptions`/`karaoke`
+  and prefers `default` *within* a language pool. It drops them as a fallback rather than a filter,
+  so a lone English commentary still beats a non-English main track, which is what "use the English
+  track" means. **Untagged streams are tried before the default flag**, the opposite of the
+  2026-09-01 rule for subtitles, because the costs are not symmetric: guessing wrong on a subtitle
+  redacts gibberish, while declining to guess here mutes the wrong track on every rip whose English
+  audio carries no tag and whose dub carries both a tag and `default`. The new
+  `source_audio_reason` value is `untagged`; adding a `Literal` member reads old `probe.json` files
+  fine, so `SCHEMA_VERSION` stays at 1. **`__version__` goes 0.1.0 → 0.2.0** so the version gate in
+  `Workspace.is_done` invalidates existing stage markers — a job already past `probe` would
+  otherwise resume onto a `probe.json` naming the wrong track. Note this does *not* re-clean files
+  already cleaned: `profile_hash` deliberately excludes the app version, so an affected file keeps
+  `already_clean` and needs an explicit Reprocess.
 
 ## 15. Working agreement for future sessions
 

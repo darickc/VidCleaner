@@ -42,6 +42,7 @@ DURATION = 10
 VIDEO = f"color=c=black:s=320x240:r=24:d={DURATION}"
 TONE = f"sine=f=1000:d={DURATION}"
 TONE_ALT = f"sine=f=440:d={DURATION}"
+SILENCE = f"anullsrc=r=48000:cl=stereo:d={DURATION}"
 
 VIDEO_ARGS = [
     "-c:v",
@@ -65,6 +66,7 @@ class FixtureSet:
     offset_mkv: Path
     surround71_mkv: Path
     nolang_mkv: Path
+    foreign_default_mkv: Path
     nosubs_mkv: Path
     drift_mkv: Path
     pgs_mkv: Path
@@ -76,6 +78,7 @@ class FixtureSet:
             self.offset_mkv,
             self.surround71_mkv,
             self.nolang_mkv,
+            self.foreign_default_mkv,
             self.nosubs_mkv,
             self.drift_mkv,
             self.pgs_mkv,
@@ -330,6 +333,64 @@ def build_nolang_mkv(dest: Path) -> Path:
     return out
 
 
+def build_foreign_default_mkv(dest: Path) -> Path:
+    """A Spanish dub flagged ``default`` at ``a:0``, English at ``a:1``.
+
+    The layout the language-first rule in ``probe.choose_source_audio`` exists
+    for: a real library file whose dub holds the default flag while the English
+    audio sits behind it.
+
+    The dub is **silent** and the English track is a tone, which is what lets a
+    test tell the two apart after extraction: ``extract`` resamples to 16 kHz
+    mono, erasing every other difference between them, so amplitude is the only
+    property that survives to say which stream we actually pulled.
+    """
+    out = dest / "sample_foreign_default.mkv"
+    _run(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            VIDEO,
+            "-f",
+            "lavfi",
+            "-i",
+            SILENCE,
+            "-f",
+            "lavfi",
+            "-i",
+            TONE,
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-map",
+            "2:a",
+            *VIDEO_ARGS,
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-ac",
+            "2",
+            "-metadata:s:a:0",
+            "language=spa",
+            "-metadata:s:a:0",
+            "title=Espanol",
+            "-metadata:s:a:1",
+            "language=eng",
+            "-metadata:s:a:1",
+            "title=English",
+            "-disposition:a:0",
+            "default",
+            "-disposition:a:1",
+            "0",
+            str(out),
+        ]
+    )
+    return out
+
+
 def build_nosubs_mkv(dest: Path) -> Path:
     """No subtitle stream at all: the file that forces a full-file STT pass.
 
@@ -504,6 +565,7 @@ def build_all(dest: Path) -> FixtureSet:
         offset_mkv=build_offset_mkv(dest),
         surround71_mkv=build_surround71_mkv(dest),
         nolang_mkv=build_nolang_mkv(dest),
+        foreign_default_mkv=build_foreign_default_mkv(dest),
         nosubs_mkv=build_nosubs_mkv(dest),
         drift_mkv=build_drift_mkv(dest),
         pgs_mkv=build_pgs_mkv(dest),

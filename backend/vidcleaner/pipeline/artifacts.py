@@ -275,7 +275,7 @@ class ProbeResult(Artifact):
     chapter_count: int = 0
     attachment_count: int = 0
     source_audio_typed_index: int = 0
-    source_audio_reason: Literal["default", "preferred_language", "first"] = "first"
+    source_audio_reason: Literal["preferred_language", "untagged", "default", "first"] = "first"
     clean_codec: CodecPlan
     already_clean: bool = False
     """The ``VIDCLEANER_PROFILE_HASH`` tag matches this job's profile hash."""

@@ -44,6 +44,14 @@ def sample_pgs_mkv(fixture_media: FixtureSet, tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def sample_foreign_default_mkv(fixture_media: FixtureSet, tmp_path: Path) -> Path:
+    """A Spanish dub holding the `default` flag, with English behind it at `a:1`."""
+    target = tmp_path / fixture_media.foreign_default_mkv.name
+    shutil.copy2(fixture_media.foreign_default_mkv, target)
+    return target
+
+
+@pytest.fixture
 def runner(tmp_path: Path):
     from vidcleaner.pipeline.ffmpeg import FFmpegRunner
 

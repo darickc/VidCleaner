@@ -33,6 +33,11 @@ FINGERPRINT_CHUNK = 8 * 1024 * 1024
 #: §6 step 1's free-space guards.
 WORK_HEADROOM = 1.3
 
+#: Dispositions that mean "not the main programme audio". A director's commentary
+#: or an audio-description track is in the right language and would otherwise win
+#: the language pass outright.
+SIDE_AUDIO_DISPOSITIONS = frozenset({"comment", "visual_impaired", "descriptions", "karaoke"})
+
 _TAG_MARKER = "VIDCLEANER"
 _TAG_PROFILE_HASH = "VIDCLEANER_PROFILE_HASH"
 
@@ -102,18 +107,44 @@ def _stream_duration(stream: dict[str, Any], tags: dict[str, str]) -> float | No
     return None
 
 
+def _main_first(streams: list[AudioStreamInfo]) -> list[AudioStreamInfo]:
+    """Order an otherwise equally eligible pool: main programme, default, source order.
+
+    Dropping the commentary is a *fallback*, not a filter -- a pool that is only
+    commentary still yields its commentary, because a track in the language we
+    were asked for beats one we were not.
+    """
+    main = [s for s in streams if not SIDE_AUDIO_DISPOSITIONS & set(s.dispositions)]
+    return sorted(main or streams, key=lambda s: not s.is_default)
+
+
 def choose_source_audio(
     streams: list[AudioStreamInfo], preferred_language: str | None
 ) -> tuple[int, str]:
-    """PLAN.md §6.1: default stream, else preferred language, else the first."""
+    """PLAN.md §6.1: preferred language, else untagged, else the default, else the first.
+
+    **The language outranks the ``default`` disposition.** A dub flagged
+    ``default`` used to win outright, so on such a file we muted the dub, left
+    the English audio untouched, and -- since ``render`` always promotes the
+    cleaned track to ``a:0 default`` -- handed Jellyfin a muted dub as the track
+    it reaches for first.
+
+    An *untagged* track is tried before the default one, unlike the subtitle
+    side, which skips untagged streams rather than guess (§14). The asymmetry is
+    deliberate: guessing wrong on a subtitle redacts gibberish, whereas declining
+    to guess here mutes the wrong track on every rip whose English audio carries
+    no tag and whose dub carries both a tag and the default flag.
+    """
     if not streams:
         raise ProbeError("the file has no audio streams")
+    preferred = [s for s in streams if lang.matches(s.language, preferred_language)]
+    untagged = [s for s in streams if s.language in (None, lang.UNDETERMINED)]
+    for pool, reason in ((preferred, "preferred_language"), (untagged, "untagged")):
+        if pool:
+            return _main_first(pool)[0].typed_index, reason
     for stream in streams:
         if stream.is_default:
             return stream.typed_index, "default"
-    for stream in streams:
-        if lang.matches(stream.language, preferred_language):
-            return stream.typed_index, "preferred_language"
     return streams[0].typed_index, "first"
 
 

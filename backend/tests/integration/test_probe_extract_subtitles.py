@@ -50,13 +50,46 @@ def test_probe_reads_the_generated_fixture(ctx_for, sample_mkv):
     assert result.fingerprint
 
 
-def test_probe_picks_the_default_audio_stream(ctx_for, sample_mkv):
+def test_probe_picks_the_english_surround_stream_over_the_commentary(ctx_for, sample_mkv):
+    """Both tracks are `eng`; `a:1` is the commentary, so the language pass must
+    not simply take the first match."""
     ctx = ctx_for(sample_mkv)
     run_stage(ctx, "probe")
     result = probe_stage.load(ctx.ws)
-    assert result.source_audio_reason == "default"
+    assert result.source_audio_reason == "preferred_language"
+    assert result.source_audio.typed_index == 0
     assert result.source_audio.codec_name == "ac3"
     assert result.source_audio.channels == 6
+
+
+def test_probe_prefers_english_over_a_foreign_default_track(ctx_for, sample_foreign_default_mkv):
+    """`a:0` is the Spanish dub and carries `default`; `a:1` is English."""
+    ctx = ctx_for(sample_foreign_default_mkv)
+    run_stage(ctx, "probe")
+    result = probe_stage.load(ctx.ws)
+
+    assert result.audio[0].language == "spa"
+    assert result.audio[0].is_default
+    assert result.source_audio_reason == "preferred_language"
+    assert result.source_audio.typed_index == 1
+    assert result.source_audio.language == "eng"
+
+
+def test_extract_really_pulls_the_english_audio_not_the_default_dub(
+    ctx_for, sample_foreign_default_mkv
+):
+    """The end-to-end point of the whole change.
+
+    The dub is silent and the English track is a tone, so a non-silent
+    `audio.wav` is proof that `-map 0:a:1` reached ffmpeg rather than `0:a:0`.
+    """
+    ctx = ctx_for(sample_foreign_default_mkv)
+    run_stage(ctx, "probe")
+    run_stage(ctx, "extract")
+
+    stats = FFmpegRunner().measure_volume(ctx.ws.audio_wav)
+    assert stats is not None
+    assert not stats.inaudible, f"extracted the silent dub instead ({stats.max_db} dB)"
 
 
 def test_probe_chooses_ac3_640k_for_the_surround_source(ctx_for, sample_mkv):
