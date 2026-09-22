@@ -479,10 +479,24 @@ class FFmpegRunner:
         stream: str = "0:a:0",
         threshold_db: float = -60.0,
         min_duration: float = 0.02,
+        window: TimeRange | None = None,
         label: str = "silencedetect",
     ) -> list[SilenceSpan]:
-        """Silence spans across the whole stream, for boundary assertions."""
-        args = [
+        """Silence spans, for boundary assertions.
+
+        With ``window``, input-side ``-ss``/``-t`` scope the decode the way
+        :meth:`measure_volume` does -- seconds instead of a full-file pass. The
+        returned spans are then **relative to the window start**, because input
+        seek rebases timestamps to zero; the caller adds the offset back.
+
+        Note that :func:`parse_silencedetect` only records a span once its
+        ``silence_end`` is printed, so a window must include audible audio on
+        both sides of the span of interest or it is reported as no silence.
+        """
+        args: list[str] = []
+        if window is not None:
+            args += ["-ss", f"{window.start:.3f}", "-t", f"{max(0.001, window.duration):.3f}"]
+        args += [
             "-i",
             str(path),
             "-map",

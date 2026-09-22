@@ -12,6 +12,7 @@ from __future__ import annotations
 __all__ = [
     "ENGLISH",
     "UNDETERMINED",
+    "effective",
     "is_english",
     "matches",
     "normalize_tag",
@@ -110,6 +111,22 @@ def normalize_tag(tag: str | None) -> str | None:
     if not cleaned:
         return None
     return cleaned.split("-", 1)[0]
+
+
+def effective(tag: str | None) -> str | None:
+    """The language a tag actually asserts, or ``None``.
+
+    ``und`` is not a language: it is the container's way of spelling *unknown*,
+    and Matroska's demuxer drops it on read. Treating it as a value makes the
+    render ask for a tag that can never come back, which is what
+    ``clean_track_language`` used to fail on for every MP4 source.
+
+    Distinct from :func:`normalize_tag`, which keeps ``und`` on purpose --
+    ``choose_source_audio`` needs to tell "tagged undetermined" apart from
+    "untagged", and ``probe.json`` is a persisted artifact.
+    """
+    code = normalize_tag(tag)
+    return None if code == UNDETERMINED else code
 
 
 def to_iso639_1(tag: str | None) -> str | None:

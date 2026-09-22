@@ -63,6 +63,7 @@ class FixtureSet:
     root: Path
     sample_mkv: Path
     sample_mp4: Path
+    und_mp4: Path
     offset_mkv: Path
     surround71_mkv: Path
     nolang_mkv: Path
@@ -75,6 +76,7 @@ class FixtureSet:
         return [
             self.sample_mkv,
             self.sample_mp4,
+            self.und_mp4,
             self.offset_mkv,
             self.surround71_mkv,
             self.nolang_mkv,
@@ -233,6 +235,44 @@ def build_sample_mp4(dest: Path) -> Path:
             "language=eng",
             "-metadata:s:s:0",
             "language=eng",
+            str(out),
+        ]
+    )
+    return out
+
+
+def build_und_mp4(dest: Path) -> Path:
+    """An MP4 whose audio carries no language tag at all.
+
+    The mov muxer stores that as ``und``, and ffprobe reports ``und`` -- unlike
+    Matroska, whose demuxer drops it again on read. So this is the ordinary,
+    overwhelmingly common library MP4, and the one that used to fail
+    ``clean_track_language`` on every single run: the render mirrored ``und``
+    onto the clean track, the muxer wrote it, the re-probe saw nothing, and
+    verify compared ``None`` against ``"und"``.
+    """
+    out = dest / "sample_und.mp4"
+    _run(
+        [
+            "-f",
+            "lavfi",
+            "-i",
+            VIDEO,
+            "-f",
+            "lavfi",
+            "-i",
+            TONE,
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            *VIDEO_ARGS,
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-ac",
+            "2",
             str(out),
         ]
     )
@@ -562,6 +602,7 @@ def build_all(dest: Path) -> FixtureSet:
         root=dest,
         sample_mkv=build_sample_mkv(dest),
         sample_mp4=build_sample_mp4(dest),
+        und_mp4=build_und_mp4(dest),
         offset_mkv=build_offset_mkv(dest),
         surround71_mkv=build_surround71_mkv(dest),
         nolang_mkv=build_nolang_mkv(dest),

@@ -32,6 +32,7 @@ from vidcleaner.integrations.pathmap import PathMap, PathRule
 from vidcleaner.integrations.radarr import RadarrClient
 from vidcleaner.integrations.sonarr import SonarrClient
 from vidcleaner.integrations.sync import (
+    MAX_BACKFILL_FAILURES,
     backfill_title,
     confirm_mapping,
     defer_existing_items,
@@ -42,6 +43,7 @@ from vidcleaner.integrations.sync import (
 )
 from vidcleaner.matching.profile import clear_matcher_cache, ensure_seed_data
 from vidcleaner.pipeline.persist import LOCAL_TITLE_ARR_ID, ensure_local_title
+from vidcleaner.worker.claim import enqueue
 
 TV_MAP = PathMap.from_rules("sonarr", [PathRule("/tv", "/media/tv")])
 MOVIE_MAP = PathMap.from_rules("radarr", [PathRule("/movies", "/media/movies")])
@@ -451,6 +453,89 @@ def _mark_clean(title_id: int, *, episode: int) -> int:
         item.status = "clean"
         item.last_job_id = job.id
         return item.id
+
+
+def _mark_failed(title_id: int, *, episode: int, count: int, fingerprint: str = "fp1") -> int:
+    """`count` failed jobs for one item, all describing the same file and profile."""
+    from vidcleaner.matching.profile import matcher_for, snapshot_for
+    from vidcleaner.settings_store import load_settings
+
+    with session_scope() as session:
+        item = session.scalars(
+            select(MediaItem).where(MediaItem.title_id == title_id, MediaItem.episode == episode)
+        ).one()
+        settings = load_settings(session)
+        matcher = matcher_for(session, title_id=title_id, item_id=item.id, settings=settings)
+        snapshot = snapshot_for(matcher, settings).model_dump_json()
+        for n in range(count):
+            session.add(
+                Job(
+                    id=f"failed-{item.id}-{n}",
+                    media_item_id=item.id,
+                    trigger="backfill",
+                    state="failed",
+                    error="verification failed: clean_track_language (a:0 language is None)",
+                    source_fingerprint=fingerprint,
+                    profile_snapshot_json=snapshot,
+                )
+            )
+        session.flush()
+        item.status = "failed"
+        item.source_fingerprint = fingerprint
+        item.last_job_id = f"failed-{item.id}-{count - 1}"
+        return item.id
+
+
+def _backfill(title_id: int, client) -> list[str]:
+    with session_scope() as session:
+        return backfill_title(session, session.get(Title, title_id), client=client, pathmap=TV_MAP)
+
+
+def test_one_failure_still_gets_the_hourly_retry(sonarr) -> None:
+    service, client, title_id = synced(sonarr)
+    _mark_failed(title_id, episode=1, count=1)
+    assert len(_backfill(title_id, client)) == 2
+
+
+def test_a_file_that_keeps_failing_identically_stops_being_re_enqueued(sonarr) -> None:
+    """The loop this guards: `failed` is not `clean`, so the pass used to insert a
+    fresh job row every hour forever -- a full STT and encode per tick, with the
+    per-row MAX_ATTEMPTS guard never engaging because each row starts at zero."""
+    service, client, title_id = synced(sonarr)
+    failed_id = _mark_failed(title_id, episode=1, count=MAX_BACKFILL_FAILURES)
+    queued = _backfill(title_id, client)
+    with session_scope() as session:
+        enqueued = {session.get(Job, job_id).media_item_id for job_id in queued}
+    assert failed_id not in enqueued
+    assert len(queued) == 1, "the other episode is untouched"
+
+
+def test_a_replaced_file_resets_the_budget(sonarr) -> None:
+    """A Sonarr upgrade or re-download changes the fingerprint, so the old
+    failures no longer describe this file and it is worth another attempt."""
+    service, client, title_id = synced(sonarr)
+    item_id = _mark_failed(title_id, episode=1, count=MAX_BACKFILL_FAILURES)
+    with session_scope() as session:
+        session.get(MediaItem, item_id).source_fingerprint = "fp-after-upgrade"
+    assert len(_backfill(title_id, client)) == 2
+
+
+def test_a_profile_edit_resets_the_budget(sonarr) -> None:
+    """Different words to look for means a genuinely different attempt."""
+    service, client, title_id = synced(sonarr)
+    item_id = _mark_failed(title_id, episode=1, count=MAX_BACKFILL_FAILURES)
+    with session_scope() as session:
+        for job in session.scalars(select(Job).where(Job.media_item_id == item_id)):
+            job.profile_snapshot_json = '{"profile_hash": "v1:something-else"}'
+    assert len(_backfill(title_id, client)) == 2
+
+
+def test_the_cap_does_not_touch_a_manual_retry(sonarr) -> None:
+    """§9.3's Retry enqueues directly and never consults `_needs_cleaning`."""
+    service, client, title_id = synced(sonarr)
+    item_id = _mark_failed(title_id, episode=1, count=MAX_BACKFILL_FAILURES + 3)
+    with session_scope() as session:
+        assert enqueue(session, media_item_id=item_id, trigger="manual").created
 
 
 # ------------------------------------------------------------------ deferral

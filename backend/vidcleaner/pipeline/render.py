@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Literal
 
 from vidcleaner import __version__
+from vidcleaner.pipeline import lang
 from vidcleaner.pipeline.artifacts import (
     BITMAP_SUBTITLE_CODECS,
     CodecPlan,
@@ -189,7 +190,9 @@ def plan_render(
         clean_codec=probe.clean_codec,
         # Mirror the source exactly, absence included: asserting a language we
         # do not know is worse for Jellyfin and Infuse than leaving it unset.
-        clean_language=source.language,
+        # `und` counts as absence -- it *is* "unknown", and Matroska drops it on
+        # read, so emitting it asks for a tag that can never come back.
+        clean_language=lang.effective(source.language),
         source_audio=tuple(a.typed_index for a in probe.audio),
         default_audio_ordinals=tuple(a.typed_index for a in probe.audio if a.is_default),
         subtitles=tuple(plans),

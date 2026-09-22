@@ -75,6 +75,10 @@ log = get_logger(__name__)
 CHUNK_SIZE = 200
 #: Statuses that mean "we already did this file"; everything else is a candidate.
 CLEAN_STATUSES = ("clean", "already_clean")
+#: Identical failures before the hourly pass stops re-enqueuing a file. Matches
+#: `scheduler.MAX_AUDIT_FAILURES`: the audit path has had this guard since M6 and
+#: the backfill path is the one that was missing it.
+MAX_BACKFILL_FAILURES = 2
 
 
 @dataclass
@@ -535,12 +539,71 @@ def defer_existing_items(session: Session, title: Title) -> int:
     return marked
 
 
+def _snapshot_hash(job: Job) -> str | None:
+    """The profile hash a job ran under, or ``None`` if it did not record one."""
+    import json  # noqa: PLC0415
+
+    if not job.profile_snapshot_json:
+        return None
+    try:
+        return json.loads(job.profile_snapshot_json).get("profile_hash")
+    except ValueError:
+        return None
+
+
+def _retry_budget_left(
+    session: Session, title: Title, item: MediaItem, *, settings: AppSettings
+) -> bool:
+    """Whether a file that keeps failing the same way may be auto-enqueued again.
+
+    §6 calls a render/verify failure "terminal until reprocess", but terminal binds
+    the *job*, not the item: the item keeps a non-clean status, so this pass inserted
+    a brand-new job row every hour, forever. The per-row `MAX_ATTEMPTS` guard can
+    never engage, because each new row starts at zero attempts -- so a file that
+    fails deterministically costs a full STT and encode every tick.
+
+    Keyed on (source fingerprint, profile hash) exactly like `_covering_audit`, so a
+    re-download, a Sonarr upgrade or a word-list edit resets the budget for free --
+    no new column and nothing to clean up. The Retry button and every other manual
+    or webhook trigger enqueue directly and never come through here, so they stay
+    unbounded.
+    """
+    if item.status != "failed":
+        return True
+    matcher = matcher_for(
+        session,
+        title_id=title.id,
+        item_id=item.id,
+        profile_id=title.profile_id,
+        settings=settings,
+    )
+    failures = 0
+    for job in session.scalars(
+        select(Job).where(Job.media_item_id == item.id, Job.state == "failed")
+    ):
+        if item.source_fingerprint and job.source_fingerprint != item.source_fingerprint:
+            continue
+        if _snapshot_hash(job) != matcher.profile_hash:
+            continue
+        failures += 1
+    if failures >= MAX_BACKFILL_FAILURES:
+        log.info(
+            "sync.backfill_exhausted",
+            item_id=item.id,
+            path=item.path,
+            failures=failures,
+            detail="same file, same profile; use Retry to force another attempt",
+        )
+        return False
+    return True
+
+
 def _needs_cleaning(
     session: Session, title: Title, item: MediaItem, *, settings: AppSettings
 ) -> bool:
     """Cheap checks first, and no file I/O at any point."""
     if item.status not in CLEAN_STATUSES:
-        return True
+        return _retry_budget_left(session, title, item, settings=settings)
     matcher = matcher_for(
         session,
         title_id=title.id,
@@ -551,15 +614,10 @@ def _needs_cleaning(
     if not item.last_job_id:
         return True
     job = session.get(Job, item.last_job_id)
-    if job is None or not job.profile_snapshot_json:
+    if job is None:
         return True
-    import json  # noqa: PLC0415
-
-    try:
-        recorded = json.loads(job.profile_snapshot_json).get("profile_hash")
-    except ValueError:
-        return True
-    return recorded != matcher.profile_hash
+    recorded = _snapshot_hash(job)
+    return recorded is None or recorded != matcher.profile_hash
 
 
 # --------------------------------------------------------- mapping confirmation

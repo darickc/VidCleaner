@@ -160,7 +160,7 @@ VidCleaner/
 
 **Audit pass** (setting `audit_pass = off|idle|always`, default `idle`): after a windowed job completes, enqueue a `priority=low` `audit` job that runs a full-file pass with `medium` and adds any detections the subtitles missed (background/crowd lines, subs for a different cut); if new hits appear, it re-renders from the **backup original** (never re-encodes the clean track twice). Runs only when no normal jobs are queued.
 
-**Path vanished / stale**: if the source path disappears mid-job, re-resolve via the arr API (`/episodefile/{id}`), requeue once, else `stale`. Transient API failures retry with backoff; render/verify failures are terminal until reprocess.
+**Path vanished / stale**: if the source path disappears mid-job, re-resolve via the arr API (`/episodefile/{id}`), requeue once, else `stale`. Transient API failures retry with backoff; render/verify failures are terminal until reprocess -- terminal for the *job*, while the hourly backfill still re-enqueues the item, capped at `MAX_BACKFILL_FAILURES` identical failures (same file, same profile hash).
 
 ## 7. Detection & matching logic
 
@@ -2596,6 +2596,50 @@ Later / optional: video preview snippets, OpenVINO iGPU encoder, extra EAC3 down
   otherwise resume onto a `probe.json` naming the wrong track. Note this does *not* re-clean files
   already cleaned: `profile_hash` deliberately excludes the app version, so an affected file keeps
   `already_clean` and needs an explicit Reprocess.
+
+- 2026-09-22 — **`und` is not a language, and verification said it was.** A single episode failed
+  `clean_track_language` nineteen times in nineteen hours with `expected: "und", actual: "None"`.
+  The source is an MP4, and MP4 stores an untagged audio track as `und`; `lang.normalize_tag`
+  keeps that string, so `plan_render` treated it as a language worth asserting and emitted
+  `-metadata:s:a:0 language=und`. Matroska's muxer writes it and **its demuxer drops it again on
+  read** -- in Matroska `und` *is* the absence of a tag -- so the re-probe returned `None` and the
+  check compared `None == "und"`. Every MP4 in a library hits this on every attempt; an MKV source
+  never does, because the tag is already gone by probe time. Three changes. `lang.effective()`
+  collapses `None`/`""`/`und` to `None` and is what `plan_render` now mirrors; `normalize_tag`
+  deliberately keeps `und`, because `choose_source_audio` distinguishes "tagged undetermined" from
+  "untagged" and `probe.json` is persisted. The check compares with `lang.matches()` instead of
+  `==`, so `en`/`eng` and `fra`/`fre` stop being failures -- the same notion of equality the track
+  selector already uses. And the severities split: a *different* language stays fatal (Jellyfin
+  would pick the wrong track), while a tag the muxer declined to keep is metadata drift and warns,
+  per §6 step 7's own fatal/warn contract.
+- 2026-09-22 — **`mute_window_silent` now asks where the sound is before failing a job.** The same
+  episode intermittently failed one window per run while the others measured -91.0 dB, exactly the
+  s16 silence floor. Rendering mutes onto that file's real audio put the silence within 2.7 ms of
+  the request, and a 135-range two-chunk graph muted all 135; the stderr tail, the fade path, the
+  audio `start_time` and the duration clamp were all excluded too. Since STT is not bit-reproducible
+  the three probe windows differ every run, so a single peak reading cannot say whether the mute
+  missed or a sliver leaked in at one edge -- and relaxing `INAUDIBLE_DB` to find out could let
+  profanity through. Instead, a peak above the bar escalates to `silencedetect` scoped to the range
+  (plus audible context, because `parse_silencedetect` needs the `silence_end`) and fails only below
+  `MIN_SILENT_COVERAGE` of the range being silent. An edge artefact costs a few percent and passes
+  with the numbers recorded; a mute that never ran scores ~0 and still blocks the swap. Two
+  supporting fixes: `verify` probes `plan.graph.ranges` -- what the render actually muted, after
+  clamping, ms rounding and re-merging -- rather than raw `detections.mute_ranges`, and the raised
+  message now carries each failing check's `detail`, because `gc` deletes a terminal job's work dir
+  and `jobs.error` is the only durable record.
+- 2026-09-22 — **The hourly backfill had no poison-file guard, so one bad episode cost an encode an
+  hour.** `verify` is terminal, but terminal binds the *job*: the item keeps `status='failed'`,
+  which is not in `CLEAN_STATUSES`, so `_needs_cleaning` returned `True` every hour and
+  `backfill_title` inserted a brand-new row. `ux_jobs_one_active_per_item` is partial and excludes
+  `failed`, and each new row starts at zero attempts, so `MAX_ATTEMPTS` could never engage -- a
+  full STT and render per tick, indefinitely. `_retry_budget_left` caps it at
+  `MAX_BACKFILL_FAILURES = 2`, keyed on (source fingerprint, profile hash) exactly like
+  `_covering_audit`, which has had this guard since M6. A re-download, a Sonarr upgrade or a
+  word-list edit resets the budget for free -- no new column, nothing to clean up -- and §9.3's
+  Retry enqueues directly, so manual attempts stay unbounded. **`__version__` goes 0.2.0 → 0.3.0**
+  so `Workspace.is_done`'s gate invalidates stage markers rather than resuming a job onto a render
+  planned by the old code. As in a6f2169 this does not re-clean anything: `profile_hash` excludes
+  the app version.
 
 ## 15. Working agreement for future sessions
 

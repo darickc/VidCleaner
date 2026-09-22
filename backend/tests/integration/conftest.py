@@ -36,6 +36,14 @@ def sample_mp4(fixture_media: FixtureSet, tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def sample_und_mp4(fixture_media: FixtureSet, tmp_path: Path) -> Path:
+    """The ordinary library MP4: audio with no language tag, stored as `und`."""
+    target = tmp_path / fixture_media.und_mp4.name
+    shutil.copy2(fixture_media.und_mp4, target)
+    return target
+
+
+@pytest.fixture
 def sample_pgs_mkv(fixture_media: FixtureSet, tmp_path: Path) -> Path:
     """Bitmap subtitles only: the file M6's OCR path exists for."""
     target = tmp_path / fixture_media.pgs_mkv.name

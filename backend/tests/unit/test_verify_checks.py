@@ -230,6 +230,75 @@ def test_an_absent_source_language_makes_the_check_a_warning():
     assert result["clean_track_language"].severity == "warn"
 
 
+def test_an_und_source_language_passes_when_the_output_carries_no_tag():
+    """The regression: every MP4 source used to fail verification here.
+
+    MP4 tags an untagged audio track `und`; the render mirrored it onto a:0; the
+    Matroska muxer wrote it and the demuxer dropped it again on read, because in
+    Matroska `und` *is* the absence of a tag. Verify then compared None to "und".
+    """
+    src = source_probe(audio=[audio(0, language="und", is_default=True)])
+    out = output_probe(
+        audio=[
+            audio(0, title="Clean", language=None, is_default=True),
+            audio(1, title="Original", language=None),
+        ]
+    )
+    result = checks(src, out)
+    assert result["clean_track_language"].ok, result["clean_track_language"].detail
+
+
+def test_und_is_not_emitted_as_a_language_at_all():
+    src = source_probe(audio=[audio(0, language="und", is_default=True)])
+    plan = plan_render(
+        src, DetectionResult(), output=Path("/work/out.mkv"), job_id="j", profile_hash="v1:h"
+    )
+    assert plan.clean_language is None
+
+
+@pytest.mark.parametrize(
+    ("source_tag", "output_tag"), [("en", "eng"), ("eng", "en"), ("fra", "fre")]
+)
+def test_the_same_language_spelled_differently_passes(source_tag, output_tag):
+    """ISO 639-1 vs 639-2/B vs 639-2/T name one language; `lang.matches` knows."""
+    src = source_probe(audio=[audio(0, language=source_tag, is_default=True)])
+    out = output_probe(
+        audio=[
+            audio(0, title="Clean", language=output_tag, is_default=True),
+            audio(1, title="Original", language=output_tag),
+        ]
+    )
+    assert checks(src, out)["clean_track_language"].ok
+
+
+def test_a_dropped_language_tag_is_a_warning_not_a_failure():
+    """Metadata drift: a:0 still plays and still carries `default`."""
+    src = source_probe(audio=[audio(0, language="eng", is_default=True)])
+    out = output_probe(
+        audio=[
+            audio(0, title="Clean", language=None, is_default=True),
+            audio(1, title="Original", language="eng"),
+        ]
+    )
+    result = checks(src, out)
+    assert not result["clean_track_language"].ok
+    assert result["clean_track_language"].severity == "warn"
+
+
+def test_a_genuinely_different_language_stays_fatal():
+    """Jellyfin would pick the wrong track, so this one still blocks the swap."""
+    src = source_probe(audio=[audio(0, language="eng", is_default=True)])
+    out = output_probe(
+        audio=[
+            audio(0, title="Clean", language="fre", is_default=True),
+            audio(1, title="Original", language="eng"),
+        ]
+    )
+    result = checks(src, out)
+    assert not result["clean_track_language"].ok
+    assert result["clean_track_language"].severity == "fatal"
+
+
 def test_a_wrong_clean_codec_is_only_a_warning():
     out = output_probe(
         audio=[

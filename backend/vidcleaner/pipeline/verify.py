@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
+from vidcleaner.pipeline import lang
 from vidcleaner.pipeline.artifacts import (
     Check,
     ProbeResult,
@@ -35,6 +36,7 @@ NAME = "verify"
 __all__ = [
     "AUDIBLE_DB",
     "DURATION_TOLERANCE_S",
+    "MIN_SILENT_COVERAGE",
     "SIZE_FLOOR",
     "load",
     "pick_control_window",
@@ -56,6 +58,18 @@ MIN_PROBE_WINDOW_S = 0.25
 MAX_PROBE_WINDOWS = 3
 CONTROL_WINDOW_S = 1.0
 CONTROL_GUARD_S = 0.5
+#: When a probe window peaks above ``INAUDIBLE_DB`` the peak alone cannot say
+#: whether the mute missed or a sliver leaked in at one edge, so the check
+#: escalates to ``silencedetect`` and asks what share of the nominal range is
+#: actually silent. A mute that landed is silent end to end; an edge artefact
+#: costs a few percent; a mute that never ran scores ~0.
+MIN_SILENT_COVERAGE = 0.9
+#: The bar for *that* question, deliberately far above ``INAUDIBLE_DB``: we are
+#: asking where the audio is, not how quiet the quiet part is.
+COVERAGE_SILENCE_DB = -60.0
+#: Audible context on each side of the nominal range, so ``silencedetect`` emits
+#: the ``silence_end`` that ``parse_silencedetect`` needs to record a span.
+COVERAGE_CONTEXT_S = 0.25
 
 #: Text subtitle transcodes we deliberately perform (`mov_text` cannot be muxed
 #: into Matroska at all), so they are a warning rather than a failure.
@@ -121,6 +135,47 @@ def pick_control_window(
 
 
 # ------------------------------------------------------------------ structural
+
+
+def _language_check(want: str | None, got: str | None) -> Check:
+    """Compare languages by identity, not by spelling.
+
+    Three things make a literal ``==`` wrong here. ``und`` and an absent tag are
+    the same claim, and Matroska's demuxer turns the first into the second on
+    read. ``en``/``eng`` and ``fra``/``fre`` name one language across ISO 639-1,
+    639-2/B and 639-2/T -- ``lang.matches`` is the same notion of equality
+    ``choose_source_audio`` already selects tracks with. And the severities are
+    not symmetric: only a *different* language is fatal, because that is what
+    makes Jellyfin pick the wrong track. A tag the muxer declined to keep is
+    metadata drift, which §6 step 7 warns about rather than failing on.
+    """
+    if want is None:
+        return _check(
+            "clean_track_language",
+            got is None,
+            "source audio asserted no language, so the clean track asserts none"
+            if got is None
+            else f"source audio asserted no language but a:0 is {got!r}",
+            severity="warn",
+            expected=None,
+            actual=str(got),
+        )
+    if got is None:
+        return _check(
+            "clean_track_language",
+            False,
+            f"the muxer did not keep language={want!r} on a:0",
+            severity="warn",
+            expected=want,
+            actual=str(got),
+        )
+    return _check(
+        "clean_track_language",
+        lang.matches(got, want),
+        f"a:0 language is {got!r}",
+        expected=want,
+        actual=got,
+    )
 
 
 def structural_checks(source: ProbeResult, output: ProbeResult, plan: RenderPlan) -> list[Check]:
@@ -190,25 +245,9 @@ def structural_checks(source: ProbeResult, output: ProbeResult, plan: RenderPlan
                 actual=str(clean.channels),
             )
         )
-        if plan.clean_language:
-            checks.append(
-                _check(
-                    "clean_track_language",
-                    clean.language == plan.clean_language,
-                    f"a:0 language is {clean.language!r}",
-                    expected=plan.clean_language,
-                    actual=str(clean.language),
-                )
-            )
-        else:
-            checks.append(
-                _check(
-                    "clean_track_language",
-                    clean.language is None,
-                    "source audio had no language tag, so the clean track has none",
-                    severity="warn",
-                )
-            )
+        checks.append(
+            _language_check(lang.effective(plan.clean_language), lang.effective(clean.language))
+        )
 
     defaults = [a for a in output.audio if a.is_default]
     checks.append(
@@ -337,6 +376,33 @@ def structural_checks(source: ProbeResult, output: ProbeResult, plan: RenderPlan
 # ---------------------------------------------------------------- acoustic
 
 
+def _silent_coverage(runner, output: Path, nominal: TimeRange) -> tuple[float, str]:
+    """What share of ``nominal`` ffmpeg reports as silent, plus a human summary.
+
+    Scoped with input seek, so this costs a second even on a feature film. The
+    spans come back relative to the scoped window, hence ``offset``.
+    """
+    start = max(0.0, nominal.start - COVERAGE_CONTEXT_S)
+    scope = TimeRange(start=start, end=nominal.end + COVERAGE_CONTEXT_S)
+    spans = runner.detect_silence(
+        output,
+        stream="0:a:0",
+        threshold_db=COVERAGE_SILENCE_DB,
+        window=scope,
+        label="silencedetect_coverage",
+    )
+    covered = 0.0
+    found: list[str] = []
+    for span in spans:
+        abs_start, abs_end = scope.start + span.start, scope.start + span.end
+        found.append(f"{abs_start:.2f}-{abs_end:.2f}s")
+        overlap = min(nominal.end, abs_end) - max(nominal.start, abs_start)
+        if overlap > 0:
+            covered += overlap
+    share = covered / nominal.duration if nominal.duration > 0 else 0.0
+    return share, ", ".join(found) or "none"
+
+
 def _acoustic_checks(runner, output: Path, plan: RenderPlan, ranges: Sequence[TimeRange]):
     checks: list[Check] = []
     measured: list[float] = []
@@ -347,20 +413,43 @@ def _acoustic_checks(runner, output: Path, plan: RenderPlan, ranges: Sequence[Ti
     )
 
     for index, window in enumerate(pick_probe_windows(ranges)):
+        # `pick_probe_windows` insets by a constant, so the mute range this
+        # window came from is exactly the window widened back out. Naming it in
+        # every detail is what makes `mute_window_silent[1]` traceable at all:
+        # the index is positional in a list sorted by duration and then re-sorted
+        # by start, so on its own it points at nothing.
+        nominal = TimeRange(start=window.start - WINDOW_INSET_S, end=window.end + WINDOW_INSET_S)
+        name = f"mute_window_silent[{index}]"
+        where = f"mute {nominal.start:.2f}-{nominal.end:.2f}s"
         stats = runner.measure_volume(output, stream="0:a:0", window=window)
         if stats is None:
-            checks.append(
-                _check(f"mute_window_silent[{index}]", False, f"no measurement for {window}")
-            )
+            checks.append(_check(name, False, f"no measurement for {where}"))
             continue
         measured.append(stats.max_db)
+        probed = f"{window.start:.2f}-{window.end:.2f}s"
+        detail = f"{where} peaks at {stats.max_db:.1f} dB inside {probed}"
+        if stats.max_db <= INAUDIBLE_DB:
+            checks.append(
+                _check(
+                    name,
+                    True,
+                    detail,
+                    expected=f"<= {INAUDIBLE_DB:g} dB",
+                    actual=f"{stats.max_db:.1f} dB",
+                )
+            )
+            continue
+        # Above the bar. Ask where the sound actually is before failing a job:
+        # a mute that never ran and a codec smear at one edge look identical
+        # from a single peak, and only the first is worth refusing to swap over.
+        share, spans = _silent_coverage(runner, output, nominal)
         checks.append(
             _check(
-                f"mute_window_silent[{index}]",
-                stats.max_db <= INAUDIBLE_DB,
-                f"{window.start:.2f}-{window.end:.2f}s peaks at {stats.max_db:.1f} dB",
-                expected=f"<= {INAUDIBLE_DB:g} dB",
-                actual=f"{stats.max_db:.1f} dB",
+                name,
+                share >= MIN_SILENT_COVERAGE,
+                f"{detail}; {share * 100:.0f}% of the range is silent (spans: {spans})",
+                expected=f"<= {INAUDIBLE_DB:g} dB, or >= {MIN_SILENT_COVERAGE:.0%} silent",
+                actual=f"{stats.max_db:.1f} dB, {share:.0%} silent",
             )
         )
 
@@ -463,7 +552,10 @@ def run(ctx) -> None:
         ctx.runner,
         source=probe,
         plan=plan,
-        mute_ranges=detections.mute_ranges,
+        # The graph's normalized ranges, not `detections.mute_ranges`: the render
+        # clamps to the duration, rounds outward to whole ms and re-merges, so
+        # probing the raw list can fail a window over a range the graph altered.
+        mute_ranges=plan.graph.ranges,
         output_probe=output_probe,
         output_path=output_path,
     )
@@ -486,8 +578,12 @@ def run(ctx) -> None:
         measured_db=[round(v, 1) for v in result.measured_db],
     )
     if not result.ok:
-        names = ", ".join(c.name for c in result.failures)
-        raise RuntimeError(f"verification failed: {names}")
+        # `jobs.error` is the only durable record: gc deletes a terminal job's
+        # work dir, taking verify.json with it. Carry the numbers, not the names.
+        detail = "; ".join(
+            f"{c.name} ({c.detail})" if c.detail else c.name for c in result.failures
+        )
+        raise RuntimeError(f"verification failed: {detail}")
 
 
 def load(ws: Workspace) -> VerifyResult | None:

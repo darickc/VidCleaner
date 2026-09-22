@@ -57,6 +57,13 @@ class GraphSpec:
     n_chunks: int
     n_fades: int
     warnings: tuple[str, ...] = ()
+    ranges: tuple[TimeRange, ...] = ()
+    """The ranges the graph actually mutes, after :func:`_normalize`.
+
+    Not the same list the caller passed in -- clamping to the duration and
+    rounding outward can widen, merge or drop a range. `verify` probes *these*,
+    so that a range the graph altered cannot be reported as a mute that failed.
+    """
 
 
 class GraphTooLarge(ValueError):
@@ -141,7 +148,7 @@ def build_mute_graph(
     warnings: list[str] = []
 
     if not normalized:
-        return GraphSpec(f"[{in_label}]anull[{out_label}]", out_label, 0, 0, 0, ())
+        return GraphSpec(f"[{in_label}]anull[{out_label}]", out_label, 0, 0, 0, (), ())
 
     filters = [f"asetnsamples=n={frame_samples}:p=0"]
 
@@ -163,4 +170,6 @@ def build_mute_graph(
     filters.extend(f"volume=0:enable='{_chunk_expression(chunk)}'" for chunk in chunks)
 
     text = f"[{in_label}]" + ",".join(filters) + f"[{out_label}]"
-    return GraphSpec(text, out_label, len(normalized), len(chunks), n_fades, tuple(warnings))
+    return GraphSpec(
+        text, out_label, len(normalized), len(chunks), n_fades, tuple(warnings), tuple(normalized)
+    )

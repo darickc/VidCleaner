@@ -246,6 +246,30 @@ def test_verify_passes_when_the_source_was_not_the_default_track(
     assert [s["disposition"]["default"] for s in audio] == [1, 0, 0]
 
 
+def test_verify_passes_on_an_mp4_whose_audio_has_no_language(rendered, sample_und_mp4):
+    """The regression that failed one episode nineteen times in nineteen hours.
+
+    MP4 stores an untagged audio track as `und`; Matroska's demuxer drops `und`
+    on read, because there it *is* the absence of a tag. The render used to
+    mirror `und` onto the clean track, the muxer wrote it, the re-probe saw
+    nothing, and `clean_track_language` compared `None` against `"und"` and
+    failed the job -- for every MP4 in the library, on every attempt.
+    """
+    ctx = rendered(sample_und_mp4)
+    run_stage(ctx, "verify")
+    result = verify_stage.load(ctx.ws)
+    assert result is not None and result.ok, [
+        (c.name, c.detail) for c in (result.failures if result else [])
+    ]
+    language = next(c for c in result.checks if c.name == "clean_track_language")
+    assert language.ok and language.expected is None
+
+    data = FFmpegRunner().probe(Path(render_stage.load(ctx.ws).out_path))
+    audio = [s for s in data["streams"] if s["codec_type"] == "audio"]
+    assert "language" not in audio[0].get("tags", {}), "und must not be asserted"
+    assert audio[0]["tags"]["title"] == "Clean"
+
+
 def test_verify_measures_both_silence_and_a_control_window(rendered):
     ctx = rendered()
     run_stage(ctx, "verify")
